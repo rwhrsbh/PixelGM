@@ -2,6 +2,7 @@
 //! place to the next, and the conversation with the game master.
 
 use crate::art::{Art, ground_picture, sprite_picture};
+use crate::coop::{Down, Intent, Session, Table, player_name};
 use crate::gm::{Gm, Trouble, trouble_text};
 use crate::i18n::{Lang, T};
 use crate::master::{Answer, Ask, Master};
@@ -102,6 +103,10 @@ struct InLocation;
 
 #[derive(Component)]
 struct Hero;
+
+/// Another player's token.
+#[derive(Component)]
+struct Fellow(String);
 
 /// A creature shifting its weight while it stands.
 #[derive(Component)]
@@ -307,6 +312,11 @@ fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut
             }
         }
         None => {
+            for other in &world.others {
+                if let Some(image) = picture(HERO_SPRITE) {
+                    commands.spawn((InLocation, Fellow(other.name.clone()), Sprite { color: Color::srgb(0.8, 0.85, 1.0), ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::default()));
+                }
+            }
             if let Some(image) = picture(HERO_SPRITE) {
                 commands.spawn((InLocation, Hero, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::default()));
             }
@@ -329,6 +339,22 @@ fn place_hero(time: Res<Time>, game: Res<Game>, pose: Res<HeroPose>, mut hero: Q
     }
 }
 
+/// Other players' tokens follow where their players last said they were. When somebody
+/// joins or leaves, the picture is drawn again so that there is a token for each.
+fn place_fellows(game: Res<Game>, mut redraw: ResMut<Redraw>, mut fellows: Query<(&Fellow, &mut Transform)>) {
+    let others = &game.world.others;
+    if game.world.fight.is_none() && fellows.iter().count() != others.len() {
+        redraw.0 = true;
+    }
+    for (fellow, mut transform) in &mut fellows {
+        if let Some(token) = others.iter().find(|t| t.name == fellow.0) {
+            let feet_y = token.y + FEET.1;
+            let at = on_screen(token.x.round(), feet_y.round());
+            transform.translation = Vec3::new(at.x, at.y, depth(feet_y));
+        }
+    }
+}
+
 fn idle(time: Res<Time>, mut idlers: Query<(&Idler, &mut Transform)>) {
     for (idler, mut transform) in &mut idlers {
         let lift = if (time.elapsed_secs() + idler.phase) % 1.4 < 0.7 { 0.0 } else { 1.0 };
@@ -338,20 +364,47 @@ fn idle(time: Res<Time>, mut idlers: Query<(&Idler, &mut Transform)>) {
     }
 }
 
-fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>) {
+#[allow(clippy::too_many_arguments)]
+fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>, session: Res<Session>, mut table: ResMut<Table>) {
     if *phase != Phase::Walking {
         pose.moving = false;
         return;
     }
+    // Something for everyone to read comes before walking on.
+    if let Some(turn) = table.unread.pop_front() {
+        *phase = Phase::Reading { turn };
+        return;
+    }
+    if session.is_client() {
+        // A guest learns of fights and checks from the world the host sends.
+        let next = settled(&game.world);
+        if next != Phase::Walking {
+            *phase = next;
+            return;
+        }
+        if let Some(exit) = game.world.exit_here() {
+            let to = exit.to.clone();
+            session.intend(Intent::Exit { to: to.clone() });
+            // The host moves the party; until its world arrives the guest steps back, so
+            // that a refusal does not leave it standing in the doorway asking again.
+            game.world.step_back();
+            let _ = to;
+            return;
+        }
+    }
     if let Some((x, y)) = warp.0.take() {
         game.world.player = world::Player::in_cell(x.min(world::MAP_W - 1), y.min(world::MAP_H - 1));
     }
-    if let Some(exit) = game.world.exit_here() {
+    if !session.is_client()
+        && let Some(exit) = game.world.exit_here()
+    {
         *phase = Phase::Leaving { to: exit.to.clone(), t: 0.0 };
         return;
     }
-    // Something hostile close by does not wait to be spoken to.
-    if game.world.hostile_near(NOTICE_CELLS) && game.world.start_fight(Rng::from_clock()) {
+    // Something hostile close by does not wait to be spoken to. With guests at the table
+    // any of their tokens can be the one that is noticed.
+    let noticed = game.world.hostile_near(NOTICE_CELLS) || game.world.others.iter().any(|t| hostile_near_token(&game.world, t.x, t.y));
+    if !session.is_client() && noticed && game.world.start_fight(Rng::from_clock()) {
         *phase = Phase::Fighting;
         return;
     }
@@ -409,6 +462,21 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
         *phase = Phase::Journal;
     } else if (keyboard.just_pressed(KeyCode::KeyC) || pad(GamepadButton::West)) && !game.world.party.is_empty() {
         *phase = Phase::Sheet;
+    }
+}
+
+fn hostile_near_token(world: &World, x: f32, y: f32) -> bool {
+    let cell = ((x / TILE as f32).floor() as i32, (y / TILE as f32).floor() as i32);
+    world.hostiles().any(|c| rules::combat::distance((c.x as i32, c.y as i32), cell) <= NOTICE_CELLS)
+}
+
+/// Puts a telling in front of this player: at once when they are free to read, otherwise
+/// after what they are reading now.
+pub fn show(turn: Turn, phase: &mut Phase, table: &mut Table) {
+    if matches!(*phase, Phase::Walking | Phase::Asking { .. } | Phase::Looking { .. } | Phase::Rolling) {
+        *phase = Phase::Reading { turn };
+    } else {
+        table.unread.push_back(turn);
     }
 }
 
@@ -482,7 +550,8 @@ fn settle(draft: Result<Box<LocationDraft>, Trouble>, id: &str, from: &str, game
 }
 
 /// The master told something: it is shown, the picture is brought up to date, the game saved.
-fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redraw: &mut Redraw, background: &mut Background) -> Phase {
+#[allow(clippy::too_many_arguments)]
+fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redraw: &mut Redraw, background: &mut Background, session: &Session, table: &mut Table) -> Phase {
     for note in notes {
         info!("turn repaired: {note}");
     }
@@ -493,6 +562,9 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     redraw.0 = true;
     background.quiet = 0.0;
     autosave(store, game);
+    // The whole table reads what the master tells, and may take up the choices it offers.
+    table.options = turn.options.clone();
+    session.broadcast(&Down::Told(turn.clone()));
     Phase::Reading { turn }
 }
 
@@ -507,6 +579,8 @@ fn receive(
     mut redraw: ResMut<Redraw>,
     mut arrival: ResMut<Arrival>,
     mut background: ResMut<Background>,
+    session: Res<Session>,
+    mut table: ResMut<Table>,
 ) {
     for answer in master.take() {
         match answer {
@@ -529,16 +603,25 @@ fn receive(
                 }
             }
             Answer::Turn { said, near, draft } => {
-                if !matches!(&*phase, Phase::Asking { said: asked, .. } if *asked == said) {
+                let mine = matches!(&*phase, Phase::Asking { said: asked, .. } if *asked == said);
+                let for_a_guest = table.busy.as_deref() == Some(said.as_str());
+                if !mine && !for_a_guest {
                     continue;
                 }
-                *phase = match draft {
+                table.busy = None;
+                match draft {
                     Ok(draft) => {
                         let (turn, notes) = game.world.take_turn(&said, &draft);
-                        told(turn, notes, &mut game, &store, &mut redraw, &mut background)
+                        let reading = told(turn.clone(), notes, &mut game, &store, &mut redraw, &mut background, &session, &mut table);
+                        if mine {
+                            *phase = reading;
+                        } else {
+                            show(turn, &mut phase, &mut table);
+                        }
                     }
-                    Err(trouble) => Phase::Refused { said, near, trouble },
-                };
+                    Err(trouble) if mine => *phase = Phase::Refused { said, near, trouble },
+                    Err(trouble) => session.broadcast(&Down::Trouble(trouble_text(&trouble, gm.dispatcher.now(), settings.lang))),
+                }
             }
             Answer::Event(draft) => {
                 background.event_asked = false;
@@ -548,7 +631,7 @@ fn receive(
                     && !draft.narration.trim().is_empty()
                 {
                     let (turn, notes) = game.world.take_turn("", &draft);
-                    *phase = told(turn, notes, &mut game, &store, &mut redraw, &mut background);
+                    *phase = told(turn, notes, &mut game, &store, &mut redraw, &mut background, &session, &mut table);
                 }
             }
             Answer::Chapter(draft) => {
@@ -569,7 +652,11 @@ fn receive(
 /// Work done unasked while the party walks: the nearest undrawn neighbour is drawn, a long
 /// story is written up, and after a long silence the master may make something happen.
 #[allow(clippy::too_many_arguments)]
-fn background_work(time: Res<Time>, phase: Res<Phase>, game: Res<Game>, gm: Res<Gm>, store: Res<Store>, settings: Res<Settings>, master: Res<Master>, mut background: ResMut<Background>) {
+#[allow(clippy::too_many_arguments)]
+fn background_work(time: Res<Time>, phase: Res<Phase>, game: Res<Game>, gm: Res<Gm>, store: Res<Store>, settings: Res<Settings>, master: Res<Master>, mut background: ResMut<Background>, session: Res<Session>) {
+    if session.is_client() {
+        return;
+    }
     let dt = time.delta_secs();
     background.ahead_rest = (background.ahead_rest - dt).max(0.0);
     background.chapter_rest = (background.chapter_rest - dt).max(0.0);
@@ -888,11 +975,21 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
     });
 }
 
-fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store, settings: &Settings, master: &Master) -> Phase {
+#[allow(clippy::too_many_arguments)]
+fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store, settings: &Settings, master: &Master, session: &Session) -> Phase {
     let said = said.trim().to_string();
     if said.is_empty() {
         return Phase::Writing { near };
     }
+    if session.is_client() {
+        session.intend(Intent::Say { text: said.clone(), near: near.clone() });
+        return Phase::Asking { said, near };
+    }
+    // At a table with guests the master is told who is acting.
+    let said = match (session.is_host(), hero_of(&game.world, &player_name(settings))) {
+        (true, Some(hero)) => format!("{hero}: {said}"),
+        _ => said,
+    };
     master.ask(gm, store, settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near: near.clone() });
     Phase::Asking { said, near }
 }
@@ -909,13 +1006,14 @@ fn submit(
     store: Res<Store>,
     settings: Res<Settings>,
     master: Res<Master>,
+    session: Res<Session>,
 ) {
     if !keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
         return;
     }
     let (Phase::Writing { near }, Ok((entity, input))) = (&*phase, input.single()) else { return };
     if focus.get() == Some(entity) {
-        *phase = send(input.value().to_string(), near.clone(), &game, &gm, &store, &settings, &master);
+        *phase = send(input.value().to_string(), near.clone(), &game, &gm, &store, &settings, &master, &session);
     }
 }
 
@@ -936,10 +1034,38 @@ fn on_activate(
     gm: Res<Gm>,
     settings: Res<Settings>,
     master: Res<Master>,
+    mut session: ResMut<Session>,
+    mut table: ResMut<Table>,
 ) {
     // This observer hears every button in the game; outside a game there is nothing to act on.
     let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
     let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
+    // A guest does not change the world: it asks the host, and reads the answer with
+    // everyone else when it comes.
+    if session.is_client() {
+        let asked = match (*action, phase.clone()) {
+            (PlayAction::Do(index), Phase::Looking { thing }) => Some(Intent::Do { thing, index }),
+            (PlayAction::Choose(index), Phase::Reading { .. }) => Some(Intent::Choose(index)),
+            (PlayAction::Roll, Phase::Rolling) => Some(Intent::Roll),
+            (PlayAction::Improve(ability), _) => Some(Intent::Improve(ability)),
+            (PlayAction::MainMenu, _) => {
+                // Leaving the table.
+                *session = Session::Solo;
+                *phase = Phase::Walking;
+                next.set(Screen::Main);
+                return;
+            }
+            (PlayAction::Rest | PlayAction::Retry | PlayAction::Sketch | PlayAction::Stay, _) => return,
+            _ => None,
+        };
+        if let Some(intent) = asked {
+            session.intend(intent);
+            if !matches!(*action, PlayAction::Improve(_)) {
+                *phase = Phase::Walking;
+            }
+            return;
+        }
+    }
     match (*action, phase.clone()) {
         (PlayAction::Resume, _) => *phase = Phase::Walking,
         (PlayAction::Close, _) => *phase = settled(&game.world),
@@ -947,7 +1073,7 @@ fn on_activate(
             if let Some(done) = game.world.roll_check(&mut Rng::from_clock()) {
                 let verdict = if done.success { T::CheckSuccess } else { T::CheckFailure };
                 let line = format!("{}: d20 {}{:+} = {} / {} — {}\n{}", done.hero, done.roll.die, done.roll.bonus, done.roll.total(), done.difficulty, verdict.text(settings.lang), done.narration);
-                *phase = told(outcome_of(line), Vec::new(), &mut game, &store, &mut redraw, &mut background);
+                *phase = told(outcome_of(line), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
             }
         }
         (PlayAction::Improve(ability), _) => {
@@ -996,24 +1122,104 @@ fn on_activate(
         }
         (PlayAction::Do(index), Phase::Looking { thing }) => {
             if let Some(outcome) = game.world.perform(&thing, index) {
-                *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background);
+                *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
             }
         }
         (PlayAction::Own, Phase::Looking { thing }) => *phase = Phase::Writing { near: Some(thing) },
         (PlayAction::Own, _) => *phase = Phase::Writing { near: None },
         (PlayAction::Send, Phase::Writing { near }) => {
             if let Ok(input) = input.single() {
-                *phase = send(input.value().to_string(), near, &game, &gm, &store, &settings, &master);
+                *phase = send(input.value().to_string(), near, &game, &gm, &store, &settings, &master, &session);
             }
         }
         (PlayAction::Choose(index), Phase::Reading { turn }) => {
             if let Some(option) = turn.options.get(index) {
                 let outcome = game.world.choose(option);
-                *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background);
+                *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
             }
         }
-        (PlayAction::AskAgain, Phase::Refused { said, near, .. }) => *phase = send(said, near, &game, &gm, &store, &settings, &master),
+        (PlayAction::AskAgain, Phase::Refused { said, near, .. }) => *phase = send(said, near, &game, &gm, &store, &settings, &master, &session),
         _ => {}
+    }
+}
+
+/// The name of the hero a player plays, if they have one in this world.
+fn hero_of<'a>(world: &'a World, player: &str) -> Option<&'a str> {
+    let index = world.owners.iter().position(|o| o == player)?;
+    world.party.get(index).map(|h| h.name.as_str())
+}
+
+/// Carries out what guests asked for, the same way the host's own presses are carried out.
+#[allow(clippy::too_many_arguments)]
+fn guests(
+    mut phase: ResMut<Phase>,
+    mut game: ResMut<Game>,
+    mut table: ResMut<Table>,
+    mut redraw: ResMut<Redraw>,
+    mut background: ResMut<Background>,
+    mut view: ResMut<crate::fight::FightView>,
+    session: Res<Session>,
+    store: Res<Store>,
+    gm: Res<Gm>,
+    settings: Res<Settings>,
+    master: Res<Master>,
+) {
+    let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
+    for (player, intent) in std::mem::take(&mut table.inbox) {
+        let shown = match intent {
+            Intent::Do { thing, index } => game.world.perform(&thing, index).map(outcome_of),
+            Intent::Choose(index) => table.options.get(index).cloned().map(|option| outcome_of(game.world.choose(&option))),
+            Intent::Roll => game.world.roll_check(&mut Rng::from_clock()).map(|done| {
+                let verdict = if done.success { T::CheckSuccess } else { T::CheckFailure };
+                outcome_of(format!("{}: d20 {}{:+} = {} / {} — {}\n{}", done.hero, done.roll.die, done.roll.bonus, done.roll.total(), done.difficulty, verdict.text(settings.lang), done.narration))
+            }),
+            Intent::Say { text, near } => {
+                // One question to the master at a time; a second one is told to wait.
+                if table.busy.is_some() || matches!(*phase, Phase::Asking { .. }) {
+                    session.broadcast(&Down::Trouble(T::MasterBusy.text(settings.lang).to_string()));
+                } else {
+                    let said = match hero_of(&game.world, &player) {
+                        Some(hero) => format!("{hero}: {}", text.trim()),
+                        None => format!("{player}: {}", text.trim()),
+                    };
+                    master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near });
+                    session.broadcast(&Down::Thinking(said.clone()));
+                    table.busy = Some(said);
+                }
+                None
+            }
+            Intent::Exit { to } => {
+                // The party travels together: one of them at a way out takes everyone.
+                if *phase == Phase::Walking && game.world.here().exits.iter().any(|e| e.to == to) {
+                    *phase = Phase::Leaving { to, t: 0.0 };
+                }
+                None
+            }
+            Intent::Fight(act) => {
+                // Only the player whose hero is acting may act for it.
+                if game.world.acting_owner() == Some(player.as_str()) {
+                    let events = game.world.fight_act(&act);
+                    if !events.is_empty() {
+                        session.broadcast(&Down::FightEvents(events.clone()));
+                        view.extend(events);
+                        redraw.0 = true;
+                    }
+                }
+                None
+            }
+            Intent::Improve(ability) => {
+                if let Some(index) = game.world.owners.iter().position(|o| *o == player)
+                    && let Some(hero) = game.world.party.get_mut(index)
+                {
+                    hero.improve(ability);
+                }
+                None
+            }
+        };
+        if let Some(turn) = shown {
+            told(turn.clone(), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
+            show(turn, &mut phase, &mut table);
+        }
     }
 }
 
@@ -1031,7 +1237,7 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, advance, receive, background_work, draw, place_hero, idle, hud, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, advance, receive, guests, background_work, draw, place_hero, place_fellows, idle, hud, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_observer(on_activate);
     }

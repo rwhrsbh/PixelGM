@@ -3900,6 +3900,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "llm",
+ "net",
  "rules",
  "serde",
  "serde_json",

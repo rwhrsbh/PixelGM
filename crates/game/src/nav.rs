@@ -137,10 +137,23 @@ fn press_focused(
     nav: Res<NavMode>,
     focus: Res<InputFocus>,
     buttons: Query<&PixelButton>,
+    all: Query<(Entity, &PixelButton)>,
+    typing: Query<(), With<EditableText>>,
     mut commands: Commands,
 ) {
     let pressed = keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space]) || gamepads.iter().any(|pad| pad.just_pressed(GamepadButton::South));
-    if !pressed || !nav.active {
+    if !pressed {
+        return;
+    }
+    if !nav.active {
+        // With the mouse in charge nothing is focused, but a sheet with a single button
+        // (a telling to read on from) still closes on Enter.
+        let mut enabled = all.iter().filter(|(_, b)| b.enabled);
+        if let (Some((entity, _)), None) = (enabled.next(), enabled.next())
+            && !focus.get().is_some_and(|e| typing.contains(e))
+        {
+            commands.trigger(Activate { entity });
+        }
         return;
     }
     if let Some(entity) = focus.get().filter(|e| buttons.get(*e).is_ok_and(|b| b.enabled)) {

@@ -1,10 +1,11 @@
 //! Making a character for a world that has none yet, and showing the sheet of one that exists.
 
 use crate::art::Art;
+use crate::coop::{Session, Up, owner_name};
 use crate::i18n::{Lang, T};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::play::Game;
-use crate::store::Store;
+use crate::store::{Settings, Store};
 use crate::theme::*;
 use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, scroll_list, text_button};
 use bevy::input_focus::AutoFocus;
@@ -259,6 +260,8 @@ fn on_activate(
     name: Query<&EditableText, (With<NameInput>, Without<StoryInput>)>,
     story: Query<&EditableText, (With<StoryInput>, Without<NameInput>)>,
     mut next: ResMut<NextState<Screen>>,
+    session: Res<Session>,
+    settings: Res<Settings>,
 ) {
     let (Ok(action), Some(mut draft)) = (buttons.get(used.entity), draft) else { return };
     draft.problem = None;
@@ -294,7 +297,14 @@ fn on_activate(
             let description = story.single().map(|s| s.value().to_string()).unwrap_or_default();
             match (draft.build(&name, &description), game) {
                 (Ok(hero), Some(mut game)) => {
-                    game.world.party.push(hero);
+                    // A guest's hero is the host's to add; it is put in the local copy too
+                    // so the guest can start walking before the host's world comes back.
+                    session.send(Up::Hero(Box::new(hero.clone())));
+                    let world = &mut game.world;
+                    let length = world.party.len();
+                    world.owners.resize(length, String::new());
+                    world.party.push(hero);
+                    world.owners.push(owner_name(&session, &settings));
                     next.set(Screen::Play);
                 }
                 (Err(_), _) if name.trim().is_empty() => draft.problem = Some(T::NeedName.text(*lang).to_string()),

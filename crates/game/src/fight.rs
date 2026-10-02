@@ -3,6 +3,7 @@
 //! decides an outcome.
 
 use crate::art::Art;
+use crate::coop::{Down, Intent, Session, my_turn};
 use crate::gm::Gm;
 use crate::i18n::{Lang, T};
 use crate::master::{Ask, Master};
@@ -19,7 +20,7 @@ use rules::combat::{Cell, Strike};
 use rules::{Encounter, Event, Outcome, Side, srd, tr};
 use std::collections::VecDeque;
 use world::party::spell_strike;
-use world::{FightSummary, MAP_H, MAP_W, TILE, World};
+use world::{FightIntent, FightSummary, MAP_H, MAP_W, TILE, World};
 
 /// What the hero is choosing a target for.
 #[derive(Clone, PartialEq, Debug)]
@@ -158,13 +159,41 @@ fn cell_under_cursor(window: &Window) -> Option<Cell> {
     ((0..MAP_W as i32).contains(&cell.0) && (0..MAP_H as i32).contains(&cell.1) && canvas.y < CANVAS.y as f32 - HUD_HEIGHT).then_some(cell)
 }
 
-fn push(view: &mut FightView, events: Vec<Event>) {
+impl FightView {
+    /// Events that happened on the host, to be shown here.
+    pub fn extend(&mut self, events: Vec<Event>) {
+        self.queue.extend(events);
+    }
+
+    /// The host says the fight is over.
+    pub fn finish(&mut self, summary: FightSummary) {
+        self.over = Some(summary);
+        self.mode = Mode::Menu;
+    }
+}
+
+/// Does what the acting hero's player asked for. A guest asks the host; the host and a solo
+/// player do it themselves, and the host tells its guests what came of it.
+fn act(intent: FightIntent, world: &mut World, view: &mut FightView, session: &Session, redraw: &mut Redraw) {
+    view.mode = Mode::Menu;
+    if session.is_client() {
+        session.intend(Intent::Fight(intent));
+        return;
+    }
+    let events = world.fight_act(&intent);
+    if events.is_empty() {
+        return;
+    }
+    session.broadcast(&Down::FightEvents(events.clone()));
     view.queue.extend(events);
+    view.until_next = 0.0;
+    redraw.0 = true;
 }
 
 /// Shows waiting events one at a time and, when there is nothing to show, moves the fight
-/// on: a monster takes its turn, or the fight is found to be over.
-fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: ResMut<FightView>, mut redraw: ResMut<Redraw>, lang: Res<Lang>) {
+/// on: a monster takes its turn, or the fight is found to be over. Only the host (or a solo
+/// player) moves the fight on; guests are told.
+fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: ResMut<FightView>, mut redraw: ResMut<Redraw>, lang: Res<Lang>, session: Res<Session>) {
     if *phase != Phase::Fighting {
         return;
     }
@@ -184,23 +213,23 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
         redraw.0 = true;
         return;
     }
-    if view.over.is_some() {
+    if view.over.is_some() || session.is_client() {
         return;
     }
     let Some(fight) = world.fight.as_ref() else { return };
     if fight.outcome() != Outcome::Ongoing {
         view.over = world.end_fight();
         view.mode = Mode::Menu;
+        if let Some(summary) = &view.over {
+            session.broadcast(&Down::FightOver(summary.clone()));
+        }
         redraw.0 = true;
         return;
     }
-    if fight.actor().side == Side::Enemy {
-        let blocked = |cell: Cell| world.fight_blocked(cell);
-        let mut fight = fight.clone();
-        let mut events = fight.enemy_turn(&blocked);
-        events.extend(fight.end_turn());
-        world.fight = Some(fight);
-        push(&mut view, events);
+    let events = world.fight_monster_turn();
+    if !events.is_empty() {
+        session.broadcast(&Down::FightEvents(events.clone()));
+        view.queue.extend(events);
         view.until_next = EVENT_SECONDS;
         redraw.0 = true;
     }
@@ -216,13 +245,15 @@ fn input(
     mut game: ResMut<Game>,
     mut view: ResMut<FightView>,
     mut redraw: ResMut<Redraw>,
+    session: Res<Session>,
+    settings: Res<Settings>,
 ) {
     if *phase != Phase::Fighting || !view.queue.is_empty() || view.over.is_some() {
         return;
     }
     let world = &mut game.world;
-    let Some(mut fight) = world.fight.clone() else { return };
-    if fight.actor().side != Side::Party {
+    let Some(fight) = world.fight.clone() else { return };
+    if fight.actor().side != Side::Party || !my_turn(world, &session, &settings) {
         return;
     }
     let pressed = |codes: &[KeyCode]| keyboard.any_just_pressed(codes.iter().copied());
@@ -233,21 +264,20 @@ fn input(
         return;
     }
     let mode = view.mode.clone();
-    let events = match mode {
+    let intent = match mode {
         Mode::Moving => {
             let step = (
                 pressed(&[KeyCode::ArrowRight, KeyCode::KeyD]) as i32 - pressed(&[KeyCode::ArrowLeft, KeyCode::KeyA]) as i32,
                 pressed(&[KeyCode::ArrowDown, KeyCode::KeyS]) as i32 - pressed(&[KeyCode::ArrowUp, KeyCode::KeyW]) as i32,
             );
             view.cursor = ((view.cursor.0 + step.0).clamp(0, MAP_W as i32 - 1), (view.cursor.1 + step.1).clamp(0, MAP_H as i32 - 1));
-            let goal = clicked.or(confirm.then_some(view.cursor));
-            let Some(goal) = goal else { return };
+            let Some(goal) = clicked.or(confirm.then_some(view.cursor)) else { return };
             let blocked = |cell: Cell| world.fight_blocked(cell);
-            let events = fight.move_to(goal, &blocked);
-            if events.is_empty() {
+            // A cell that cannot be reached is not asked for: the mode stays, to pick again.
+            if !fight.reach(&blocked).iter().any(|p| p.last() == Some(&goal)) {
                 return;
             }
-            events
+            FightIntent::Move(goal)
         }
         Mode::Aiming(aim) => {
             let Some(strike) = strike_of(world, &fight, &aim) else { return };
@@ -260,32 +290,18 @@ fn input(
             let by_click = clicked.and_then(|cell| options.iter().copied().find(|i| fight.combatants[*i].at() == cell));
             let Some(target) = by_click.or(confirm.then(|| options[view.target])) else { return };
             match aim {
-                Aim::Weapon(weapon) => fight.attack(target, weapon),
-                Aim::Spell { index, slot } => {
-                    let events = fight.cast(&strike, target);
-                    // The slot is spent only when the spell was actually cast.
-                    if !events.is_empty()
-                        && let Some(hero) = hero_index(&fight.actor().id).and_then(|i| world.party.get_mut(i))
-                    {
-                        hero.spend_slot(slot);
-                    }
-                    let _ = index;
-                    events
-                }
+                Aim::Weapon(weapon) => FightIntent::Attack { target, weapon },
+                Aim::Spell { index, slot } => FightIntent::Cast { spell: index, slot, target },
             }
         }
         _ => return,
     };
-    world.fight = Some(fight);
-    push(&mut view, events);
-    view.mode = Mode::Menu;
-    view.until_next = 0.0;
-    redraw.0 = true;
+    act(intent, world, &mut view, &session, &mut redraw);
 }
 
 /// Highlights on the map: where the hero can walk, the cell or target chosen, whose turn it
 /// is, and a bar of hit points over everyone.
-fn markers(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<FightView>, old: Query<Entity, With<Marker>>) {
+fn markers(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<FightView>, session: Res<Session>, settings: Res<Settings>, old: Query<Entity, With<Marker>>) {
     for entity in &old {
         commands.entity(entity).despawn();
     }
@@ -295,10 +311,11 @@ fn markers(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res
     let mut square = |cell: Cell, tint: Color, size: f32, z: f32| {
         commands.spawn((Marker, Sprite { color: tint, custom_size: Some(Vec2::splat(size)), ..default() }, Transform::from_translation(centre(cell).extend(z))));
     };
-    let my_turn = fight.actor().side == Side::Party && view.queue.is_empty() && view.over.is_none();
-    if my_turn {
+    let heros_turn = fight.actor().side == Side::Party && view.queue.is_empty() && view.over.is_none();
+    if heros_turn {
         square(fight.actor().at(), Color::srgba(1.0, 0.9, 0.4, 0.35), tile, 0.5);
     }
+    let my_turn = heros_turn && my_turn(&game.world, &session, &settings);
     match &view.mode {
         Mode::Moving if my_turn => {
             let blocked = |cell: Cell| game.world.fight_blocked(cell);
@@ -343,14 +360,15 @@ struct Shown {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<FightView>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, mut shown: Local<Option<Shown>>, old: Query<Entity, With<FightSheet>>) {
+#[allow(clippy::too_many_arguments)]
+fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<FightView>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, session: Res<Session>, settings: Res<Settings>, mut shown: Local<Option<Shown>>, old: Query<Entity, With<FightSheet>>) {
     let fighting = *phase == Phase::Fighting;
     let fight = game.world.fight.as_ref();
     let wanted = fighting.then(|| Shown {
         lines: view.lines.clone(),
         mode: view.mode.clone(),
         actor: fight.map(|f| f.actor().id.clone()).unwrap_or_default(),
-        can_act: fight.is_some_and(|f| f.actor().side == Side::Party) && view.queue.is_empty() && view.over.is_none(),
+        can_act: fight.is_some_and(|f| f.actor().side == Side::Party) && view.queue.is_empty() && view.over.is_none() && my_turn(&game.world, &session, &settings),
         action_left: fight.is_some_and(|f| f.actor().action_left),
         movement_left: fight.map_or(0, |f| f.actor().movement_left),
         over: view.over.clone(),
@@ -394,8 +412,13 @@ fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<F
                 } else {
                     sheet.spawn((Text::default(), T::DefeatAsk, fonts.body(), ink));
                     sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                        button(line, &art, &fonts, T::MasterDecides, true, FightAction::MasterDecides);
-                        button(line, &art, &fonts, T::LoadGame, true, Nav::Go(Screen::Load));
+                        // What becomes of a beaten party is the host's call.
+                        if session.is_client() {
+                            button(line, &art, &fonts, T::Onward, true, FightAction::Onward);
+                        } else {
+                            button(line, &art, &fonts, T::MasterDecides, true, FightAction::MasterDecides);
+                            button(line, &art, &fonts, T::LoadGame, true, Nav::Go(Screen::Load));
+                        }
                     });
                 }
                 return;
@@ -464,6 +487,7 @@ fn on_activate(
     settings: Res<Settings>,
     master: Res<Master>,
     lang: Res<Lang>,
+    session: Res<Session>,
 ) {
     let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
     let world = &mut game.world;
@@ -486,8 +510,8 @@ fn on_activate(
         }
         _ => {}
     }
-    let Some(mut fight) = world.fight.clone() else { return };
-    let events = match action {
+    let Some(fight) = world.fight.as_ref() else { return };
+    let intent = match action {
         FightAction::Move => {
             view.cursor = fight.actor().at();
             view.mode = Mode::Moving;
@@ -511,17 +535,13 @@ fn on_activate(
             view.mode = Mode::Menu;
             return;
         }
-        FightAction::Dodge => fight.dodge(),
-        FightAction::Dash => fight.dash(),
-        FightAction::Disengage => fight.disengage(),
-        FightAction::EndTurn => fight.end_turn(),
+        FightAction::Dodge => FightIntent::Dodge,
+        FightAction::Dash => FightIntent::Dash,
+        FightAction::Disengage => FightIntent::Disengage,
+        FightAction::EndTurn => FightIntent::EndTurn,
         FightAction::Onward | FightAction::MasterDecides => return,
     };
-    world.fight = Some(fight);
-    push(&mut view, events);
-    view.until_next = 0.0;
-    view.mode = Mode::Menu;
-    redraw.0 = true;
+    act(intent, world, &mut view, &session, &mut redraw);
 }
 
 /// A fight that starts gets a clean view.

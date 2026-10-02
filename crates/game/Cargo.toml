@@ -9,6 +9,7 @@ bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "pn
 llm = { path = "../llm" }
 world = { path = "../world" }
 rules = { path = "../rules" }
+net = { path = "../net" }
 serde.workspace = true
 serde_json.workspace = true
 

@@ -1,4 +1,5 @@
 mod art;
+mod coop;
 mod fight;
 mod gm;
 mod hero;
@@ -48,6 +49,7 @@ fn main() -> AppExit {
         settings::SettingsPlugin,
         newgame::NewGamePlugin,
         saves::SavesPlugin,
+        coop::CoopPlugin,
         play::PlayPlugin,
         hero::HeroPlugin,
         fight::FightPlugin,

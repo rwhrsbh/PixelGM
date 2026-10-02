@@ -27,6 +27,8 @@ pub struct Settings {
     /// part is written up as a chapter. Far below any model's window on purpose: every
     /// request carries it, and the smallest fallback model must fit it too.
     pub memory_budget: usize,
+    /// The name this player goes by at a shared table; the account name when empty.
+    pub player_name: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -39,7 +41,7 @@ pub enum Initiative {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000 }
+        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new() }
     }
 }
 
@@ -220,7 +222,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000 };
+        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into() };
         store.save_settings(&settings).unwrap();
         assert_eq!(store.load_settings(), settings);
     }

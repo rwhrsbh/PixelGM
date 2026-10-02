@@ -8,7 +8,8 @@
 //! - `--screen <main|keys|settings>` opens a screen, `--size <W>x<H>` sets the window size,
 //!   `--lang <ru|en>` the language, `--keys-file <file>` adds the keys listed in a file,
 //!   `--hidden true` keeps the window off the desktop, `--fake-gm true` lets a rule-based
-//!   stand-in answer for the game master.
+//!   stand-in answer for the game master, `--host <port>` hosts a game from the start,
+//!   `--join <address>` joins one, `--name <player>` sets the player's name.
 
 use crate::gm::{Gm, KeyBook};
 use crate::i18n::Lang;
@@ -49,6 +50,12 @@ pub struct Args {
     pub hidden: bool,
     /// Let a rule-based stand-in answer for the game master: no network, no quota.
     pub fake_gm: bool,
+    /// Host a game on this port from the start.
+    pub host: Option<u16>,
+    /// Join the game at this address from the start.
+    pub join: Option<String>,
+    /// The player's name at a shared table.
+    pub name: Option<String>,
     pub script: Vec<Step>,
 }
 
@@ -144,6 +151,7 @@ impl Args {
                         "settings" => Some(Screen::Settings),
                         "newgame" => Some(Screen::NewGame),
                         "load" => Some(Screen::Load),
+                        "lobby" => Some(Screen::Lobby),
                         _ => None,
                     }
                 }
@@ -158,6 +166,9 @@ impl Args {
                 "--keys-file" => out.keys_file = Some(value),
                 "--hidden" => out.hidden = value == "true",
                 "--fake-gm" => out.fake_gm = value == "true",
+                "--host" => out.host = value.parse().ok(),
+                "--join" => out.join = Some(value),
+                "--name" => out.name = Some(value),
                 _ => {}
             }
         }
@@ -165,7 +176,20 @@ impl Args {
     }
 }
 
-fn apply_start(args: Res<StartArgs>, mut next: ResMut<NextState<Screen>>, mut settings: ResMut<Settings>, gm: Res<Gm>, mut book: ResMut<KeyBook>) {
+fn apply_start(args: Res<StartArgs>, mut next: ResMut<NextState<Screen>>, mut settings: ResMut<Settings>, gm: Res<Gm>, mut book: ResMut<KeyBook>, mut session: ResMut<crate::coop::Session>) {
+    if let Some(name) = &args.0.name {
+        settings.player_name = name.clone();
+    }
+    let started = match (&args.0.host, &args.0.join) {
+        (Some(port), _) => Some(crate::coop::host(*port)),
+        (None, Some(address)) => Some(crate::coop::join(address, &crate::coop::player_name(&settings))),
+        _ => None,
+    };
+    match started {
+        Some(Ok(joined)) => *session = joined,
+        Some(Err(e)) => error!("could not start the session asked for: {e}"),
+        None => {}
+    }
     if let Some(screen) = args.0.screen {
         next.set(screen);
     }

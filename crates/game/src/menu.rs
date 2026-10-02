@@ -21,6 +21,8 @@ pub enum Screen {
     Load,
     /// Making a character for a world that has none.
     Hero,
+    /// Hosting a game for others, or joining one.
+    Lobby,
     Play,
 }
 
@@ -34,8 +36,6 @@ pub enum Nav {
     /// Load the newest save.
     Continue,
     Quit,
-    /// Leads to a part of the game that is not built yet; the button is shown disabled.
-    Nothing,
 }
 
 /// Set by a screen that opens another one and wants to be returned to: the key screen opened
@@ -141,7 +141,7 @@ fn spawn_main(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, store: R
                 (T::NewGame, Nav::Go(Screen::NewGame), true),
                 (T::Continue, Nav::Continue, has_saves),
                 (T::LoadGame, Nav::Go(Screen::Load), has_saves),
-                (T::Multiplayer, Nav::Nothing, false),
+                (T::Multiplayer, Nav::Go(Screen::Lobby), true),
                 (T::Keys, Nav::Go(Screen::Keys), true),
                 (T::Settings, Nav::Go(Screen::Settings), true),
                 (T::Quit, Nav::Quit, true),
@@ -161,7 +161,7 @@ fn on_activate(used: On<Activate>, buttons: Query<&Nav>, mut return_to: ResMut<R
             exit.write(AppExit::Success);
         }
         // Loading the newest save is the save module's business.
-        Nav::Continue | Nav::Nothing => {}
+        Nav::Continue => {}
     }
 }
 
@@ -175,7 +175,7 @@ fn escape_goes_back(
     mut next: ResMut<NextState<Screen>>,
 ) {
     let back = keys.just_pressed(KeyCode::Escape) || gamepads.iter().any(|pad| pad.just_pressed(GamepadButton::East));
-    if back && matches!(screen.get(), Screen::Keys | Screen::Settings | Screen::NewGame | Screen::Load) {
+    if back && matches!(screen.get(), Screen::Keys | Screen::Settings | Screen::NewGame | Screen::Load | Screen::Lobby) {
         next.set(return_to.0.take().unwrap_or(Screen::Main));
     }
 }
