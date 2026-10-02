@@ -4,7 +4,7 @@
 use crate::art::{Art, CANDLE_SIZE};
 use crate::i18n::T;
 use crate::theme::*;
-use crate::widgets::{PixelButton, button, panel_backing, panel_node};
+use crate::widgets::{Activate, button, panel_backing, panel_node};
 use bevy::prelude::*;
 
 #[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -121,17 +121,14 @@ fn spawn_main(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
                 (T::Settings, Nav::Go(Screen::Settings)),
                 (T::Quit, Nav::Quit),
             ] {
-                sheet.spawn(button(&art, &fonts, label, !matches!(nav, Nav::Nothing), nav));
+                button(sheet, &art, &fonts, label, !matches!(nav, Nav::Nothing), nav);
             }
         });
     });
 }
 
-fn on_click(click: On<Pointer<Click>>, buttons: Query<(&Nav, &PixelButton)>, mut next: ResMut<NextState<Screen>>, mut exit: MessageWriter<AppExit>) {
-    let Ok((nav, button)) = buttons.get(click.entity) else { return };
-    if !button.enabled {
-        return;
-    }
+fn on_activate(used: On<Activate>, buttons: Query<&Nav>, mut next: ResMut<NextState<Screen>>, mut exit: MessageWriter<AppExit>) {
+    let Ok(nav) = buttons.get(used.entity) else { return };
     match nav {
         Nav::Go(screen) => next.set(*screen),
         Nav::Quit => {
@@ -141,9 +138,11 @@ fn on_click(click: On<Pointer<Click>>, buttons: Query<(&Nav, &PixelButton)>, mut
     }
 }
 
-/// Escape leaves a sub-screen the same way its Back button does.
-fn escape_goes_back(keys: Res<ButtonInput<KeyCode>>, screen: Res<State<Screen>>, mut next: ResMut<NextState<Screen>>) {
-    if keys.just_pressed(KeyCode::Escape) && *screen.get() != Screen::Main {
+/// Escape, or the right-hand button of a gamepad, leaves a sub-screen the same way its Back
+/// button does.
+fn escape_goes_back(keys: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, screen: Res<State<Screen>>, mut next: ResMut<NextState<Screen>>) {
+    let back = keys.just_pressed(KeyCode::Escape) || gamepads.iter().any(|pad| pad.just_pressed(GamepadButton::East));
+    if back && *screen.get() != Screen::Main {
         next.set(Screen::Main);
     }
 }
@@ -156,6 +155,6 @@ impl Plugin for MenuPlugin {
             .add_systems(Startup, spawn_backdrop)
             .add_systems(OnEnter(Screen::Main), spawn_main)
             .add_systems(Update, (flicker, breathe, escape_goes_back))
-            .add_observer(on_click);
+            .add_observer(on_activate);
     }
 }

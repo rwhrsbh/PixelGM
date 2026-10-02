@@ -2,11 +2,12 @@
 //! health. Network calls run on their own threads and report back through a queue, so a slow
 //! answer never freezes the picture.
 
-use crate::store::Store;
+use crate::i18n::Lang;
+use crate::store::{Settings, Store};
 use bevy::prelude::*;
-use llm::{Dispatcher, KeyHealth, KeyId, SavedState, UreqTransport};
+use llm::{Dispatcher, GenError, GenRequest, KeyHealth, KeyId, SavedState, UreqTransport};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Health {
@@ -38,9 +39,46 @@ pub fn masked(secret: &str) -> String {
     format!("{}…{}", chars[..4].iter().collect::<String>(), chars[chars.len() - 4..].iter().collect::<String>())
 }
 
+#[derive(Clone, PartialEq, Debug)]
+pub enum TestFailure {
+    NoKeys,
+    Exhausted { retry_at: u64 },
+    Network,
+    Blocked(String),
+    Rejected(String),
+}
+
+/// One real request through the rotation, started from the key screen, so the player can see
+/// that the game master answers with the current keys and settings before starting a game.
+#[derive(Resource, Clone, PartialEq, Debug, Default)]
+pub enum GmTest {
+    #[default]
+    Idle,
+    Running,
+    Answered {
+        model: String,
+        seconds: f32,
+        text: String,
+    },
+    Failed(TestFailure),
+}
+
+impl From<GenError> for TestFailure {
+    fn from(error: GenError) -> Self {
+        match error {
+            GenError::NoKeys => TestFailure::NoKeys,
+            GenError::Exhausted { retry_at } => TestFailure::Exhausted { retry_at },
+            GenError::Network(_) => TestFailure::Network,
+            GenError::Blocked(reason) => TestFailure::Blocked(reason),
+            GenError::BadRequest(reason) => TestFailure::Rejected(reason),
+        }
+    }
+}
+
 enum Report {
     Probed(KeyId, KeyHealth),
     ChainRefreshed,
+    Tested(GmTest),
 }
 
 #[derive(Resource, Clone)]
@@ -84,6 +122,32 @@ impl Gm {
     pub fn remove_key(&self, book: &mut KeyBook, id: KeyId) {
         self.dispatcher.remove_key(id);
         book.entries.retain(|e| e.id != id);
+    }
+
+    /// Sends one greeting request with the player's thinking level and fallback tier. A test
+    /// already running is left to finish: each one costs a turn of quota.
+    pub fn test(&self, test: &mut GmTest, settings: &Settings) {
+        if *test == GmTest::Running {
+            return;
+        }
+        *test = GmTest::Running;
+        let language = match settings.lang {
+            Lang::Ru => "Russian",
+            Lang::En => "English",
+        };
+        let mut request = GenRequest::prompt(format!("Greet the players who have just sat down at your table. One short sentence, in {language}."));
+        request.system = Some("You are the game master of a tabletop role-playing game.".into());
+        request.thinking = settings.thinking;
+        let lowest = settings.lowest_tier;
+        let gm = self.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let outcome = match gm.dispatcher.generate(&request, lowest) {
+                Ok((reply, model)) => GmTest::Answered { model: model.id, seconds: started.elapsed().as_secs_f32(), text: reply.text.trim().to_string() },
+                Err(error) => GmTest::Failed(error.into()),
+            };
+            gm.reports.lock().unwrap().push(Report::Tested(outcome));
+        });
     }
 
     /// Checks again a key that could not be reached, for example after the network came back.
@@ -146,7 +210,7 @@ fn relist_models(gm: Res<Gm>, time: Res<Time>, mut since: Local<f32>) {
     });
 }
 
-fn collect_reports(gm: Res<Gm>, mut book: ResMut<KeyBook>) {
+fn collect_reports(gm: Res<Gm>, mut book: ResMut<KeyBook>, mut test: ResMut<GmTest>) {
     let reports: Vec<Report> = std::mem::take(&mut *gm.reports.lock().unwrap());
     for report in reports {
         match report {
@@ -162,6 +226,11 @@ fn collect_reports(gm: Res<Gm>, mut book: ResMut<KeyBook>) {
             // Nothing to copy: the chain lives in the dispatcher. Touching the book makes the
             // screens that show it redraw.
             Report::ChainRefreshed => book.set_changed(),
+            Report::Tested(outcome) => {
+                *test = outcome;
+                // A request may have put models to rest; the meter should show it at once.
+                book.set_changed();
+            }
         }
     }
 }
@@ -185,7 +254,7 @@ pub struct GmPlugin;
 
 impl Plugin for GmPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Gm>().init_resource::<KeyBook>().init_resource::<KeysOnDisk>().add_systems(Startup, load_keys).add_systems(Update, ((collect_reports, save_keys).chain(), save_quota, relist_models));
+        app.init_resource::<Gm>().init_resource::<KeyBook>().init_resource::<GmTest>().init_resource::<KeysOnDisk>().add_systems(Startup, load_keys).add_systems(Update, ((collect_reports, save_keys).chain(), save_quota, relist_models));
     }
 }
 

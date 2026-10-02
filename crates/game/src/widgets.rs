@@ -2,12 +2,25 @@
 
 use crate::art::{Art, BUTTON_BORDER, ButtonLook, PANEL_BORDER, sliced};
 use crate::i18n::T;
+use crate::nav::NavMode;
 use crate::theme::*;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
+use bevy::ui::{RelativeCursorPosition, UiGlobalTransform};
+use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 
 #[derive(Component)]
 pub struct PixelButton {
     pub enabled: bool,
+    look: ButtonLook,
+}
+
+/// A button was used: clicked with the mouse, or chosen with the keyboard or a gamepad.
+/// Screens listen for this instead of raw clicks, so every way of pressing behaves the same.
+#[derive(EntityEvent)]
+pub struct Activate {
+    pub entity: Entity,
 }
 
 #[derive(Component)]
@@ -33,29 +46,78 @@ pub fn backing(image: Handle<Image>, border: f32) -> impl Bundle {
     (Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), ..default() }, sliced(image, border))
 }
 
-fn button_node(width: Val) -> Node {
-    Node { width, height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(8), px(0)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }
-}
-
-fn button_parts(enabled: bool, width: Val, extra: impl Bundle) -> (impl Bundle, ButtonLook) {
+/// Spawns a button with a translated label. `extra` carries whatever says what the button
+/// does. Disabled buttons are left out of keyboard and gamepad navigation.
+pub fn button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: T, enabled: bool, extra: impl Bundle) {
     let look = if enabled { ButtonLook::Idle } else { ButtonLook::Disabled };
-    ((Button, PixelButton { enabled }, extra, button_node(width)), look)
-}
-
-/// A button with a translated label. `extra` carries whatever says what the button does.
-pub fn button(art: &Art, fonts: &Fonts, label: T, enabled: bool, extra: impl Bundle) -> impl Bundle {
-    let (base, look) = button_parts(enabled, auto(), extra);
-    (
-        base,
+    let mut entity = parent.spawn((
+        Button,
+        PixelButton { enabled, look },
+        extra,
+        Node { height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(8), px(0)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() },
         children![
             (backing(art.button(look), BUTTON_BORDER), ButtonFace),
             (Text::default(), label, fonts.body(), TextColor(label_color(look)), ButtonLabel),
         ],
-    )
+    ));
+    if enabled {
+        entity.insert(AutoDirectionalNavigation::default());
+    }
 }
 
-/// A sheet of parchment. Children go after the returned bundle's own background child, so
-/// spawn content with `with_children` or `add_children`.
+/// A list that scrolls when it holds more than fits in `height`.
+#[derive(Component)]
+pub struct Scrolls;
+
+pub fn scroll_list(node: Node, height: f32) -> impl Bundle {
+    (Node { max_height: px(height), overflow: Overflow::scroll_y(), ..node }, Scrolls, RelativeCursorPosition::default())
+}
+
+/// Canvas pixels moved by one notch of the wheel: one button row.
+const WHEEL_STEP: f32 = BUTTON_HEIGHT + 2.0;
+
+fn furthest_scroll(node: &ComputedNode) -> f32 {
+    ((node.content_size().y - node.size().y) * node.inverse_scale_factor()).max(0.0)
+}
+
+fn wheel_scrolls(mut wheel: MessageReader<MouseWheel>, mut lists: Query<(&mut ScrollPosition, &ComputedNode, &RelativeCursorPosition), With<Scrolls>>) {
+    let moved: f32 = wheel.read().map(|w| if w.unit == MouseScrollUnit::Line { w.y * WHEEL_STEP } else { w.y }).sum();
+    if moved == 0.0 {
+        return;
+    }
+    for (mut position, node, cursor) in &mut lists {
+        if cursor.cursor_over() {
+            position.y = (position.y - moved).clamp(0.0, furthest_scroll(node));
+        }
+    }
+}
+
+/// Keeps the focused control in view when the keyboard or a gamepad moves into a part of a
+/// list that is scrolled away.
+fn focus_scrolls_into_view(
+    focus: Res<InputFocus>,
+    nav: Res<NavMode>,
+    parents: Query<&ChildOf>,
+    nodes: Query<(&ComputedNode, &UiGlobalTransform)>,
+    mut lists: Query<&mut ScrollPosition, With<Scrolls>>,
+) {
+    if !nav.active || !focus.is_changed() {
+        return;
+    }
+    let Some(focused) = focus.get() else { return };
+    let Some(list) = parents.iter_ancestors(focused).find(|e| lists.contains(*e)) else { return };
+    let (Ok((item, item_at)), Ok((frame, frame_at))) = (nodes.get(focused), nodes.get(list)) else { return };
+    let above = (frame_at.translation.y - frame.size().y / 2.0) - (item_at.translation.y - item.size().y / 2.0);
+    let below = (item_at.translation.y + item.size().y / 2.0) - (frame_at.translation.y + frame.size().y / 2.0);
+    let shift = if above > 0.0 { -above } else { below.max(0.0) } * frame.inverse_scale_factor();
+    if shift != 0.0
+        && let Ok(mut position) = lists.get_mut(list)
+    {
+        position.y = (position.y + shift).clamp(0.0, furthest_scroll(frame));
+    }
+}
+
+/// A sheet of parchment: the node, to which `panel_backing` is added as the first child.
 pub fn panel_node(node: Node) -> Node {
     Node { padding: UiRect::all(px(PANEL_BORDER + 4.0)), ..node }
 }
@@ -64,21 +126,31 @@ pub fn panel_backing(art: &Art) -> impl Bundle {
     backing(art.panel.clone(), PANEL_BORDER)
 }
 
+/// A button looks pressed under a held mouse button, lit under the cursor, and lit when it
+/// holds the focus while the keyboard or a gamepad is steering.
 fn style_buttons(
     art: Res<Art>,
-    mut buttons: Query<(&Interaction, &PixelButton, &mut Node, &Children), Changed<Interaction>>,
+    focus: Res<InputFocus>,
+    nav: Res<NavMode>,
+    mut buttons: Query<(Entity, &Interaction, &mut PixelButton, &mut Node, &Children)>,
     mut faces: Query<&mut ImageNode, With<ButtonFace>>,
     mut labels: Query<&mut TextColor, With<ButtonLabel>>,
 ) {
-    for (interaction, button, mut node, children) in &mut buttons {
+    for (entity, interaction, mut button, mut node, children) in &mut buttons {
         if !button.enabled {
             continue;
         }
+        let focused = nav.active && focus.get() == Some(entity);
         let look = match interaction {
             Interaction::Pressed => ButtonLook::Down,
             Interaction::Hovered => ButtonLook::Hot,
+            Interaction::None if focused => ButtonLook::Hot,
             Interaction::None => ButtonLook::Idle,
         };
+        if button.look == look {
+            continue;
+        }
+        button.look = look;
         // A pressed plate sits lower, and its label goes with it.
         node.padding.top = px(if look == ButtonLook::Down { 2 } else { 0 });
         for child in children {
@@ -92,10 +164,16 @@ fn style_buttons(
     }
 }
 
+fn click_activates(click: On<Pointer<Click>>, buttons: Query<&PixelButton>, mut commands: Commands) {
+    if buttons.get(click.entity).is_ok_and(|b| b.enabled) {
+        commands.trigger(Activate { entity: click.entity });
+    }
+}
+
 pub struct WidgetsPlugin;
 
 impl Plugin for WidgetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, style_buttons);
+        app.add_systems(Update, (style_buttons, wheel_scrolls, focus_scrolls_into_view)).add_observer(click_activates);
     }
 }

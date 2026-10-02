@@ -3,6 +3,7 @@ mod gm;
 mod i18n;
 mod keys;
 mod menu;
+mod nav;
 mod screen;
 mod secret;
 mod settings;
@@ -33,6 +34,7 @@ fn main() -> AppExit {
         screen::ScreenPlugin,
         i18n::I18nPlugin,
         widgets::WidgetsPlugin,
+        nav::NavPlugin,
         gm::GmPlugin,
         menu::MenuPlugin,
         keys::KeysPlugin,

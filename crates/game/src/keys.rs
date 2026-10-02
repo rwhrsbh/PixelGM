@@ -2,15 +2,16 @@
 //! is left.
 
 use crate::art::Art;
-use crate::gm::{Gm, Health, KeyBook, masked};
+use crate::gm::{Gm, GmTest, Health, KeyBook, TestFailure, masked};
 use crate::i18n::{Lang, T};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::store::Settings;
 use crate::theme::*;
-use crate::widgets::{PixelButton, backing, button};
+use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, scroll_list};
 use bevy::input_focus::{AutoFocus, InputFocus};
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextCursorStyle};
+use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use llm::{Availability, KeyId, Tier};
 
 #[derive(Component, Clone, Copy)]
@@ -18,7 +19,11 @@ enum KeyAction {
     Add,
     Remove(KeyId),
     Recheck(KeyId),
+    TestGm,
 }
+
+#[derive(Component)]
+struct TestResult;
 
 #[derive(Component)]
 struct KeyInput;
@@ -30,6 +35,9 @@ struct KeyList;
 struct ModelList;
 
 const FIELD_BORDER: f32 = 4.0;
+const KEY_ROW_GAP: f32 = 2.0;
+/// Keys beyond this many scroll, so the sheet keeps fitting the screen.
+const VISIBLE_KEY_ROWS: f32 = 4.0;
 /// Where a player gets a key. An address, so it is the same in every language.
 const KEY_PAGE: &str = "aistudio.google.com/apikey";
 
@@ -86,6 +94,7 @@ fn spawn_keys(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
                             field.spawn((
                                 KeyInput,
                                 AutoFocus,
+                                AutoDirectionalNavigation::default(),
                                 Node { width: percent(100), ..default() },
                                 EditableText { allow_newlines: false, max_characters: Some(200), ..default() },
                                 TextLayout::no_wrap(),
@@ -94,10 +103,10 @@ fn spawn_keys(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
                                 TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
                             ));
                         });
-                        line.spawn(button(&art, &fonts, T::Add, true, KeyAction::Add));
+                        button(line, &art, &fonts, T::Add, true, KeyAction::Add);
                     });
                     left.spawn((Text::default(), T::KeysInputHint, fonts.body(), TextColor(color(PARCHMENT_DARK))));
-                    left.spawn((column(2.0), KeyList));
+                    left.spawn((scroll_list(column(KEY_ROW_GAP), VISIBLE_KEY_ROWS * (BUTTON_HEIGHT + KEY_ROW_GAP)), KeyList));
                 });
                 columns.spawn(Node { flex_grow: 1.0, ..column(3.0) }).with_children(|right| {
                     right.spawn((Text::default(), T::ModelsTitle, fonts.body(), TextColor(color(WAX_DARK))));
@@ -105,7 +114,11 @@ fn spawn_keys(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
                     right.spawn((column(1.0), ModelList));
                 });
             });
-            sheet.spawn(row(0.0)).with_child(button(&art, &fonts, T::Back, true, Nav::Go(Screen::Main)));
+            sheet.spawn(row(6.0)).with_children(|line| {
+                button(line, &art, &fonts, T::Back, true, Nav::Go(Screen::Main));
+                button(line, &art, &fonts, T::TestGm, true, KeyAction::TestGm);
+                line.spawn((Node { flex_grow: 1.0, flex_basis: px(0), ..default() }, Text::default(), TestResult, fonts.body(), ink));
+            });
         });
     });
 }
@@ -143,9 +156,9 @@ fn redraw_keys(
                 line.spawn((Node { width: px(64), flex_shrink: 0.0, ..default() }, Text::new(masked(&entry.secret)), TextLayout::no_wrap(), fonts.body(), TextColor(color(INK))));
                 line.spawn((Node { flex_grow: 1.0, ..default() }, Text::default(), status, fonts.body(), TextColor(color(status_color))));
                 if entry.health == Health::Unreachable {
-                    line.spawn(button(&art, &fonts, T::Recheck, true, KeyAction::Recheck(entry.id)));
+                    button(line, &art, &fonts, T::Recheck, true, KeyAction::Recheck(entry.id));
                 }
-                line.spawn(button(&art, &fonts, T::Remove, true, KeyAction::Remove(entry.id)));
+                button(line, &art, &fonts, T::Remove, true, KeyAction::Remove(entry.id));
             });
         }
     });
@@ -204,14 +217,46 @@ fn add_from_input(gm: &Gm, book: &mut KeyBook, input: &mut EditableText) {
     }
 }
 
-fn on_click(
-    click: On<Pointer<Click>>,
-    buttons: Query<(&KeyAction, &PixelButton)>,
+/// What the last test of the game master came to, in words and in the colour of the news.
+fn test_text(test: &GmTest, now: u64, lang: Lang) -> (String, Rgba) {
+    match test {
+        GmTest::Idle => (T::TestGmHint.text(lang).to_string(), PARCHMENT_DARK),
+        GmTest::Running => (T::TestRunning.text(lang).to_string(), PARCHMENT_DARK),
+        GmTest::Answered { model, seconds, text } => (format!("{model} {} {seconds:.1} {}: {text}", T::TestAnswered.text(lang), T::Seconds.text(lang)), MOSS),
+        GmTest::Failed(failure) => {
+            let text = match failure {
+                TestFailure::NoKeys => T::TestNoKeys.text(lang).to_string(),
+                TestFailure::Exhausted { retry_at } => format!("{} {}.", T::TestExhausted.text(lang), wait_text(retry_at.saturating_sub(now), lang)),
+                TestFailure::Network => T::TestNetwork.text(lang).to_string(),
+                TestFailure::Blocked(reason) => format!("{} {reason}", T::TestBlocked.text(lang)),
+                TestFailure::Rejected(reason) => format!("{} {reason}", T::TestRejected.text(lang)),
+            };
+            (text, WAX)
+        }
+    }
+}
+
+fn show_test(gm: Res<Gm>, test: Res<GmTest>, lang: Res<Lang>, mut line: Query<(&mut Text, &mut TextColor), With<TestResult>>, fresh: Query<(), Added<TestResult>>) {
+    if !test.is_changed() && !lang.is_changed() && fresh.is_empty() {
+        return;
+    }
+    let (text, ink) = test_text(&test, gm.dispatcher.now(), *lang);
+    for (mut line, mut line_color) in &mut line {
+        line.0 = text.clone();
+        line_color.0 = color(ink);
+    }
+}
+
+fn on_activate(
+    used: On<Activate>,
+    buttons: Query<&KeyAction>,
     gm: Res<Gm>,
+    settings: Res<Settings>,
     mut book: ResMut<KeyBook>,
+    mut test: ResMut<GmTest>,
     mut input: Query<&mut EditableText, With<KeyInput>>,
 ) {
-    let Ok((action, _)) = buttons.get(click.entity) else { return };
+    let Ok(action) = buttons.get(used.entity) else { return };
     match *action {
         KeyAction::Add => {
             if let Ok(mut input) = input.single_mut() {
@@ -220,6 +265,7 @@ fn on_click(
         }
         KeyAction::Remove(id) => gm.remove_key(&mut book, id),
         KeyAction::Recheck(id) => gm.recheck(&mut book, id),
+        KeyAction::TestGm => gm.test(&mut test, &settings),
     }
 }
 
@@ -244,8 +290,8 @@ pub struct KeysPlugin;
 impl Plugin for KeysPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Screen::Keys), spawn_keys)
-            .add_systems(Update, (submit_on_enter, redraw_keys, redraw_models).chain().run_if(in_state(Screen::Keys)))
-            .add_observer(on_click);
+            .add_systems(Update, (submit_on_enter, redraw_keys, redraw_models, show_test).chain().run_if(in_state(Screen::Keys)))
+            .add_observer(on_activate);
     }
 }
 
@@ -259,6 +305,16 @@ mod tests {
         assert_eq!(wait_text(125_000, Lang::En), "2 min");
         assert_eq!(wait_text(1, Lang::En), "1 s");
         assert_eq!(wait_text(59_001, Lang::Ru), "1 мин");
+    }
+
+    #[test]
+    fn test_result_names_the_model_or_says_what_went_wrong() {
+        let answered = GmTest::Answered { model: "gemini-9-flash".into(), seconds: 4.26, text: "Добро пожаловать.".into() };
+        assert_eq!(test_text(&answered, 0, Lang::Ru), ("gemini-9-flash ответил за 4.3 с: Добро пожаловать.".to_string(), MOSS));
+        let spent = GmTest::Failed(TestFailure::Exhausted { retry_at: 3_700_000 });
+        assert_eq!(test_text(&spent, 100_000, Lang::En).0, "Every allowed model is resting. The first returns in 1 h 0 min.");
+        assert_eq!(test_text(&GmTest::Failed(TestFailure::NoKeys), 0, Lang::En), ("No working keys.".to_string(), WAX));
+        assert_eq!(test_text(&GmTest::Idle, 0, Lang::En).0, "One real request with the current settings. Spends one turn.");
     }
 
     #[test]

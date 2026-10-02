@@ -3,3 +3,4 @@ keys.txt
 .env
 *.log
 tools/srd-translate/status.json
+/build

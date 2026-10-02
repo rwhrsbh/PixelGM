@@ -54,6 +54,15 @@ texts! {
     ModelsTitle: "Модели по порядку", "Models, in order";
     ModelsUnknown: "Список моделей появится, когда заработает хотя бы один ключ.", "The model list appears once at least one key works.";
     ModelsLegend: "Справа — сколько ключей свободно, или через сколько вернётся квота.", "On the right: how many keys are free, or how soon the quota returns.";
+    TestGm: "Проверить мастера", "Test the game master";
+    TestGmHint: "Один настоящий запрос с текущими настройками. Тратит один ход.", "One real request with the current settings. Spends one turn.";
+    TestRunning: "Мастер думает…", "The game master is thinking…";
+    TestAnswered: "ответил за", "answered in";
+    TestNoKeys: "Нет рабочих ключей.", "No working keys.";
+    TestExhausted: "Все разрешённые модели отдыхают. Первая вернётся через", "Every allowed model is resting. The first returns in";
+    TestNetwork: "Нет связи с Gemini.", "Gemini cannot be reached.";
+    TestBlocked: "Модель отказалась отвечать:", "The model refused to answer:";
+    TestRejected: "Запрос отклонён:", "The request was rejected:";
     Hours: "ч", "h";
     Minutes: "мин", "min";
     Seconds: "с", "s";

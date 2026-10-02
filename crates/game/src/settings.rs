@@ -5,7 +5,7 @@ use crate::i18n::{Lang, T};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::store::{Settings, Store};
 use crate::theme::*;
-use crate::widgets::{PixelButton, button};
+use crate::widgets::{Activate, button};
 use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use llm::{ThinkingSetting, Tier};
@@ -100,21 +100,21 @@ fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, sett
                 sheet.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|block| {
                     block.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|line| {
                         line.spawn((Text::default(), choice.label(), fonts.body(), TextColor(color(INK))));
-                        line.spawn((Node { width: px(110), flex_direction: FlexDirection::Column, ..default() },))
-                            .with_child(button(&art, &fonts, choice.value(&settings), true, choice));
+                        line.spawn(Node { width: px(110), flex_direction: FlexDirection::Column, ..default() })
+                            .with_children(|slot| button(slot, &art, &fonts, choice.value(&settings), true, choice));
                     });
                     if let Some(hint) = choice.hint() {
                         block.spawn((Text::default(), hint, fonts.body(), TextColor(color(PARCHMENT_DARK))));
                     }
                 });
             }
-            sheet.spawn(Node { margin: UiRect::top(px(4)), ..default() }).with_child(button(&art, &fonts, T::Back, true, Nav::Go(Screen::Main)));
+            sheet.spawn(Node { margin: UiRect::top(px(4)), ..default() }).with_children(|slot| button(slot, &art, &fonts, T::Back, true, Nav::Go(Screen::Main)));
         });
     });
 }
 
-fn on_click(click: On<Pointer<Click>>, buttons: Query<(&Choice, &PixelButton)>, mut settings: ResMut<Settings>, store: Res<Store>) {
-    let Ok((choice, _)) = buttons.get(click.entity) else { return };
+fn on_activate(used: On<Activate>, buttons: Query<&Choice>, mut settings: ResMut<Settings>, store: Res<Store>) {
+    let Ok(choice) = buttons.get(used.entity) else { return };
     choice.advance(&mut settings);
     if let Err(e) = store.save_settings(&settings) {
         error!("could not save settings: {e}");
@@ -168,7 +168,7 @@ impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Screen::Settings), spawn_settings)
             .add_systems(Update, (fullscreen_shortcut, apply_language, apply_window_mode, show_values).chain())
-            .add_observer(on_click);
+            .add_observer(on_activate);
     }
 }
 
