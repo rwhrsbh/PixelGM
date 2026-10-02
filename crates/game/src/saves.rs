@@ -33,7 +33,7 @@ fn spawn_list(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, store: R
         spawn_panel(root, &art, sheet, |sheet| {
             sheet.spawn((Text::default(), T::LoadGame, fonts.title(1), TextColor(color(INK))));
             if saves.is_empty() {
-                sheet.spawn((Text::default(), T::NoSaves, fonts.body(), TextColor(color(PARCHMENT_DARK))));
+                sheet.spawn((Text::default(), T::NoSaves, fonts.body(), TextColor(color(FADED))));
             }
             let list = Node { flex_direction: FlexDirection::Column, row_gap: px(ROW_GAP), ..default() };
             sheet.spawn(scroll_list(list, VISIBLE_SAVES * (BUTTON_HEIGHT + ROW_GAP))).with_children(|rows| {

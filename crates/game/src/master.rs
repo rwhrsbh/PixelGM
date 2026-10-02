@@ -4,7 +4,7 @@
 
 use crate::gm::{Gm, Trouble};
 use crate::i18n::Lang;
-use crate::store::Settings;
+use crate::store::{Settings, Store};
 use bevy::prelude::*;
 use llm::{GenRequest, ThinkingSetting, Tier};
 use std::sync::{Arc, Mutex};
@@ -42,6 +42,7 @@ pub fn language_name(lang: Lang) -> &'static str {
 
 struct Call {
     gm: Gm,
+    store: Store,
     language: &'static str,
     thinking: ThinkingSetting,
     lowest: Tier,
@@ -57,6 +58,7 @@ impl Call {
         let mut last = String::new();
         for _ in 0..READ_ATTEMPTS {
             let (reply, model) = self.gm.dispatcher.generate(&request, self.lowest)?;
+            self.store.log_answer(&model.id, &reply.text);
             match extract_json(&reply.text).map(serde_json::from_str::<T>) {
                 Some(Ok(value)) => return Ok(value),
                 Some(Err(e)) => last = format!("{}: {e}", model.id),
@@ -73,8 +75,8 @@ impl Master {
         Self { fake, answers: Arc::default() }
     }
 
-    pub fn ask(&self, gm: &Gm, settings: &Settings, ask: Ask) {
-        let call = Call { gm: gm.clone(), language: language_name(settings.lang), thinking: settings.thinking, lowest: settings.lowest_tier };
+    pub fn ask(&self, gm: &Gm, store: &Store, settings: &Settings, ask: Ask) {
+        let call = Call { gm: gm.clone(), store: store.clone(), language: language_name(settings.lang), thinking: settings.thinking, lowest: settings.lowest_tier };
         let (fake, answers) = (self.fake, self.answers.clone());
         std::thread::spawn(move || {
             let answer = match ask {

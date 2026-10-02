@@ -104,7 +104,7 @@ fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, sett
                             .with_children(|slot| button(slot, &art, &fonts, choice.value(&settings), true, choice));
                     });
                     if let Some(hint) = choice.hint() {
-                        block.spawn((Text::default(), hint, fonts.body(), TextColor(color(PARCHMENT_DARK))));
+                        block.spawn((Text::default(), hint, fonts.body(), TextColor(color(FADED))));
                     }
                 });
             }

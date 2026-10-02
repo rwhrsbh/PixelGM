@@ -1,7 +1,7 @@
 //! Colours and type of the shell: a game master's table lit by candles.
 
 use bevy::prelude::*;
-use bevy::text::FontSmoothing;
+use bevy::text::{FontSmoothing, LineHeight};
 
 pub type Rgba = [u8; 4];
 
@@ -15,6 +15,9 @@ pub const BRASS_DARK: Rgba = [0x8a, 0x5a, 0x1e, 0xff];
 pub const BRASS: Rgba = [0xc8, 0x96, 0x3c, 0xff];
 pub const BRASS_LIGHT: Rgba = [0xf2, 0xcf, 0x6b, 0xff];
 pub const PARCHMENT_DARK: Rgba = [0xa3, 0x82, 0x4e, 0xff];
+/// Ink that has faded: for hints and anything secondary written on parchment. Dark enough
+/// to read in one-pixel strokes.
+pub const FADED: Rgba = [0x7c, 0x5e, 0x36, 0xff];
 pub const PARCHMENT_SHADE: Rgba = [0xcc, 0xb1, 0x7a, 0xff];
 pub const PARCHMENT: Rgba = [0xe6, 0xd3, 0xa3, 0xff];
 pub const PARCHMENT_LIGHT: Rgba = [0xf4, 0xe8, 0xc4, 0xff];
@@ -31,13 +34,18 @@ pub fn color(c: Rgba) -> Color {
     Color::srgba_u8(c[0], c[1], c[2], c[3])
 }
 
-/// Both fonts are drawn on an 8-unit grid: at size 8 one font pixel is one canvas pixel.
-/// Sizes must stay multiples of 8.
-pub const TEXT_PX: f32 = 8.0;
+/// Size at which one pixel of the title font is one canvas pixel. Sizes are multiples of it.
+const TITLE_PX: f32 = 8.0;
+/// Size at which one pixel of the body font is one canvas pixel.
+const BODY_PX: f32 = 9.0;
+/// Canvas pixels from one line of body text to the next: room for the tallest letter and the
+/// deepest tail, and one pixel of air.
+const BODY_LINE_PX: f32 = 10.0;
 
 #[derive(Resource)]
 pub struct Fonts {
-    /// Tiny5: proportional, 5 pixels tall. Everything that has to be read.
+    /// Monocraft: capitals seven pixels tall, every letter six wide. Everything that has to
+    /// be read.
     pub body: Handle<Font>,
     /// Press Start 2P: 8×8 cells. Titles only.
     pub title: Handle<Font>,
@@ -48,7 +56,7 @@ pub struct Fonts {
 impl FromWorld for Fonts {
     fn from_world(world: &mut World) -> Self {
         let mut fonts = world.resource_mut::<Assets<Font>>();
-        let body = fonts.add(Font::from_bytes(include_bytes!("../assets/fonts/Tiny5-Regular.ttf").to_vec()));
+        let body = fonts.add(Font::from_bytes(include_bytes!("../assets/fonts/Monocraft.ttf").to_vec()));
         let title = fonts.add(Font::from_bytes(include_bytes!("../assets/fonts/PressStart2P-Regular.ttf").to_vec()));
         Fonts { body, title }
     }
@@ -59,11 +67,11 @@ fn pixel_font(font: &Handle<Font>, size: f32) -> TextFont {
 }
 
 impl Fonts {
-    pub fn body(&self) -> TextFont {
-        pixel_font(&self.body, TEXT_PX)
+    pub fn body(&self) -> impl Bundle {
+        (pixel_font(&self.body, BODY_PX), LineHeight::RelativeToFont(BODY_LINE_PX / BODY_PX))
     }
 
     pub fn title(&self, scale: u8) -> TextFont {
-        pixel_font(&self.title, TEXT_PX * scale as f32)
+        pixel_font(&self.title, TITLE_PX * scale as f32)
     }
 }

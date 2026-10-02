@@ -162,7 +162,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
     commands.spawn((DespawnOnExit(Screen::Play), Veil, full.clone(), BackgroundColor(Color::BLACK), GlobalZIndex(5)));
     commands.spawn((DespawnOnExit(Screen::Play), Node { flex_direction: FlexDirection::Column, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..full })).with_children(|root| {
         root.spawn((ArrivalSheet, Node { margin: UiRect::top(px(8)), ..default() })).with_children(|slot| {
-            spawn_panel(slot, &art, Node { max_width: px(360), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }, |sheet| {
+            spawn_panel(slot, &art, Node { width: px(380), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }, |sheet| {
                 sheet.spawn((Text::default(), PlaceName, fonts.title(1), TextColor(color(INK))));
                 sheet.spawn((Text::default(), ArrivalText, fonts.body(), TextColor(color(INK))));
             });
@@ -318,7 +318,7 @@ fn advance(
                 arrive(&mut game, to, &store, &mut redraw, &mut arrival);
                 Phase::Arriving { t: 0.0 }
             } else {
-                master.ask(&gm, &settings, Ask::Location { world: Box::new(game.world.clone()), id: to.clone(), from: game.world.current.clone() });
+                master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id: to.clone(), from: game.world.current.clone() });
                 Phase::Drawing { to: to.clone() }
             }
         }
@@ -480,7 +480,7 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
             Sheet::Drawing(place) => {
                 sheet.spawn((Text::default(), T::Drawing, fonts.body(), ink));
                 sheet.spawn((Text::new(place.clone()), fonts.title(1), ink));
-                sheet.spawn((Text::default(), T::DrawingHint, fonts.body(), TextColor(color(PARCHMENT_DARK))));
+                sheet.spawn((Text::default(), T::DrawingHint, fonts.body(), TextColor(color(FADED))));
             }
             Sheet::Stuck(why) => {
                 sheet.spawn((Text::default(), T::StuckTitle, fonts.title(1), ink));
@@ -540,7 +540,7 @@ fn on_activate(
             next.set(Screen::Main);
         }
         (PlayAction::Retry, Phase::Stuck { to, .. }) => {
-            master.ask(&gm, &settings, Ask::Location { world: Box::new(game.world.clone()), id: to.clone(), from: game.world.current.clone() });
+            master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id: to.clone(), from: game.world.current.clone() });
             *phase = Phase::Drawing { to };
         }
         (PlayAction::Sketch, Phase::Stuck { to, .. }) => {

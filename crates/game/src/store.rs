@@ -119,6 +119,23 @@ impl Store {
             .collect()
     }
 
+    /// Keeps what the game master answered, word for word, for looking into a place that
+    /// came out wrong. Only the newest few answers are kept.
+    pub fn log_answer(&self, model: &str, text: &str) {
+        const KEPT: usize = 20;
+        let dir = self.dir.join("answers");
+        let name = format!("{}-{}.txt", unix_now(), model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '.', "_"));
+        if let Err(e) = write_whole(&dir.join(name), text.as_bytes()) {
+            warn!("could not keep the game master's answer: {e}");
+            return;
+        }
+        let mut files: Vec<PathBuf> = fs::read_dir(&dir).into_iter().flatten().flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "txt")).collect();
+        files.sort();
+        for old in files.iter().rev().skip(KEPT) {
+            let _ = fs::remove_file(old);
+        }
+    }
+
     fn saves_dir(&self) -> PathBuf {
         self.dir.join("saves")
     }
@@ -224,6 +241,22 @@ mod tests {
     fn test_world() -> World {
         let draft: world::WorldDraft = serde_json::from_str(&world::fake::world("saves")).unwrap();
         world::build_world(&draft, "saves", "English").unwrap().0
+    }
+
+    #[test]
+    fn only_the_newest_answers_are_kept() {
+        let store = temp_store("answers");
+        let dir = store.dir.join("answers");
+        fs::create_dir_all(&dir).unwrap();
+        for n in 0..25 {
+            fs::write(dir.join(format!("{:04}-old.txt", n)), "x").unwrap();
+        }
+        store.log_answer("gemini-9/flash", "{}");
+        let mut names: Vec<String> = fs::read_dir(&dir).unwrap().flatten().map(|f| f.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names.len(), 20);
+        assert!(names.last().unwrap().ends_with("-gemini-9_flash.txt"));
+        assert_eq!(names[0], "0006-old.txt");
     }
 
     #[test]

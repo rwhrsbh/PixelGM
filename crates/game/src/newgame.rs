@@ -7,7 +7,7 @@ use crate::i18n::{Lang, T};
 use crate::master::{Answer, Ask, Master};
 use crate::menu::{Nav, ReturnTo, Screen, screen_root, spawn_panel};
 use crate::play;
-use crate::store::Settings;
+use crate::store::{Settings, Store};
 use crate::theme::*;
 use crate::widgets::{Activate, backing, button};
 use bevy::input_focus::AutoFocus;
@@ -93,9 +93,9 @@ fn spawn_waiting(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
     });
 }
 
-fn start_making(making: &mut Making, request: String, gm: &Gm, settings: &Settings, master: &Master) {
+fn start_making(making: &mut Making, request: String, gm: &Gm, store: &Store, settings: &Settings, master: &Master) {
     *making = Making { request: request.clone(), seconds: 0.0, trouble: None };
-    master.ask(gm, settings, Ask::NewWorld { request });
+    master.ask(gm, store, settings, Ask::NewWorld { request });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -108,6 +108,7 @@ fn on_activate(
     mut return_to: ResMut<ReturnTo>,
     mut next: ResMut<NextState<Screen>>,
     gm: Res<Gm>,
+    store: Res<Store>,
     settings: Res<Settings>,
     master: Res<Master>,
 ) {
@@ -115,12 +116,12 @@ fn on_activate(
     match action {
         Action::Create => {
             let request = input.single().map(|i| i.value().to_string()).unwrap_or_default();
-            start_making(&mut making, request.trim().to_string(), &gm, &settings, &master);
+            start_making(&mut making, request.trim().to_string(), &gm, &store, &settings, &master);
             next.set(Screen::Creating);
         }
         Action::Retry => {
             let request = making.request.clone();
-            start_making(&mut making, request, &gm, &settings, &master);
+            start_making(&mut making, request, &gm, &store, &settings, &master);
         }
         Action::Keys => {
             // Keep what was typed, and come back to this form afterwards.

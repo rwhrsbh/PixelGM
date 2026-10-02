@@ -92,12 +92,12 @@ fn spawn_keys(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
                         });
                         button(line, &art, &fonts, T::Add, true, KeyAction::Add);
                     });
-                    left.spawn((Text::default(), T::KeysInputHint, fonts.body(), TextColor(color(PARCHMENT_DARK))));
+                    left.spawn((Text::default(), T::KeysInputHint, fonts.body(), TextColor(color(FADED))));
                     left.spawn((scroll_list(column(KEY_ROW_GAP), VISIBLE_KEY_ROWS * (BUTTON_HEIGHT + KEY_ROW_GAP)), KeyList));
                 });
                 columns.spawn(Node { flex_grow: 1.0, ..column(3.0) }).with_children(|right| {
                     right.spawn((Text::default(), T::ModelsTitle, fonts.body(), TextColor(color(WAX_DARK))));
-                    right.spawn((Text::default(), T::ModelsLegend, fonts.body(), TextColor(color(PARCHMENT_DARK))));
+                    right.spawn((Text::default(), T::ModelsLegend, fonts.body(), TextColor(color(FADED))));
                     right.spawn((column(1.0), ModelList));
                 });
             });
@@ -112,7 +112,7 @@ fn spawn_keys(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
 
 fn health_text(health: &Health) -> (T, Rgba) {
     match health {
-        Health::Checking => (T::KeyChecking, PARCHMENT_DARK),
+        Health::Checking => (T::KeyChecking, FADED),
         Health::Working => (T::KeyWorking, MOSS),
         Health::Rejected => (T::KeyRejected, WAX),
         Health::Unreachable => (T::KeyUnreachable, WAX),
@@ -175,12 +175,12 @@ fn redraw_models(
         gm.dispatcher.with_pool(|pool| pool.chain().iter().map(|m| (m.id.clone(), m.tier, pool.availability(now, &m.id))).collect());
     commands.entity(list).despawn_children().with_children(|rows| {
         if models.is_empty() {
-            rows.spawn((Text::default(), T::ModelsUnknown, fonts.body(), TextColor(color(PARCHMENT_DARK))));
+            rows.spawn((Text::default(), T::ModelsUnknown, fonts.body(), TextColor(color(FADED))));
         }
         for (id, tier, availability) in models {
             // Models below the chosen fallback tier are listed, but dimmed: they will not be used.
             let allowed = tier <= settings.lowest_tier;
-            let name = if allowed { INK } else { PARCHMENT_DARK };
+            let name = if allowed { INK } else { FADED };
             let state = if !allowed {
                 PARCHMENT_DARK
             } else if availability.free_keys > 0 {
@@ -207,8 +207,8 @@ fn add_from_input(gm: &Gm, book: &mut KeyBook, input: &mut EditableText) {
 /// What the last test of the game master came to, in words and in the colour of the news.
 fn test_text(test: &GmTest, now: u64, lang: Lang) -> (String, Rgba) {
     match test {
-        GmTest::Idle => (T::TestGmHint.text(lang).to_string(), PARCHMENT_DARK),
-        GmTest::Running => (T::TestRunning.text(lang).to_string(), PARCHMENT_DARK),
+        GmTest::Idle => (T::TestGmHint.text(lang).to_string(), FADED),
+        GmTest::Running => (T::TestRunning.text(lang).to_string(), FADED),
         GmTest::Answered { model, seconds, text } => (format!("{model} {} {seconds:.1} {}: {text}", T::TestAnswered.text(lang), T::Seconds.text(lang)), MOSS),
         GmTest::Failed(trouble) => (trouble_text(trouble, now, lang), WAX),
     }
