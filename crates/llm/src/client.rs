@@ -201,6 +201,102 @@ pub fn parse_generate(response: &HttpResponse) -> Result<Reply, Failure> {
     })
 }
 
+/// Speech as it comes back: raw samples, 16 bits, one channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Speech {
+    pub pcm: Vec<u8>,
+    /// Samples per second.
+    pub rate: u32,
+}
+
+impl Speech {
+    /// The samples as a WAV file, which anything can play.
+    pub fn wav(&self) -> Vec<u8> {
+        let data = self.pcm.len() as u32;
+        let mut wav = Vec::with_capacity(44 + self.pcm.len());
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        // PCM, one channel.
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&self.rate.to_le_bytes());
+        wav.extend_from_slice(&(self.rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data.to_le_bytes());
+        wav.extend_from_slice(&self.pcm);
+        wav
+    }
+
+    pub fn seconds(&self) -> f32 {
+        self.pcm.len() as f32 / 2.0 / self.rate.max(1) as f32
+    }
+}
+
+/// The body of a request to have `text` spoken in a named voice.
+pub fn speech_body(text: &str, voice: &str) -> Value {
+    json!({
+        "contents": [{ "parts": [{ "text": text }] }],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": { "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": voice } } }
+        }
+    })
+}
+
+/// Standard base64, padding optional, anything that is not of the alphabet skipped.
+pub fn base64_decode(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut buffer, mut bits) = (0u32, 0u32);
+    for byte in text.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => continue,
+        };
+        buffer = (buffer << 6) | value as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    out
+}
+
+/// Reads the answer to a speech request.
+pub fn parse_speech(response: &HttpResponse) -> Result<Speech, Failure> {
+    if response.status != 200 {
+        return Err(classify_error(response.status, &response.body));
+    }
+    let parsed: Value = serde_json::from_str(&response.body).map_err(|_| Failure::Overloaded)?;
+    if let Some(reason) = parsed["promptFeedback"]["blockReason"].as_str() {
+        return Err(Failure::Blocked(reason.to_string()));
+    }
+    let candidate = &parsed["candidates"][0];
+    let sound = candidate["content"]["parts"].as_array().and_then(|parts| parts.iter().find_map(|p| p.get("inlineData")));
+    let Some(sound) = sound else {
+        return Err(match candidate["finishReason"].as_str().filter(|f| CONTENT_FINISH_REASONS.contains(f)) {
+            Some(reason) => Failure::Blocked(reason.to_string()),
+            // An answer with no sound in it is a broken answer.
+            None => Failure::Overloaded,
+        });
+    };
+    let pcm = base64_decode(sound["data"].as_str().unwrap_or_default());
+    if pcm.is_empty() {
+        return Err(Failure::Overloaded);
+    }
+    // The type reads like "audio/L16;codec=pcm;rate=24000".
+    let rate = sound["mimeType"].as_str().and_then(|mime| mime.split("rate=").nth(1)).and_then(|r| r.split(';').next()).and_then(|r| r.trim().parse().ok()).unwrap_or(24_000);
+    Ok(Speech { pcm, rate })
+}
+
 /// One page of `models.list`: the models and the token of the next page, if any.
 pub fn parse_list(response: &HttpResponse) -> Result<(Vec<ListedModel>, Option<String>), Failure> {
     if response.status != 200 {
@@ -315,4 +411,41 @@ mod tests {
         assert_eq!(models[0].output_token_limit, 65536);
         assert_eq!(next.as_deref(), Some("abc"));
     }
+
+    #[test]
+    fn base64_reads_with_and_without_padding() {
+        assert_eq!(base64_decode("aGVsbG8="), b"hello");
+        assert_eq!(base64_decode("aGVsbG8"), b"hello");
+        assert_eq!(base64_decode("aGVs\nbG8h"), b"hello!");
+        assert_eq!(base64_decode(""), b"");
+    }
+
+    #[test]
+    fn speech_comes_back_as_samples_with_their_rate_and_makes_a_wav() {
+        let body = json!({ "candidates": [{ "content": { "parts": [{ "inlineData": { "mimeType": "audio/L16;codec=pcm;rate=24000", "data": "AAABAAIAAwA=" } }] } }] });
+        let speech = parse_speech(&response(200, body)).unwrap();
+        assert_eq!((speech.pcm.len(), speech.rate), (8, 24_000));
+        let wav = speech.wav();
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(wav.len(), 44 + 8);
+        assert_eq!(u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]), 24_000);
+        assert_eq!(speech.seconds(), 4.0 / 24_000.0);
+    }
+
+    #[test]
+    fn an_answer_without_sound_is_the_models_fault_and_a_quota_error_is_a_quota_error() {
+        let silent = json!({ "candidates": [{ "finishReason": "STOP", "content": { "parts": [{ "text": "no" }] } }] });
+        assert_eq!(parse_speech(&response(200, silent)), Err(Failure::Overloaded));
+        let quota = json!({ "error": { "code": 429, "message": "quota", "status": "RESOURCE_EXHAUSTED" } });
+        assert!(matches!(parse_speech(&response(429, quota)), Err(Failure::RateLimited { .. })));
+    }
+
+    #[test]
+    fn a_speech_request_names_the_voice_and_asks_for_audio() {
+        let body = speech_body("Hello.", "Charon");
+        assert_eq!(body["generationConfig"]["responseModalities"][0], "AUDIO");
+        assert_eq!(body["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"], "Charon");
+        assert_eq!(body["contents"][0]["parts"][0]["text"], "Hello.");
+    }
+
 }

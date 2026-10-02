@@ -126,6 +126,42 @@ pub fn build_chain(v1: &[ListedModel], v1beta: &[ListedModel]) -> Vec<Model> {
     ranked.into_iter().map(|(_, m)| m).collect()
 }
 
+/// Name tokens that rule a model out as a voice even when it is marked as one.
+const NOT_A_VOICE: &[&str] = &["image", "live", "transcribe", "embedding", "robotics", "computer", "omni", "customtools", "latest"];
+
+/// The models that turn text into speech, in the order they are tried: the same order as
+/// for everything else — flash newest to oldest, then flash-lite. No model is named here:
+/// a voice is whatever the lists mark with `tts`.
+pub fn build_voice_chain(v1: &[ListedModel], v1beta: &[ListedModel]) -> Vec<Model> {
+    let mut merged: BTreeMap<String, (ApiVersion, &ListedModel)> = BTreeMap::new();
+    for (api, list) in [(ApiVersion::V1, v1), (ApiVersion::V1Beta, v1beta)] {
+        for listed in list {
+            if listed.methods.iter().any(|m| m == "generateContent") {
+                merged.insert(listed.name.strip_prefix("models/").unwrap_or(&listed.name).to_string(), (api, listed));
+            }
+        }
+    }
+    let mut ranked: Vec<(Rank, Model)> = merged
+        .into_iter()
+        .filter_map(|(id, (api, listed))| {
+            let tokens: Vec<&str> = id.split('-').collect();
+            if tokens.first() != Some(&"gemini") || !tokens.contains(&"tts") || tokens.get(2) != Some(&"flash") || tokens.iter().any(|t| NOT_A_VOICE.contains(t)) {
+                return None;
+            }
+            let rank = Rank {
+                tier: if tokens.get(3) == Some(&"lite") { Tier::FlashLite } else { Tier::Flash },
+                version: parse_version(tokens.get(1)?)?,
+                size: 0,
+                preview: tokens.iter().any(|t| *t == "preview" || *t == "exp"),
+            };
+            let model = Model { id, api, tier: rank.tier, input_token_limit: listed.input_token_limit, output_token_limit: listed.output_token_limit };
+            Some((rank, model))
+        })
+        .collect();
+    ranked.sort_by(|(a, am), (b, bm)| (a.tier, Reverse(a.version), a.preview, &am.id).cmp(&(b.tier, Reverse(b.version), b.preview, &bm.id)));
+    ranked.into_iter().map(|(_, m)| m).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,4 +247,13 @@ mod tests {
         let ids: Vec<&str> = chain.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["gemma-5-12b-it", "gemma-4-31b-it", "gemma-4-26b-a4b-it"]);
     }
+
+    #[test]
+    fn the_voices_are_the_tts_models_flash_before_lite_newest_first() {
+        let chain = build_voice_chain(&listed(V1, "generateContent"), &listed(V1BETA, "generateContent"));
+        let ids: Vec<&str> = chain.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-3.8-flash-lite-tts"]);
+        assert!(build_chain(&listed(V1, "generateContent"), &listed(V1BETA, "generateContent")).iter().all(|m| !m.id.contains("tts")), "a voice is never asked to run the game");
+    }
+
 }

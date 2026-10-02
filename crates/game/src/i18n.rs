@@ -156,6 +156,18 @@ texts! {
     Report: "Собрать отчёт", "Collect a report";
     ReportDone: "Отчёт собран, папка открыта", "The report is collected; its folder is open";
     ReportFailed: "Отчёт собрать не удалось", "The report could not be collected";
+    SetMusic: "Музыка", "Music";
+    SetSound: "Звуки", "Sound";
+    Volume0: "выкл", "off";
+    Volume1: "четверть", "25%";
+    Volume2: "половина", "50%";
+    Volume3: "три четверти", "75%";
+    Volume4: "в полную силу", "100%";
+    Edition51: "Свод правил: SRD 5.1", "Rules edition: SRD 5.1";
+    Edition52: "Свод правил: SRD 5.2 (бета)", "Rules edition: SRD 5.2 (beta)";
+    NextLevels: "Следующие уровни:", "Next levels go to:";
+    SetVoice: "Голос мастера", "The master's voice";
+    VoiceHint: "Мастер читает рассказ вслух. Тратит квоту голосовых моделей, отдельную от квоты мастера.", "The master reads the telling aloud. Spends the quota of the speaking models, separate from the master's own.";
     MasterBusy: "Мастер занят другим вопросом. Подожди ответа.", "The master is busy with another question. Wait for the answer.";
     HeroTitle: "Твой герой", "Your hero";
     HeroName: "Имя", "Name";

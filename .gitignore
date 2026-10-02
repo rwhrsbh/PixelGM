@@ -4,3 +4,5 @@ keys.txt
 *.log
 tools/srd-translate/status.json
 /build
+
+/tmp_audio/

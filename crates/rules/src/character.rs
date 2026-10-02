@@ -114,9 +114,19 @@ pub enum DeathRoll {
     Dead,
 }
 
+/// Levels taken in a class beside the one the character began in.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct ClassLevels {
+    pub class: String,
+    pub levels: u32,
+}
+
 /// What a character gained on reaching a new level.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
 pub struct LevelUp {
+    /// The class the level was taken in.
+    #[serde(default)]
+    pub class: String,
     pub level: u32,
     pub hp_gained: i32,
     pub features: Vec<String>,
@@ -243,6 +253,13 @@ pub struct Character {
     /// its own, and has not been offered one yet.
     #[serde(default)]
     pub feat_due: bool,
+    /// Levels in other classes. `level` is the whole of the character; what is not listed
+    /// here is in `class`.
+    #[serde(default)]
+    pub extra: Vec<ClassLevels>,
+    /// The class the next levels go to; the first class when not set.
+    #[serde(default)]
+    pub advancing: Option<String>,
 }
 
 impl Character {
@@ -261,8 +278,9 @@ impl Character {
             return Err("a skill was chosen twice".into());
         }
         let mut scores = base;
-        for (score, bonus) in scores.iter_mut().zip(race_data.bonuses) {
-            *score += bonus;
+        // The people's bonuses, or, in the edition where a people gives none, a background's.
+        for ((score, bonus), background) in scores.iter_mut().zip(race_data.bonuses).zip(class_data.background) {
+            *score += bonus + background;
         }
         let mut character = Self {
             name: name.trim().to_string(),
@@ -286,6 +304,8 @@ impl Character {
             hit_dice_used: 0,
             feats: Vec::new(),
             feat_due: false,
+            extra: Vec::new(),
+            advancing: None,
         };
         character.max_hp = (class_data.hit_die as i32 + character.modifier(Ability::Con)).max(1);
         character.hp = character.max_hp;
@@ -297,8 +317,48 @@ impl Character {
         srd().class(&self.class).unwrap_or(&srd().classes[0])
     }
 
+    /// The table row of the whole character's level in its first class: what does not
+    /// depend on how the levels are split, such as the proficiency bonus.
     fn level_data(&self) -> &'static crate::data::Level {
         &self.class_data().levels[(self.level.clamp(1, 20) - 1) as usize]
+    }
+
+    /// The levels the character has in each of its classes, the first class first.
+    pub fn class_levels(&self) -> Vec<(&'static Class, u32)> {
+        let elsewhere: u32 = self.extra.iter().map(|e| e.levels).sum();
+        let mut split = vec![(self.class_data(), self.level.saturating_sub(elsewhere).max(1))];
+        split.extend(self.extra.iter().filter_map(|e| Some((srd().class(&e.class)?, e.levels.clamp(1, 20)))));
+        split
+    }
+
+    fn row(class: &'static Class, level: u32) -> &'static crate::data::Level {
+        &class.levels[(level.clamp(1, 20) - 1) as usize]
+    }
+
+    /// Whether the character's scores allow levels in `class` beside the first: 13 in what
+    /// each of the two classes is built on.
+    pub fn may_take(&self, class: &str) -> bool {
+        if class == self.class || self.extra.iter().any(|e| e.class == class) {
+            return true;
+        }
+        let Some(wanted) = srd().class(class) else { return false };
+        let enough = |index: &str| crate::data::primary_abilities(index).iter().take(if matches!(index, "monk" | "paladin" | "ranger") { 2 } else { 1 }).all(|a| self.scores[*a as usize] >= 13);
+        enough(&wanted.index) && enough(&self.class)
+    }
+
+    /// The class the next level will be taken in.
+    pub fn advancing(&self) -> &str {
+        self.advancing.as_deref().filter(|c| self.may_take(c)).unwrap_or(&self.class)
+    }
+
+    /// Turns the next levels towards another class the character may take: the one after
+    /// the current choice in the list of classes.
+    pub fn advance_next_class(&mut self) -> &str {
+        let classes = &srd().classes;
+        let now = classes.iter().position(|c| c.index == self.advancing()).unwrap_or(0);
+        let next = (1..=classes.len()).map(|step| &classes[(now + step) % classes.len()]).find(|c| self.may_take(&c.index));
+        self.advancing = next.map(|c| c.index.clone()).filter(|c| *c != self.class);
+        self.advancing()
     }
 
     pub fn modifier(&self, ability: Ability) -> i32 {
@@ -404,13 +464,14 @@ impl Character {
         }
     }
 
-    /// Attacks made with one Attack action.
+    /// Attacks made with one Attack action: the most any one of the classes gives.
     pub fn attacks_per_action(&self) -> u32 {
-        1 + self.level_data().extra_attacks as u32
+        1 + self.class_levels().iter().map(|(class, level)| Self::row(class, *level).extra_attacks as u32).max().unwrap_or(0)
     }
 
+    /// The ability spells are cast with: that of the first class that casts.
     pub fn casting_ability(&self) -> Option<Ability> {
-        self.class_data().casting
+        self.class_levels().iter().find_map(|(class, _)| class.casting)
     }
 
     pub fn spell_dc(&self) -> i32 {
@@ -421,9 +482,20 @@ impl Character {
         self.proficiency() + self.casting_ability().map_or(0, |a| self.modifier(a))
     }
 
-    /// Slots of each level the character has when rested.
+    /// Slots of each level the character has when rested. A character of one class reads
+    /// them off the class's table. One of several adds its casting levels together — whole
+    /// for full casters, half for paladins and rangers — and reads the table of a full
+    /// caster at that level.
     pub fn slots(&self) -> [u8; 9] {
-        self.level_data().slots
+        let split = self.class_levels();
+        if split.len() == 1 {
+            return Self::row(split[0].0, split[0].1).slots;
+        }
+        let casting: u32 = split.iter().filter(|(class, _)| class.casting.is_some()).map(|(class, level)| if matches!(class.index.as_str(), "paladin" | "ranger") { level / 2 } else { *level }).sum();
+        match (casting, srd().class("wizard")) {
+            (1.., Some(full)) => Self::row(full, casting).slots,
+            _ => [0; 9],
+        }
     }
 
     pub fn slots_left(&self, level: u8) -> u8 {
@@ -445,22 +517,30 @@ impl Character {
     }
 
     pub fn cantrips_allowed(&self) -> usize {
-        self.level_data().cantrips as usize
+        self.class_levels().iter().map(|(class, level)| Self::row(class, *level).cantrips as usize).sum()
     }
 
-    /// How many levelled spells the character may have ready: a fixed number for classes
-    /// that learn their spells, ability modifier plus level for those that prepare them.
+    /// How many levelled spells the character may have ready: for each of its classes, a
+    /// fixed number if the class learns its spells, ability modifier plus level if it
+    /// prepares them.
     pub fn spells_allowed(&self) -> usize {
-        match (self.level_data().spells_known, self.casting_ability()) {
-            _ if self.highest_slot() == 0 => 0,
-            (Some(known), _) => known as usize,
-            (None, Some(ability)) => {
-                // Paladins and rangers prepare with half their level.
-                let levels = if matches!(self.class.as_str(), "paladin" | "ranger") { self.level / 2 } else { self.level };
-                (self.modifier(ability) + levels as i32).max(1) as usize
-            }
-            (None, None) => 0,
+        if self.highest_slot() == 0 {
+            return 0;
         }
+        self.class_levels()
+            .iter()
+            .map(|(class, level)| match (Self::row(class, *level).spells_known, class.casting) {
+                (Some(known), _) => known as usize,
+                // A class that casts but has no slots of its own yet prepares nothing.
+                (None, Some(_)) if Self::row(class, *level).slots == [0; 9] => 0,
+                (None, Some(ability)) => {
+                    // Paladins and rangers prepare with half their level.
+                    let levels = if matches!(class.index.as_str(), "paladin" | "ranger") { level / 2 } else { *level };
+                    (self.modifier(ability) + levels as i32).max(1) as usize
+                }
+                (None, None) => 0,
+            })
+            .sum()
     }
 
     /// Replaces the character's spells, checking that the class can cast each and that the
@@ -468,7 +548,8 @@ impl Character {
     pub fn set_spells(&mut self, spells: &[String]) -> Result<(), String> {
         let data = srd();
         let known: Vec<&Spell> = spells.iter().map(|s| data.spells.get(s).ok_or_else(|| format!("there is no spell '{s}'"))).collect::<Result<_, _>>()?;
-        if let Some(wrong) = known.iter().find(|s| !s.classes.contains(&self.class) || s.level > self.highest_slot()) {
+        let mine = |spell: &Spell| self.class_levels().iter().any(|(class, _)| spell.classes.contains(&class.index));
+        if let Some(wrong) = known.iter().find(|s| !mine(s) || s.level > self.highest_slot()) {
             return Err(format!("{} cannot be cast by this character", wrong.name));
         }
         let cantrips = known.iter().filter(|s| s.level == 0).count();
@@ -489,12 +570,22 @@ impl Character {
         self.xp = self.xp.saturating_add(xp);
         let mut gained = Vec::new();
         while self.xp_for_next_level().is_some_and(|needed| self.xp >= needed) {
-            let before = self.level_data().ability_improvements;
+            // The level goes to the class the character is turned towards.
+            let class = srd().class(self.advancing()).unwrap_or(self.class_data());
+            let had = self.class_levels().iter().find(|(c, _)| c.index == class.index).map_or(0, |(_, level)| *level);
+            let before = if had == 0 { 0 } else { Self::row(class, had).ability_improvements };
             self.level += 1;
-            let hp_gained = (self.class_data().hit_die as i32 / 2 + 1 + self.modifier(Ability::Con)).max(1);
+            if class.index != self.class {
+                match self.extra.iter_mut().find(|e| e.class == class.index) {
+                    Some(entry) => entry.levels += 1,
+                    None => self.extra.push(ClassLevels { class: class.index.clone(), levels: 1 }),
+                }
+            }
+            let hp_gained = (class.hit_die as i32 / 2 + 1 + self.modifier(Ability::Con)).max(1);
             self.max_hp += hp_gained;
             self.hp += hp_gained;
-            let improvement = self.level_data().ability_improvements > before;
+            let row = Self::row(class, had + 1);
+            let improvement = row.ability_improvements > before;
             if improvement {
                 self.points_to_place += 2;
             }
@@ -502,7 +593,7 @@ impl Character {
             if self.level % 2 == 0 {
                 self.feat_due = true;
             }
-            gained.push(LevelUp { level: self.level, hp_gained, features: self.level_data().features.clone(), ability_improvement: improvement });
+            gained.push(LevelUp { class: class.index.clone(), level: self.level, hp_gained, features: row.features.clone(), ability_improvement: improvement });
         }
         gained
     }
@@ -602,7 +693,14 @@ impl Character {
 /// Spells a new character of `class` starts with when the player does not choose: damage and
 /// healing first, since those are the ones the rules engine can carry out by itself.
 pub fn suggested_spells(data: &Srd, character: &Character) -> Vec<String> {
-    let mut pool = data.class_spells(&character.class, character.highest_slot());
+    let mut pool: Vec<&Spell> = Vec::new();
+    for (class, _) in character.class_levels() {
+        for spell in data.class_spells(&class.index, character.highest_slot()) {
+            if !pool.iter().any(|known| known.index == spell.index) {
+                pool.push(spell);
+            }
+        }
+    }
     pool.sort_by_key(|s| (s.level, !s.mechanised(), s.name.clone()));
     let cantrips = pool.iter().filter(|s| s.level == 0).take(character.cantrips_allowed());
     let spells = pool.iter().filter(|s| s.level > 0).take(character.spells_allowed());
@@ -883,6 +981,60 @@ mod tests {
         hero.feat_due = false;
         hero.gain_xp(600);
         assert!(!hero.feat_due, "level 3");
+    }
+
+
+    #[test]
+    fn levels_can_be_taken_in_a_second_class_when_the_scores_allow() {
+        let mut hero = make("fighter", "human", [15, 12, 14, 13, 10, 8]);
+        assert!(hero.may_take("wizard"), "strength 16 and intelligence 14");
+        assert!(!hero.may_take("bard"), "charisma 9");
+        assert!(!hero.may_take("monk"), "a monk needs wisdom as well as dexterity");
+        hero.advancing = Some("wizard".into());
+        let ups = hero.gain_xp(300);
+        assert_eq!((ups[0].class.as_str(), hero.level), ("wizard", 2));
+        assert_eq!(hero.class_levels().iter().map(|(c, l)| (c.index.as_str(), *l)).collect::<Vec<_>>(), [("fighter", 1), ("wizard", 1)]);
+        // A wizard's hit die, not a fighter's: 6/2+1 plus constitution.
+        assert_eq!(ups[0].hp_gained, 4 + hero.modifier(Ability::Con));
+        assert_eq!(hero.slots()[0], 2, "one level of a full caster");
+        assert_eq!(hero.cantrips_allowed(), 3);
+        assert!(hero.set_spells(&["fire-bolt".to_string(), "magic-missile".to_string()]).is_ok());
+        assert_eq!(hero.casting_ability(), Some(Ability::Int));
+        // Back to the first class: the fighter's second level.
+        hero.advancing = None;
+        let ups = hero.gain_xp(600);
+        assert_eq!((ups[0].class.as_str(), hero.level), ("fighter", 3));
+        assert_eq!(hero.class_levels()[0].1, 2);
+        assert_eq!(hero.proficiency(), 2);
+    }
+
+    #[test]
+    fn a_choice_the_scores_do_not_allow_falls_back_to_the_first_class() {
+        let mut hero = make("fighter", "human", [15, 12, 14, 8, 10, 13]);
+        hero.advancing = Some("wizard".into());
+        assert_eq!(hero.advancing(), "fighter", "intelligence 9");
+        hero.gain_xp(300);
+        assert!(hero.extra.is_empty());
+        // Turning through the classes only ever stops at ones that may be taken.
+        let mut seen = vec![hero.advancing().to_string()];
+        for _ in 0..12 {
+            seen.push(hero.advance_next_class().to_string());
+        }
+        assert!(seen.iter().all(|c| hero.may_take(c)), "{seen:?}");
+        assert!(seen.iter().any(|c| c != "fighter"), "charisma 14 opens something: {seen:?}");
+    }
+
+    #[test]
+    fn half_casters_count_half_towards_the_slots_of_a_mixed_character() {
+        let mut hero = make("paladin", "human", [15, 10, 13, 8, 12, 14]);
+        hero.gain_xp(900);
+        assert_eq!(hero.level, 3);
+        let alone = hero.slots();
+        hero.advancing = Some("sorcerer".into());
+        hero.gain_xp(1_800);
+        assert_eq!(hero.level, 4);
+        // Paladin 3 counts as one casting level, sorcerer 1 as one: a second-level caster.
+        assert_eq!(hero.slots()[0], 3, "was {alone:?}");
     }
 
 }

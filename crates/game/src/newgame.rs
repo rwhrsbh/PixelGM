@@ -26,6 +26,7 @@ enum Action {
     Book,
     Limits,
     Method,
+    Edition,
 }
 
 #[derive(Component)]
@@ -57,6 +58,10 @@ fn book_label(making: &Making) -> T {
 
 fn limits_label(making: &Making) -> T {
     if making.table.no_limits { T::LimitsOff } else { T::LimitsOn }
+}
+
+fn edition_label(making: &Making) -> T {
+    if making.table.srd_2024 { T::Edition52 } else { T::Edition51 }
 }
 
 fn method_label(making: &Making) -> T {
@@ -148,6 +153,7 @@ fn build_form(commands: &mut Commands, art: &Art, fonts: &Fonts, making: &Making
                 button(line, art, fonts, book_label(making), true, Action::Book);
                 button(line, art, fonts, limits_label(making), true, Action::Limits);
                 button(line, art, fonts, method_label(making), true, Action::Method);
+                button(line, art, fonts, edition_label(making), true, Action::Edition);
             });
             if !can_ask {
                 sheet.spawn((Text::default(), T::NeedKey, fonts.body(), TextColor(color(WAX))));
@@ -212,6 +218,7 @@ fn on_activate(
         Action::Sex => making.no_sex = !making.no_sex,
         Action::Book => making.table.book_only = !making.table.book_only,
         Action::Limits => making.table.no_limits = !making.table.no_limits,
+        Action::Edition => making.table.srd_2024 = !making.table.srd_2024,
         Action::Method => {
             making.table.method = match making.table.method {
                 rules::AbilityMethod::PointBuy => rules::AbilityMethod::StandardArray,
@@ -241,6 +248,7 @@ fn show_switches(making: Res<Making>, buttons: Query<(&Action, &Children)>, mut 
             Action::Sex => sex_label(&making),
             Action::Book => book_label(&making),
             Action::Limits => limits_label(&making),
+            Action::Edition => edition_label(&making),
             Action::Method => method_label(&making),
             _ => continue,
         };

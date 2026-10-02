@@ -48,6 +48,8 @@ pub struct Args {
     pub size: Option<(u32, u32)>,
     pub lang: Option<Lang>,
     pub keys_file: Option<String>,
+    /// Lets a hidden instance make sound, which it otherwise never does.
+    pub sound: bool,
     pub hidden: bool,
     /// Let a rule-based stand-in answer for the game master: no network, no quota.
     pub fake_gm: bool,
@@ -168,6 +170,7 @@ impl Args {
                     }
                 }
                 "--keys-file" => out.keys_file = Some(value),
+                "--sound" => out.sound = value == "true",
                 "--hidden" => out.hidden = value == "true",
                 "--fake-gm" => out.fake_gm = value == "true",
                 "--host" => out.host = value.parse().ok(),

@@ -265,7 +265,7 @@ fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<A
                 left.spawn((Text::new(hint), fonts.body(), faded));
                 for ability in Ability::ALL {
                     let i = ability as usize;
-                    let total = draft.base[i] + race.bonuses[i];
+                    let total = draft.base[i] + race.bonuses[i] + class.background[i];
                     left.spawn(Node { column_gap: px(3), align_items: AlignItems::Center, ..default() }).with_children(|line| {
                         let picked = draft.picked == Some(i);
                         let name = TextColor(color(if picked { WAX } else { INK }));
@@ -425,6 +425,9 @@ pub fn sheet_lines(hero: &Character, lang: Lang) -> Vec<String> {
     let name = |index: &str, names: &dyn Fn(&str) -> Option<&'static str>| names(index).map_or(index.to_string(), |n| tr(ru, n).to_string());
     let race = name(&hero.race, &|i| data.race(i).map(|r| r.name.as_str()));
     let class = name(&hero.class, &|i| data.class(i).map(|c| c.name.as_str()));
+    // A character of several classes names each with its levels.
+    let split = hero.class_levels();
+    let class = if split.len() > 1 { split.iter().map(|(c, levels)| format!("{} {levels}", tr(ru, &c.name))).collect::<Vec<_>>().join(" / ") } else { class };
     let mut lines = vec![format!("{} — {race}, {class}, {} {}", hero.name, T::Level.text(lang), hero.level)];
     let next = hero.xp_for_next_level().map_or(String::new(), |n| format!(" / {n}"));
     lines.push(format!("{} {}/{} · {} {} · {} {}{next}", T::HitPoints.text(lang), hero.hp.max(0), hero.max_hp, T::ArmorClass.text(lang), hero.ac(), T::Experience.text(lang), hero.xp));

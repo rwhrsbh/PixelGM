@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 7;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -48,6 +48,8 @@ pub enum Intent {
     Gm(GmAct),
     /// One of the abilities offered to the player's hero.
     Feat(usize),
+    /// Turn the hero's next levels towards the next class it may take.
+    Advance,
     /// Something tried in a fight that the rules have no button for; `spell` when it is a
     /// spell the rules cannot carry out, with the slot it takes.
     Stunt { said: String, spell: Option<(String, u8)> },
@@ -140,6 +142,8 @@ pub enum Down {
     FightNote(String),
     /// The place this guest walked into is being drawn; the world follows when it is.
     Drawing(String),
+    /// A die was rolled where this guest is, and came up so.
+    Die(u32),
     /// The host's keys are spent; this guest's keys are asked to serve a request.
     Ask(Relayed),
     Chat { from: String, text: String },
@@ -401,7 +405,7 @@ fn pass_on(hosting: &mut Hosting, relay: &Relay, id: u64, last: Trouble) {
 
 /// The host's side of the wire: who joined, who left, what they sent.
 #[allow(clippy::too_many_arguments)]
-fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, master: Res<Master>, mut table: ResMut<Table>, mut game: Option<ResMut<Game>>, screen: Res<State<Screen>>) {
+fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, master: Res<Master>, mut table: ResMut<Table>, mut game: Option<ResMut<Game>>, screen: Res<State<Screen>>, mut fx: ResMut<crate::fx::Fx>) {
     let Session::Host(hosting) = &*session else {
         master.relay.set_helpers(0);
         return;
@@ -484,6 +488,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
             }
             HostEvent::Message(peer, Up::Chat(text)) => {
                 if let Some(name) = hosting.names.get(&peer).cloned() {
+                    fx.cues.push(crate::audio::Sfx::Chat);
                     table.heard(&name, &text);
                     hosting.net.broadcast(&Down::Chat { from: name, text });
                 }
@@ -618,6 +623,7 @@ fn adopt(id: String, world: World, game: &mut Option<ResMut<Game>>, commands: &m
         }
         None => {
             let has_hero = world.owners.iter().any(|o| o == me) || world.gm.as_deref() == Some(me);
+            play::use_rules_of(&world);
             commands.insert_resource(Phase::Arriving { t: 0.0 });
             commands.insert_resource(Game { world, world_id: id });
             next.set(if has_hero { Screen::Play } else { Screen::Hero });
@@ -642,6 +648,7 @@ fn client_pump(
     mut view: ResMut<FightView>,
     screen: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
+    mut fx: ResMut<crate::fx::Fx>,
 ) {
     let (events, serving) = match &*session {
         Session::Client(joined) => {
@@ -700,7 +707,14 @@ fn client_pump(
                     serving.lock().unwrap().push((asked.id, result));
                 });
             }
-            ClientEvent::Message(Down::Chat { from, text }) => table.heard(&from, &text),
+            ClientEvent::Message(Down::Chat { from, text }) => {
+                table.heard(&from, &text);
+                fx.cues.push(crate::audio::Sfx::Chat);
+            }
+            ClientEvent::Message(Down::Die(value)) => {
+                fx.throw(value);
+                fx.cues.push(crate::audio::Sfx::Dice);
+            }
             ClientEvent::Message(Down::Draft(view)) => {
                 match (&view, &*phase) {
                     (Some(_), Phase::Walking | Phase::Master) => *phase = Phase::Judging,

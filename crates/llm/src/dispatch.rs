@@ -1,8 +1,8 @@
 //! Sends one request through the pool: tries the best free key and model, and on a failure
 //! that rotation can fix moves on until something answers or nothing is left.
 
-use crate::catalog::{ApiVersion, ListedModel, Model, Tier, build_chain};
-use crate::client::{Failure, GenRequest, Reply, Transport, parse_generate, parse_list};
+use crate::catalog::{ApiVersion, ListedModel, Model, Tier, build_chain, build_voice_chain};
+use crate::client::{Failure, GenRequest, Reply, Speech, Transport, parse_generate, parse_list, parse_speech, speech_body};
 use crate::pool::{KeyId, Millis, Outcome, Pick, Pool, SavedRest};
 use crate::thinking::ThinkingMode;
 use serde::{Deserialize, Serialize};
@@ -47,7 +47,15 @@ pub struct SavedState {
 struct State {
     pool: Pool,
     thinking: HashMap<String, ThinkingMode>,
+    /// The models that speak, best first.
+    voices: Vec<Model>,
+    /// When each key may ask each voice again.
+    voice_rests: HashMap<(KeyId, String), Millis>,
 }
+
+/// How long a voice is left alone after it failed for a reason of its own.
+const VOICE_REST: Millis = 60_000;
+const DAY: Millis = 24 * 60 * 60 * 1000;
 
 pub struct Dispatcher<T: Transport> {
     transport: T,
@@ -156,8 +164,63 @@ impl<T: Transport> Dispatcher<T> {
         if !listed {
             return Err(last);
         }
-        self.state.lock().unwrap().pool.set_chain(build_chain(&v1, &v1beta));
+        let mut state = self.state.lock().unwrap();
+        state.voices = build_voice_chain(&v1, &v1beta);
+        state.pool.set_chain(build_chain(&v1, &v1beta));
         Ok(())
+    }
+
+    /// The models that can speak, as last listed.
+    pub fn voices(&self) -> Vec<Model> {
+        self.state.lock().unwrap().voices.clone()
+    }
+
+    /// Has `text` spoken in the named voice: the best speaking model first, each key in
+    /// turn, moving on when a key's quota for a model is spent, exactly as for text.
+    pub fn speak(&self, text: &str, voice: &str) -> Result<(Speech, Model), GenError> {
+        if self.state.lock().unwrap().voices.is_empty() {
+            self.refresh()?;
+        }
+        let (voices, keys): (Vec<Model>, Vec<(KeyId, String)>) = {
+            let state = self.state.lock().unwrap();
+            (state.voices.clone(), state.pool.live_keys().map(|(id, secret)| (id, secret.to_string())).collect())
+        };
+        if keys.is_empty() {
+            return Err(GenError::NoKeys);
+        }
+        if voices.is_empty() {
+            return Err(GenError::BadRequest("no model that speaks is listed for these keys".into()));
+        }
+        let body = speech_body(text, voice).to_string();
+        let mut soonest: Option<Millis> = None;
+        for model in &voices {
+            for (key, secret) in &keys {
+                let now = (self.clock)();
+                let pair = (*key, model.id.clone());
+                if let Some(until) = self.state.lock().unwrap().voice_rests.get(&pair).copied().filter(|until| *until > now) {
+                    soonest = Some(soonest.map_or(until, |s| s.min(until)));
+                    continue;
+                }
+                let url = format!("{}/{}/models/{}:generateContent", self.base, model.api.path(), model.id);
+                let response = self.transport.post(&url, secret, &body).map_err(GenError::Network)?;
+                let now = (self.clock)();
+                let rest = match parse_speech(&response) {
+                    Ok(speech) => return Ok((speech, model.clone())),
+                    Err(Failure::Blocked(reason)) => return Err(GenError::Blocked(reason)),
+                    Err(Failure::BadRequest(message)) => return Err(GenError::BadRequest(message)),
+                    Err(Failure::RateLimited { retry_after, .. }) => retry_after.unwrap_or(VOICE_REST),
+                    Err(Failure::ModelGone) => DAY,
+                    Err(Failure::KeyRejected) => {
+                        self.state.lock().unwrap().pool.report(now, "", *key, Outcome::KeyRejected);
+                        DAY
+                    }
+                    Err(Failure::Overloaded | Failure::ThinkingRejected) => VOICE_REST,
+                };
+                self.state.lock().unwrap().voice_rests.insert(pair, now + rest);
+                soonest = Some(soonest.map_or(now + rest, |s| s.min(now + rest)));
+            }
+        }
+        Err(GenError::Exhausted { retry_at: soonest.unwrap_or((self.clock)() + VOICE_REST) })
     }
 
     /// Runs the request on the best model available no lower than `lowest`. Returns the answer
@@ -286,7 +349,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let lists = Arc::new(AtomicU64::new(0));
         let time = Arc::new(AtomicU64::new(1_000));
-        let fake = Fake { models: vec!["gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.0-flash-lite", "gemma-4-31b-it"], script: Box::new(script), calls: calls.clone(), lists: lists.clone() };
+        let fake = Fake { models: vec!["gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.0-flash-lite", "gemma-4-31b-it", "gemini-3.0-flash-tts", "gemini-2.5-flash-preview-tts"], script: Box::new(script), calls: calls.clone(), lists: lists.clone() };
         let clock = time.clone();
         let dispatcher = Dispatcher::with_clock(fake, Box::new(move || clock.load(Ordering::SeqCst)));
         for k in keys {
@@ -452,4 +515,33 @@ mod tests {
         let r = rig(&["a"], |_| Err("dns failure".into()));
         assert_eq!(r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma), Err(GenError::Network("dns failure".into())));
     }
+
+    fn sound() -> Result<HttpResponse, String> {
+        Ok(HttpResponse { status: 200, body: json!({ "candidates": [{ "content": { "parts": [{ "inlineData": { "mimeType": "audio/L16;codec=pcm;rate=24000", "data": "AAABAAIAAwA=" } }] } }] }).to_string() })
+    }
+
+    #[test]
+    fn the_newest_voice_speaks_and_a_spent_one_gives_way_to_the_next_key_then_the_next_voice() {
+        let r = rig(&["a", "b"], |c| if c.model == "gemini-3.0-flash-tts" && c.key == "a" { status(429, "quota") } else { sound() });
+        let (speech, model) = r.dispatcher.speak("Hello.", "Charon").unwrap();
+        assert_eq!((speech.pcm.len(), model.id.as_str()), (8, "gemini-3.0-flash-tts"));
+        assert_eq!(r.trail(), pairs(&[("gemini-3.0-flash-tts", "a"), ("gemini-3.0-flash-tts", "b")]));
+        // The pair that was refused rests: the next request goes straight to the other key.
+        r.dispatcher.speak("Again.", "Charon").unwrap();
+        assert_eq!(r.trail().last().unwrap(), &("gemini-3.0-flash-tts".to_string(), "b".to_string()));
+        assert_eq!(r.trail().len(), 3);
+
+        let r = rig(&["a"], |c| if c.model == "gemini-3.0-flash-tts" { status(429, "quota") } else { sound() });
+        let (_, model) = r.dispatcher.speak("Hello.", "Charon").unwrap();
+        assert_eq!(model.id, "gemini-2.5-flash-preview-tts");
+    }
+
+    #[test]
+    fn with_every_voice_spent_the_answer_says_when_to_come_back_and_the_game_master_is_untouched() {
+        let r = rig(&["a"], |c| if c.model.contains("tts") { status(429, "quota") } else { ok("still here") });
+        assert!(matches!(r.dispatcher.speak("Hello.", "Charon"), Err(GenError::Exhausted { .. })));
+        assert_eq!(r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap().0.text, "still here");
+        assert!(matches!(rig(&[], |_| sound()).dispatcher.speak("Hello.", "Charon"), Err(GenError::NoKeys)));
+    }
+
 }

@@ -5,7 +5,7 @@ use crate::i18n::{Lang, T};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::store::{Initiative, Settings, Store};
 use crate::theme::*;
-use crate::widgets::{Activate, button};
+use crate::widgets::{Activate, button, scroll_list};
 use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use llm::{ThinkingSetting, Tier};
@@ -19,6 +19,9 @@ enum Choice {
     Fallback,
     Predraw,
     Initiative,
+    Music,
+    Sound,
+    Voice,
 }
 
 impl Choice {
@@ -30,6 +33,9 @@ impl Choice {
             Choice::Fallback => T::SetFallback,
             Choice::Predraw => T::SetPredraw,
             Choice::Initiative => T::SetInitiative,
+            Choice::Music => T::SetMusic,
+            Choice::Sound => T::SetSound,
+            Choice::Voice => T::SetVoice,
         }
     }
 
@@ -39,6 +45,7 @@ impl Choice {
             Choice::Fallback => Some(T::FallbackHint),
             Choice::Predraw => Some(T::PredrawHint),
             Choice::Initiative => Some(T::InitiativeHint),
+            Choice::Voice => Some(T::VoiceHint),
             _ => None,
         }
     }
@@ -76,6 +83,15 @@ impl Choice {
                 Initiative::Rare => T::InitiativeRare,
                 Initiative::Often => T::InitiativeOften,
             },
+            Choice::Music => volume_name(s.music),
+            Choice::Sound => volume_name(s.sound),
+            Choice::Voice => {
+                if s.voice {
+                    T::Yes
+                } else {
+                    T::No
+                }
+            }
         }
     }
 
@@ -111,17 +127,26 @@ impl Choice {
                     Initiative::Often => Initiative::Off,
                 }
             }
+            Choice::Music => s.music = (s.music.min(4) + 1) % 5,
+            Choice::Sound => s.sound = (s.sound.min(4) + 1) % 5,
+            Choice::Voice => s.voice = !s.voice,
         }
     }
 }
 
-const CHOICES: [Choice; 6] = [Choice::Language, Choice::Window, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
+fn volume_name(level: u8) -> T {
+    [T::Volume0, T::Volume1, T::Volume2, T::Volume3, T::Volume4][level.min(4) as usize]
+}
+
+const CHOICES: [Choice; 9] = [Choice::Language, Choice::Window, Choice::Music, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
 
 fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
     commands.spawn(screen_root(Screen::Settings)).with_children(|root| {
         let sheet = Node { margin: UiRect::top(px(8)), width: px(440), flex_direction: FlexDirection::Column, row_gap: px(5), ..default() };
         spawn_panel(root, &art, sheet, |sheet| {
             sheet.spawn((Text::default(), T::Settings, fonts.title(1), TextColor(color(INK))));
+            // More settings than fit on the table at once: the list scrolls.
+            sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(5), ..default() }, 196.0)).with_children(|sheet| {
             for choice in CHOICES {
                 sheet.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|block| {
                     block.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|line| {
@@ -134,6 +159,7 @@ fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, sett
                     }
                 });
             }
+            });
             sheet.spawn(Node { margin: UiRect::top(px(4)), ..default() }).with_children(|slot| button(slot, &art, &fonts, T::Back, true, Nav::Back));
         });
     });
@@ -226,7 +252,7 @@ mod tests {
             let mut s = Settings::default();
             let before = s.clone();
             choice.advance(&mut s);
-            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative];
+            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice];
             assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{choice:?}");
         }
     }

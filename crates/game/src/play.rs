@@ -2,7 +2,9 @@
 //! place to the next, and the conversation with the game master.
 
 use crate::art::{Art, ground_picture, sprite_picture};
+use crate::audio::Sfx;
 use crate::coop::{Down, DraftView, GmAct, Held, Intent, Session, Table, player_name};
+use crate::fx::{Actor, Fx, PopIn, Typed};
 use crate::gm::{Gm, Trouble, trouble_text};
 use crate::i18n::{Lang, T};
 use crate::master::{Answer, Ask, Master};
@@ -87,9 +89,9 @@ struct Toast {
 }
 
 #[derive(Resource, Default)]
-struct HeroPose {
-    moving: bool,
-    facing_left: bool,
+pub struct HeroPose {
+    pub moving: bool,
+    pub facing_left: bool,
 }
 
 /// Work the master does without being asked: drawing places ahead, events, chapters.
@@ -108,6 +110,11 @@ struct Background {
     feats_rest: f32,
     /// Heroes whose picture has been asked for in this sitting, by name: each is asked once.
     portraits_asked: Vec<String>,
+    /// Sounds, and a die to throw, asked for by code that has only this at hand.
+    cues: Vec<Sfx>,
+    die: Option<u32>,
+    /// A hero rose a level: something to see as well as to read.
+    level_up: bool,
 }
 
 #[derive(Component)]
@@ -119,13 +126,6 @@ struct Hero;
 /// Another player's token.
 #[derive(Component)]
 struct Fellow(String);
-
-/// A creature shifting its weight while it stands.
-#[derive(Component)]
-struct Idler {
-    phase: f32,
-    rest_y: f32,
-}
 
 #[derive(Component)]
 struct Veil;
@@ -246,6 +246,8 @@ enum PlayAction {
     NewHero,
     /// One of the abilities the master offered.
     Feat(usize),
+    /// Turn the next levels towards another class.
+    Advance,
     SeatTake,
     SeatLeave,
     /// The master's verdict on the draft: let it through or throw it away.
@@ -289,8 +291,14 @@ fn event_after(initiative: Initiative) -> Option<f32> {
     }
 }
 
+/// Plays by the edition of the rules the world was made with.
+pub fn use_rules_of(world: &World) {
+    rules::use_edition(if world.table.srd_2024 { rules::Edition::Srd52 } else { rules::Edition::Srd51 });
+}
+
 /// Puts a world on the play screen. Used by a new game and by loading a save.
 pub fn begin(commands: &mut Commands, next: &mut NextState<Screen>, world: World, world_id: String) {
+    use_rules_of(&world);
     // A world without a character goes to the character screen first.
     let screen = if world.party.is_empty() { Screen::Hero } else { Screen::Play };
     commands.insert_resource(Phase::Arriving { t: 0.0 });
@@ -420,7 +428,8 @@ fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut
         let (x, y) = foot(cx, cy);
         if let Some(image) = picture(&creature.sprite) {
             let at = on_screen(x, y);
-            commands.spawn((InLocation, Idler { phase: n as f32 * 0.37, rest_y: at.y }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::from_translation(at.extend(depth(y)))));
+            let home = at.extend(depth(y));
+            commands.spawn((InLocation, Actor { id: creature.id.clone(), home, tint: Color::WHITE, bob: Some(n as f32 * 0.37) }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::from_translation(home)));
         }
     }
     match world.fight.as_ref().filter(|_| world.fight_here()) {
@@ -431,7 +440,8 @@ fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut
                 let hero = c.id.strip_prefix("hero_").and_then(|n| n.parse::<usize>().ok());
                 if let Some(image) = picture(&world.hero_sprite(hero)) {
                     let tint = if c.hp > 0 { Color::WHITE } else { Color::srgb(0.35, 0.3, 0.3) };
-                    commands.spawn((InLocation, Sprite { color: tint, flip_y: c.hp <= 0, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(x, y).extend(depth(y)))));
+                    let home = on_screen(x, y).extend(depth(y));
+                    commands.spawn((InLocation, Actor { id: c.id.clone(), home, tint, bob: None }, Sprite { color: tint, flip_y: c.hp <= 0, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(home)));
                 }
             }
         }
@@ -485,12 +495,22 @@ fn place_fellows(game: Res<Game>, mut redraw: ResMut<Redraw>, mut fellows: Query
     }
 }
 
-fn idle(time: Res<Time>, mut idlers: Query<(&Idler, &mut Transform)>) {
-    for (idler, mut transform) in &mut idlers {
-        let lift = if (time.elapsed_secs() + idler.phase) % 1.4 < 0.7 { 0.0 } else { 1.0 };
-        if transform.translation.y != idler.rest_y + lift {
-            transform.translation.y = idler.rest_y + lift;
-        }
+/// Sounds and sights asked for by code that could not ask the effects itself.
+fn cues(mut background: ResMut<Background>, mut fx: ResMut<Fx>, game: Res<Game>) {
+    if background.cues.is_empty() && background.die.is_none() && !background.level_up {
+        return;
+    }
+    fx.cues.append(&mut background.cues);
+    if let Some(value) = background.die.take() {
+        fx.throw(value);
+        fx.cues.push(Sfx::Dice);
+    }
+    if std::mem::take(&mut background.level_up) {
+        let player = game.world.player;
+        let at = on_screen(player.x, player.y);
+        fx.burst(at, Color::srgb(1.0, 0.85, 0.35), 18);
+        fx.float(at + Vec2::Y * 10.0, "★", Color::srgb(1.0, 0.9, 0.45));
+        fx.cues.push(Sfx::LevelUp);
     }
 }
 
@@ -726,6 +746,7 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     // Levels gained from the story are told with it.
     for (name, up) in game.world.level_ups.drain(..) {
         turn.narration.push_str(&format!("\n★ {name}: {}", up.level));
+        background.level_up = true;
     }
     redraw.0 = true;
     background.quiet = 0.0;
@@ -1129,7 +1150,7 @@ enum Sheet {
     Rolling(String),
     /// The sheets of the party, whether there are points to place, and the abilities the
     /// master offers this player to choose from.
-    Character { lines: Vec<String>, points: bool, offer: Vec<String> },
+    Character { lines: Vec<String>, points: bool, offer: Vec<String>, advancing: String },
 }
 
 /// Where this player stands with the master's seat.
@@ -1176,6 +1197,8 @@ struct Extra {
     lost: bool,
     /// The abilities offered to this player, each in a line.
     offer: Vec<String>,
+    /// The class this player's hero takes its next levels in; empty with no hero.
+    advancing: String,
 }
 
 fn others_at_table(world: &World, me: &str) -> Vec<String> {
@@ -1251,7 +1274,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
                 lines.push(String::new());
             }
             lines.pop();
-            Sheet::Character { lines, points: world.party.iter().any(|h| h.points_to_place > 0), offer: extra.offer.clone() }
+            Sheet::Character { lines, points: world.party.iter().any(|h| h.points_to_place > 0), offer: extra.offer.clone(), advancing: extra.advancing.clone() }
         }
         _ => Sheet::None,
     }
@@ -1282,6 +1305,11 @@ fn overlay(
         panel: PanelView::default(),
         lost: hero_lost(&game.world, &me, solo),
         offer: my_offer(&game.world, &me, solo).map(|offer| offer.feats.iter().map(|f| crate::hero::feat_line(f, *lang)).collect()).unwrap_or_default(),
+        advancing: my_hero(&game.world, &me, solo)
+            .and_then(|i| game.world.party.get(i))
+            .and_then(|hero| rules::srd().class(hero.advancing()))
+            .map(|class| tr(*lang == Lang::Ru, &class.name).to_string())
+            .unwrap_or_default(),
     };
     if *phase == Phase::Master {
         let others = others_at_table(&game.world, &me);
@@ -1306,6 +1334,8 @@ fn overlay(
     for entity in &old {
         commands.entity(entity).despawn();
     }
+    // A sheet of another kind slides in; the same sheet with other words on it does not.
+    let fresh = std::mem::discriminant(&*shown) != std::mem::discriminant(&wanted);
     *shown = wanted.clone();
     if wanted == Sheet::None {
         return;
@@ -1326,7 +1356,7 @@ fn overlay(
         align_items: if low { AlignItems::FlexEnd } else { AlignItems::Center },
         ..default()
     };
-    commands.spawn((Overlay, full, GlobalZIndex(10))).with_children(|root| {
+    commands.spawn((Overlay, PopIn(if fresh { 0.0 } else { 1.0 }), full, GlobalZIndex(10))).with_children(|root| {
         let sheet = Node { width: px(if low || matches!(wanted, Sheet::Journal { .. } | Sheet::Character { .. }) { 440.0 } else { 240.0 }), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
         spawn_panel(root, &art, sheet, |sheet| match &wanted {
             Sheet::Drawing(place) => {
@@ -1500,7 +1530,13 @@ fn overlay(
                 sheet.spawn((Text::default(), T::TestRunning, fonts.body(), ink));
             }
             Sheet::Reading(turn) => {
-                sheet.spawn((Text::new(turn.narration.clone()), fonts.body(), ink));
+                // The telling is written out letter by letter over a copy of itself that
+                // cannot be seen, so the sheet has its full size from the first letter.
+                let cell = || Node { grid_row: GridPlacement::start(1), grid_column: GridPlacement::start(1), ..default() };
+                sheet.spawn(Node { display: Display::Grid, ..default() }).with_children(|stack| {
+                    stack.spawn((cell(), Text::new(turn.narration.clone()), fonts.body(), TextColor(Color::NONE)));
+                    stack.spawn((cell(), Text::default(), Typed(turn.narration.clone()), fonts.body(), ink));
+                });
                 for (n, option) in turn.options.iter().enumerate() {
                     text_button(sheet, &art, &fonts, option.label.clone(), PlayAction::Choose(n));
                 }
@@ -1538,12 +1574,15 @@ fn overlay(
                 sheet.spawn((Text::new(what.clone()), fonts.body(), ink));
                 sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::RollDie, true, (PlayAction::Roll, EnterPresses)));
             }
-            Sheet::Character { lines, points, offer } => {
+            Sheet::Character { lines, points, offer, advancing } => {
                 sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }, 150.0)).with_children(|rows| {
                     for line in lines {
                         rows.spawn((Text::new(line.clone()), fonts.body(), ink));
                     }
                 });
+                if !advancing.is_empty() {
+                    sheet.spawn(Node::default()).with_children(|slot| text_button(slot, &art, &fonts, format!("{} {advancing}", T::NextLevels.text(*lang)), PlayAction::Advance));
+                }
                 if !offer.is_empty() {
                     sheet.spawn((Text::default(), T::FeatChoose, fonts.body(), TextColor(color(WAX_DARK))));
                     for (n, line) in offer.iter().enumerate() {
@@ -1671,6 +1710,15 @@ fn on_activate(
             (PlayAction::Roll, Phase::Rolling) => Some(Intent::Roll),
             (PlayAction::Improve(ability), _) => Some(Intent::Improve(ability)),
             (PlayAction::Feat(choice), _) => Some(Intent::Feat(choice)),
+            (PlayAction::Advance, _) => {
+                // Shown at once here; the host's world confirms it.
+                let me = player_name(&settings);
+                if let Some(hero) = my_hero(&game.world, &me, false).and_then(|i| game.world.party.get_mut(i)) {
+                    hero.advance_next_class();
+                }
+                session.intend(Intent::Advance);
+                return;
+            }
             (PlayAction::NewHero, _) => {
                 *phase = Phase::Walking;
                 next.set(Screen::Hero);
@@ -1701,6 +1749,13 @@ fn on_activate(
             if let Some(done) = game.world.roll_check(&mut Rng::from_clock()) {
                 let verdict = if done.success { T::CheckSuccess } else { T::CheckFailure };
                 let line = format!("{}: d20 {}{:+} = {} / {} — {}\n{}", done.hero, done.roll.die, done.roll.bonus, done.roll.total(), done.difficulty, verdict.text(settings.lang), done.narration);
+                // Everyone in the place watches the die fall.
+                background.die = Some(done.roll.die);
+                for player in session.players() {
+                    if game.world.place_of(&player) == game.world.current {
+                        session.send_to(&player, &Down::Die(done.roll.die));
+                    }
+                }
                 *phase = told(outcome_of(line), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
             }
         }
@@ -1726,6 +1781,13 @@ fn on_activate(
             autosave(&store, &game);
             *phase = Phase::Walking;
             next.set(Screen::Hero);
+        }
+        (PlayAction::Advance, _) => {
+            let me = player_name(&settings);
+            if let Some(hero) = my_hero(&game.world, &me, matches!(*session, Session::Solo)).and_then(|i| game.world.party.get_mut(i)) {
+                hero.advance_next_class();
+                autosave(&store, &game);
+            }
         }
         (PlayAction::Feat(choice), _) => {
             let me = player_name(&settings);
@@ -1819,6 +1881,14 @@ fn guests(
             Intent::Choose(index) => table.options.get(&game.world.current).and_then(|options| options.get(index)).cloned().map(|option| outcome_of(game.world.choose(&option))),
             Intent::Roll if !game.world.pending_here() => None,
             Intent::Roll => game.world.roll_check(&mut Rng::from_clock()).map(|done| {
+                if !table.elsewhere {
+                    background.die = Some(done.roll.die);
+                }
+                for other in session.players() {
+                    if game.world.place_of(&other) == game.world.current {
+                        session.send_to(&other, &Down::Die(done.roll.die));
+                    }
+                }
                 let verdict = if done.success { T::CheckSuccess } else { T::CheckFailure };
                 outcome_of(format!("{}: d20 {}{:+} = {} / {} — {}\n{}", done.hero, done.roll.die, done.roll.bonus, done.roll.total(), done.difficulty, verdict.text(settings.lang), done.narration))
             }),
@@ -1874,6 +1944,12 @@ fn guests(
             Intent::Feat(choice) => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     game.world.choose_feat(hero, choice);
+                }
+                None
+            }
+            Intent::Advance => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player).and_then(|i| game.world.party.get_mut(i)) {
+                    hero.advance_next_class();
                 }
                 None
             }
@@ -2290,7 +2366,7 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, advance, receive, guests, background_work, draw, place_hero, place_fellows, idle, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_observer(on_activate)
             .add_observer(on_master_activate);

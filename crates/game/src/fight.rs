@@ -3,6 +3,8 @@
 //! decides an outcome.
 
 use crate::art::Art;
+use crate::audio::Sfx;
+use crate::fx::{Fx, cell_centre};
 use crate::coop::{Down, Intent, Session, my_turn};
 use crate::gm::Gm;
 use crate::i18n::{Lang, T};
@@ -238,6 +240,78 @@ impl FightView {
     }
 }
 
+/// Makes an event of the fight seen and heard as its line is added to the log.
+fn stage(event: &Event, fight: &Encounter, fx: &mut Fx, lang: Lang) {
+    let at = |id: &str| fight.combatants.iter().find(|c| c.id == id).map(|c| cell_centre(c.at()));
+    let hero = |id: &str| id.starts_with("hero_");
+    let wound = |fx: &mut Fx, id: &str, damage: i32| {
+        if let Some(point) = at(id) {
+            fx.flash(id, Color::srgb(1.0, 0.3, 0.25));
+            fx.float(point + Vec2::Y * 9.0, format!("-{damage}"), Color::srgb(1.0, 0.4, 0.35));
+            fx.burst(point, Color::srgb(0.7, 0.1, 0.1), 7);
+        }
+        if hero(id) {
+            fx.wince();
+            fx.shake(0.12);
+        }
+    };
+    match event {
+        Event::Attacked { who, target, hit, critical, damage, .. } => {
+            if let (Some(from), Some(to)) = (at(who), at(target)) {
+                fx.lunge(who, from, to);
+            }
+            if *hit {
+                wound(fx, target, *damage);
+                if *critical {
+                    fx.shake(0.22);
+                }
+                fx.cues.push(if *critical { Sfx::Crit } else if hero(target) { Sfx::Hurt } else { Sfx::Hit });
+            } else {
+                if let Some(point) = at(target) {
+                    fx.float(point + Vec2::Y * 9.0, T::FightMiss.text(lang), Color::srgb(0.85, 0.85, 0.8));
+                }
+                fx.cues.push(Sfx::Miss);
+            }
+        }
+        Event::Saved { who, damage, .. } => {
+            fx.cues.push(Sfx::Magic);
+            if *damage > 0 {
+                wound(fx, who, *damage);
+            }
+        }
+        Event::Struck { who, target, damage, .. } => {
+            if let (Some(from), Some(to)) = (at(who), at(target)) {
+                fx.lunge(who, from, to);
+            }
+            wound(fx, target, *damage);
+            fx.cues.push(Sfx::Hit);
+        }
+        Event::Healed { target, amount, .. } => {
+            if let Some(point) = at(target) {
+                fx.flash(target, Color::srgb(0.5, 1.0, 0.55));
+                fx.float(point + Vec2::Y * 9.0, format!("+{amount}"), Color::srgb(0.5, 1.0, 0.55));
+                fx.burst(point, Color::srgb(0.45, 0.9, 0.5), 8);
+            }
+            fx.cues.push(Sfx::Heal);
+        }
+        Event::Fell { who } | Event::Died { who } => {
+            if let Some(point) = at(who) {
+                fx.burst(point, Color::srgb(0.25, 0.08, 0.08), 12);
+            }
+            fx.cues.push(Sfx::Fall);
+        }
+        Event::Revived { who } => {
+            if let Some(point) = at(who) {
+                fx.burst(point, Color::srgb(1.0, 0.85, 0.4), 10);
+            }
+            fx.cues.push(Sfx::Heal);
+        }
+        Event::Moved { .. } => fx.cues.push(Sfx::Step),
+        Event::DeathSave { .. } => fx.cues.push(Sfx::Dice),
+        _ => {}
+    }
+}
+
 /// Does what the acting hero's player asked for. A guest asks the host; the host and a solo
 /// player do it themselves, and the host tells its guests what came of it.
 fn act(intent: FightIntent, world: &mut World, view: &mut FightView, session: &Session, redraw: &mut Redraw) {
@@ -259,7 +333,12 @@ fn act(intent: FightIntent, world: &mut World, view: &mut FightView, session: &S
 /// Shows waiting events one at a time and, when there is nothing to show, moves the fight
 /// on: a monster takes its turn, or the fight is found to be over. Only the host (or a solo
 /// player) moves the fight on; guests are told.
-fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: ResMut<FightView>, mut redraw: ResMut<Redraw>, lang: Res<Lang>, session: Res<Session>) {
+fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: ResMut<FightView>, mut redraw: ResMut<Redraw>, lang: Res<Lang>, session: Res<Session>, mut fx: ResMut<Fx>, mut was_over: Local<bool>) {
+    // The end of a fight has a sound of its own, on every machine that watched it.
+    if let (Some(summary), false) = (&view.over, *was_over) {
+        fx.cues.push(if summary.won { Sfx::Victory } else { Sfx::Defeat });
+    }
+    *was_over = view.over.is_some();
     if *phase != Phase::Fighting {
         return;
     }
@@ -269,7 +348,11 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
         if view.until_next > 0.0 {
             return;
         }
-        let line = view.queue.pop_front().and_then(|event| world.fight.as_ref().and_then(|f| describe(&event, f, *lang)));
+        let line = view.queue.pop_front().and_then(|event| {
+            let fight = world.fight.as_ref()?;
+            stage(&event, fight, &mut fx, *lang);
+            describe(&event, fight, *lang)
+        });
         if let Some(line) = line {
             view.lines.push(line);
             let extra = view.lines.len().saturating_sub(LOG_LINES);

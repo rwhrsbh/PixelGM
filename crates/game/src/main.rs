@@ -1,6 +1,8 @@
 mod art;
+mod audio;
 mod coop;
 mod fight;
+mod fx;
 mod gm;
 mod hero;
 mod i18n;
@@ -19,6 +21,7 @@ mod shot;
 mod store;
 mod theme;
 mod translate;
+mod voice;
 mod widgets;
 
 use bevy::prelude::*;
@@ -41,6 +44,8 @@ fn main() -> AppExit {
     .init_resource::<theme::Fonts>()
     .init_resource::<art::Art>()
     .insert_resource(master::Master::new(args.fake_gm))
+    // An instance with a hidden window is a test: it makes no noise.
+    .insert_resource(audio::Muted(args.hidden && !args.sound))
     .add_plugins((
         screen::ScreenPlugin,
         i18n::I18nPlugin,
@@ -57,6 +62,6 @@ fn main() -> AppExit {
         hero::HeroPlugin,
         fight::FightPlugin,
     ))
-    .add_plugins((translate::TranslatePlugin, shot::ShotPlugin(args)));
+    .add_plugins((translate::TranslatePlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
     app.run()
 }

@@ -13,6 +13,25 @@ macro_rules! srd_file {
     };
 }
 
+/// The same for the 2024 edition of the reference rules.
+macro_rules! srd_2024 {
+    ($name:literal) => {
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/srd/2024/en/5e-SRD-", $name, ".json"))
+    };
+}
+
+/// Which edition of the reference rules a table plays by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Edition {
+    /// SRD 5.1, the 2014 rules: complete.
+    #[default]
+    Srd51,
+    /// SRD 5.2, the 2024 rules: a beta. Its monsters, spells, peoples and class features
+    /// are used; where its data does not say what the game needs (spell slots by level,
+    /// arms and armour) the 5.1 tables stand in.
+    Srd52,
+}
+
 #[derive(Debug, Clone)]
 pub struct Race {
     pub index: String,
@@ -21,6 +40,26 @@ pub struct Race {
     pub speed: u32,
     /// Added to the six ability scores, in the order of `Ability`.
     pub bonuses: [i32; 6],
+}
+
+/// The abilities a class is built on, in the order the class cares about them. A character
+/// needs 13 in each to take levels in the class beside another; and in the 2024 rules,
+/// where a people gives no ability bonuses, a background fitted to the class does.
+pub fn primary_abilities(class: &str) -> &'static [Ability] {
+    match class {
+        "barbarian" => &[Ability::Str, Ability::Con],
+        "bard" => &[Ability::Cha, Ability::Dex],
+        "cleric" => &[Ability::Wis, Ability::Con],
+        "druid" => &[Ability::Wis, Ability::Con],
+        "fighter" => &[Ability::Str, Ability::Con],
+        "monk" => &[Ability::Dex, Ability::Wis],
+        "paladin" => &[Ability::Str, Ability::Cha],
+        "ranger" => &[Ability::Dex, Ability::Wis],
+        "rogue" => &[Ability::Dex, Ability::Con],
+        "sorcerer" => &[Ability::Cha, Ability::Con],
+        "warlock" => &[Ability::Cha, Ability::Con],
+        _ => &[Ability::Int, Ability::Con],
+    }
 }
 
 /// What a class gives at one level.
@@ -54,6 +93,9 @@ pub struct Class {
     pub levels: Vec<Level>,
     /// The gear a new character of this class starts with.
     pub kit: Kit,
+    /// Added to a new character's ability scores by its background, in the editions where
+    /// the people adds nothing: +2 to what the class is built on, +1 to the next.
+    pub background: [i32; 6],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -166,6 +208,7 @@ pub struct Skill {
     pub ability: Ability,
 }
 
+#[derive(Clone)]
 pub struct Srd {
     pub races: Vec<Race>,
     pub classes: Vec<Class>,
@@ -242,6 +285,7 @@ fn load_classes() -> Vec<Class> {
                 .map(|o| o.iter().filter_map(|x| x["item"]["index"].as_str()?.strip_prefix("skill-").map(str::to_string)).collect())
                 .unwrap_or_default();
             Class {
+                background: [0; 6],
                 kit: kit(&index),
                 name: text(&c["name"]),
                 hit_die: c["hit_die"].as_u64().unwrap_or(8) as u32,
@@ -323,8 +367,8 @@ fn dice_table(v: &Value) -> BTreeMap<u8, String> {
     v.as_object().map(|o| o.iter().filter_map(|(k, d)| Some((k.parse().ok()?, d.as_str()?.to_string()))).collect()).unwrap_or_default()
 }
 
-fn load_spells() -> HashMap<String, Spell> {
-    list(srd_file!("Spells"))
+fn load_spells(file: &str) -> HashMap<String, Spell> {
+    list(file)
         .iter()
         .map(|s| {
             // Some entries hold the damage in a one-element list, others directly.
@@ -349,15 +393,16 @@ fn load_spells() -> HashMap<String, Spell> {
                 range: feet(s["range"].as_str().unwrap_or_default()),
                 area: s["area_of_effect"]["size"].as_u64().unwrap_or(0) as u32,
                 concentration: s["concentration"].as_bool().unwrap_or(false),
-                description: s["desc"].as_array().map(|d| d.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n")).unwrap_or_default(),
+                // The 2014 files give a list of paragraphs, the 2024 ones a single text.
+                description: s["desc"].as_array().map(|d| d.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n")).or_else(|| s["description"].as_str().map(str::to_string)).unwrap_or_default(),
             };
             (spell.index.clone(), spell)
         })
         .collect()
 }
 
-fn load_monsters() -> HashMap<String, Monster> {
-    list(srd_file!("Monsters"))
+fn load_monsters(file: &str) -> HashMap<String, Monster> {
+    list(file)
         .iter()
         .map(|m| {
             let actions = m["actions"].as_array().cloned().unwrap_or_default();
@@ -414,13 +459,70 @@ fn load_skills() -> Vec<Skill> {
     list(srd_file!("Skills")).iter().filter_map(|s| Some(Skill { index: text(&s["index"]), name: text(&s["name"]), ability: ability(&s["ability_score"])? })).collect()
 }
 
-/// The rules data, read on first use.
+/// The edition the game is playing by now; `srd()` answers for it.
+static EDITION: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Chooses the edition for everything that follows. One world is played at a time, and a
+/// world keeps the edition it was made with.
+pub fn use_edition(edition: Edition) {
+    EDITION.store(edition as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn edition() -> Edition {
+    if EDITION.load(std::sync::atomic::Ordering::Relaxed) == Edition::Srd52 as u8 { Edition::Srd52 } else { Edition::Srd51 }
+}
+
+/// The rules data of the edition being played, read on first use.
 pub fn srd() -> &'static Srd {
-    static SRD: OnceLock<Srd> = OnceLock::new();
-    SRD.get_or_init(|| {
+    srd_of(edition())
+}
+
+/// The rules data of one edition.
+pub fn srd_of(edition: Edition) -> &'static Srd {
+    static SRD_51: OnceLock<Srd> = OnceLock::new();
+    static SRD_52: OnceLock<Srd> = OnceLock::new();
+    let first = SRD_51.get_or_init(|| {
         let (weapons, armors) = load_gear();
-        Srd { races: load_races(), classes: load_classes(), weapons, armors, spells: load_spells(), monsters: load_monsters(), skills: load_skills() }
-    })
+        Srd { races: load_races(), classes: load_classes(), weapons, armors, spells: load_spells(srd_file!("Spells")), monsters: load_monsters(srd_file!("Monsters")), skills: load_skills() }
+    });
+    match edition {
+        Edition::Srd51 => first,
+        Edition::Srd52 => SRD_52.get_or_init(|| later_edition(first)),
+    }
+}
+
+/// The 2024 edition, built on the 2014 one: its own monsters, spells and peoples, its own
+/// names for what classes gain at each level, and a background's bonuses in place of a
+/// people's. What its data does not carry stays as it was.
+fn later_edition(first: &Srd) -> Srd {
+    let mut srd = first.clone();
+    let monsters = load_monsters(srd_2024!("Monsters"));
+    if monsters.len() * 2 > first.monsters.len() {
+        srd.monsters = monsters;
+    }
+    let spells = load_spells(srd_2024!("Spells"));
+    if spells.len() * 2 > first.spells.len() {
+        srd.spells = spells;
+    }
+    let species: Vec<Race> = list(srd_2024!("Species")).iter().map(|s| Race { index: text(&s["index"]), name: text(&s["name"]), speed: s["speed"].as_u64().unwrap_or(30) as u32, bonuses: [0; 6] }).collect();
+    if !species.is_empty() {
+        srd.races = species;
+    }
+    let levels = list(srd_2024!("Levels"));
+    for class in &mut srd.classes {
+        for level in levels.iter().filter(|l| l["class"]["index"] == class.index.as_str() && l.get("subclass").is_none()) {
+            let n = level["level"].as_u64().unwrap_or(0) as usize;
+            let features: Vec<String> = level["features"].as_array().map(|f| f.iter().map(|x| text(&x["name"])).collect()).unwrap_or_default();
+            if (1..=20).contains(&n) && !features.is_empty() {
+                class.levels[n - 1].features = features;
+            }
+        }
+        let built_on = primary_abilities(&class.index);
+        class.background = [0; 6];
+        class.background[built_on[0] as usize] = 2;
+        class.background[built_on[1] as usize] = 1;
+    }
+    srd
 }
 
 impl Srd {
@@ -580,4 +682,22 @@ mod tests {
         assert!(tr(true, "Goblin").chars().any(|c| ('а'..='я').contains(&c) || ('А'..='Я').contains(&c)));
         assert_eq!(tr(true, "not an SRD string"), "not an SRD string");
     }
+
+    #[test]
+    fn the_later_edition_has_its_own_monsters_spells_and_peoples_on_the_same_tables() {
+        let (old, new) = (srd_of(Edition::Srd51), srd_of(Edition::Srd52));
+        assert!(new.monsters.len() > 300 && new.spells.len() > 300, "{} {}", new.monsters.len(), new.spells.len());
+        assert!(new.monsters.values().filter(|m| !m.attacks.is_empty()).count() > 250, "most monsters can fight");
+        assert!(new.spells.values().filter(|s| s.mechanised()).count() > 60);
+        assert!(new.spells.values().all(|s| !s.description.is_empty()));
+        assert_eq!(new.races.len(), 9);
+        assert!(new.races.iter().all(|r| r.bonuses == [0; 6]), "a people gives no ability bonuses in the 2024 rules");
+        let wizard = new.class("wizard").unwrap();
+        assert_eq!(wizard.background, [0, 0, 1, 2, 0, 0]);
+        assert_eq!(wizard.levels[0].slots, old.class("wizard").unwrap().levels[0].slots, "the slots are the earlier edition's");
+        assert!(new.class("barbarian").unwrap().levels[0].features.iter().any(|f| f == "Weapon Mastery"), "the features are the later edition's");
+        assert!(old.classes.iter().all(|c| c.background == [0; 6]));
+        assert_eq!(new.weapons.len(), old.weapons.len());
+    }
+
 }

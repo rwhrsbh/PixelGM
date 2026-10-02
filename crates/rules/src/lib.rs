@@ -9,5 +9,5 @@ pub mod dice;
 
 pub use character::{Ability, AbilityMethod, Character, DeathSaves, Feat};
 pub use combat::{Combatant, Encounter, Event, Outcome, Side};
-pub use data::{Srd, srd, tr};
+pub use data::{Edition, Srd, edition, srd, srd_of, tr, use_edition};
 pub use dice::{Dice, Rng, Roll};
