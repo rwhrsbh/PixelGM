@@ -20,9 +20,20 @@ decision changes.
 ## Engine and layout
 
 - Rust + Bevy, everything built from code, no editor scenes.
-- Internal resolution 480×270, integer upscaling.
+- World canvas 960×540 (two canvas pixels per world pixel); the interface is laid out on a
+  480×270 grid. Scaled by whole or half steps to the window; the window opens at the largest
+  whole multiple that fits the screen.
 - Top-down grid, 16×16 tiles, a world made of separate locations (about 30×20 cells) joined by
   exits. Building interiors are their own locations.
+- Picture (user, after seeing the first version: "looks like the 90s"): stock grounds are
+  painted in code at twice the master's measure (scene.rs) — ragged edges where grounds meet,
+  wall faces and shadows, standing trees/bushes/rocks, animated water, a vignette. The master
+  sets each place's light (day/dusk/night/dark); the dark is a layer with holes around lamps
+  (props named like fire, torch…) and around every hero. Master-drawn tiles and sprites are
+  enlarged with EPX, not redrawn.
+- Heroes are not drawn by the master: doll.rs builds them from looks (chosen at creation, a tab
+  of its own with a live walking figure) and gear — armour, helmet, shield and main weapon show
+  on the body. Four directions × four walk frames.
 - Shell style: a pixel game-master table (wood, parchment, candles, dice, GM screen). The GM
   picks an accent palette per world and the shell is recoloured to match.
 - Everything is animated in one style: procedural motion (tween, squash, flash, shake,
