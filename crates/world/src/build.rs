@@ -10,7 +10,7 @@ use crate::model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, PALETTE_MAX
 use crate::party::Stats;
 use crate::path::{Cell, elbow, nearest, reachable};
 use crate::story::{ActionDraft, Story, read_actions};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,7 +31,7 @@ fn lenient_int<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     })
 }
 
-#[derive(Deserialize, Default, Debug, Clone)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct SpriteDraft {
     pub id: String,
@@ -525,6 +525,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         fight: None,
         owners: Vec::new(),
         present: Vec::new(),
+        gm: None,
         others: Vec::new(),
         level_ups: Vec::new(),
     };

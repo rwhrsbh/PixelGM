@@ -4,7 +4,7 @@
 use crate::base::MARKER_SPRITE;
 use crate::build::slug;
 use crate::model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, Player, Prop, Stub, World};
-use crate::party::{Branch, PendingCheck};
+use crate::party::{Branch, PendingCheck, Stats};
 use rules::{Ability, Rng};
 use crate::path::nearest;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -78,6 +78,11 @@ pub enum Effect {
         blocking: bool,
         #[serde(default)]
         attitude: Attitude,
+        /// For a creature: the SRD monster it fights as, or numbers of its own.
+        #[serde(default)]
+        monster: Option<String>,
+        #[serde(default)]
+        stats: Option<Stats>,
     },
     /// A way out opens.
     Exit {
@@ -130,7 +135,7 @@ pub struct Action {
     pub effects: Vec<Effect>,
 }
 
-#[derive(Deserialize, Default, Debug, Clone)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct ActionDraft {
     pub label: String,
@@ -396,7 +401,7 @@ impl World {
                         notes.push("tile: the place cannot hold another kind of tile".to_string());
                     }
                 }
-                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude } => {
+                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats } => {
                     let mut id = slug(id);
                     if id.is_empty() {
                         id = "thing".to_string();
@@ -417,7 +422,7 @@ impl World {
                     if kind.trim().eq_ignore_ascii_case("creature") {
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
                         if let Some((cx, cy)) = nearest(wanted, free) {
-                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: None, stats: None });
+                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone() });
                         }
                     } else {
                         location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: Vec::new() });

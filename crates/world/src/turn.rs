@@ -4,16 +4,57 @@
 use crate::build::{SpriteDraft, slug, sprite_from};
 use crate::model::World;
 use crate::story::{Action, ActionDraft, Speaker, read_actions, read_effects};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Deserialize, Default, Debug, Clone)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct TurnDraft {
     pub narration: String,
     pub effects: Vec<Value>,
     pub sprites: Vec<SpriteDraft>,
     pub options: Vec<ActionDraft>,
+    /// What only one character learns.
+    pub whispers: Vec<Whisper>,
+}
+
+/// Words for one player alone. `to` names the character, or the player.
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct Whisper {
+    pub to: String,
+    pub text: String,
+}
+
+/// A creature the game master keeps to use again: what it is, how it looks, how it fights.
+/// A human master collects these in a library of their own and brings them into any world.
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct CreatureCard {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// Rows of palette characters, as every sprite is drawn.
+    pub rows: Vec<String>,
+    pub monster: Option<String>,
+    pub stats: Option<crate::party::Stats>,
+}
+
+impl CreatureCard {
+    /// The changes that put this creature into the place the party is in, at a cell.
+    pub fn summon(&self, x: usize, y: usize, hostile: bool) -> TurnDraft {
+        let id = slug(&self.id);
+        let id = if id.is_empty() { slug(&self.name) } else { id };
+        TurnDraft {
+            sprites: vec![SpriteDraft { id: id.clone(), rows: self.rows.clone() }],
+            effects: vec![serde_json::json!({
+                "op": "spawn", "kind": "creature", "id": id, "name": self.name, "description": self.description,
+                "x": x, "y": y, "sprite": id, "attitude": if hostile { "hostile" } else { "neutral" },
+                "monster": self.monster, "stats": self.stats,
+            })],
+            ..TurnDraft::default()
+        }
+    }
 }
 
 /// What the players see after a turn: the telling, and choices whose outcomes are already
@@ -123,4 +164,35 @@ mod tests {
         assert_eq!(notes.len(), 1);
         let _ = Effect::Fact { text: String::new() };
     }
+
+    #[test]
+    fn a_card_from_the_library_arrives_with_its_picture_and_its_numbers() {
+        let mut w = world();
+        let card = CreatureCard {
+            id: "Bog Troll".into(),
+            name: "Bog troll".into(),
+            description: "Wet and patient.".into(),
+            rows: vec!["0110".into(), "1111".into(), "1001".into()],
+            monster: None,
+            stats: Some(crate::party::Stats { ac: 13, hp: 30, speed: 30, attacks: Vec::new(), xp: 200 }),
+        };
+        let (_, notes) = w.take_turn("", &card.summon(6, 6, true));
+        assert!(notes.is_empty(), "{notes:?}");
+        let troll = w.here().creatures.iter().find(|c| c.id == "bog_troll").expect("the troll stands in the place");
+        assert_eq!((troll.sprite.as_str(), troll.attitude, troll.stats.as_ref().map(|s| s.hp)), ("bog_troll", crate::Attitude::Hostile, Some(30)));
+        assert!(w.sprites.contains_key("bog_troll"));
+        assert!(w.story.log.is_empty(), "bringing a creature in says nothing by itself");
+        // The same card twice gives two creatures.
+        w.take_turn("", &card.summon(6, 6, false));
+        assert!(w.here().creatures.iter().any(|c| c.id == "bog_troll_2"));
+    }
+
+    #[test]
+    fn a_draft_survives_the_wire_with_its_whispers() {
+        let draft: TurnDraft = serde_json::from_value(serde_json::json!({ "narration": "Rain.", "whispers": [{ "to": "Brak", "text": "You smell smoke." }] })).unwrap();
+        let back: TurnDraft = serde_json::from_str(&serde_json::to_string(&draft).unwrap()).unwrap();
+        assert_eq!(back, draft);
+        assert_eq!(back.whispers[0], Whisper { to: "Brak".into(), text: "You smell smoke.".into() });
+    }
+
 }

@@ -5,7 +5,7 @@
 use crate::art::Art;
 use crate::fight::FightView;
 use crate::gm::{Gm, Trouble};
-use crate::i18n::T;
+use crate::i18n::{Lang, T};
 use crate::master::{Master, Relay, Relayed, Served, serve_for_host};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::play::{self, Game, Phase, Redraw};
@@ -21,10 +21,10 @@ use rules::{Ability, Character, Event};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use world::{Action, FightIntent, FightSummary, Token, Turn, World};
+use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -44,6 +44,59 @@ pub enum Intent {
     Fight(FightIntent),
     /// A point into an ability of the player's own hero.
     Improve(Ability),
+    /// Something only the player in the master's seat may do.
+    Gm(GmAct),
+}
+
+/// What the player in the master's seat does. A guest sends it and the host checks who it
+/// came from; the host's own player goes through the same door.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum GmAct {
+    /// Take the seat when it is empty, or give it back to the model.
+    Seat(bool),
+    /// The waiting draft is let through, told as the master left it, or thrown away.
+    Verdict { accept: bool, narration: String },
+    /// A direction for the model. Over a waiting draft it says how that answer is to be
+    /// redone; otherwise the model makes a new turn of it. Either way a draft comes back.
+    Direct(String),
+    /// Changes made by hand: a telling, effects, a creature from the library.
+    Apply(Box<TurnDraft>),
+    Whisper { to: String, text: String },
+    /// Ask the model for a creature for the master's library.
+    Invent(String),
+}
+
+/// A draft of the model's as the master sees it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct DraftView {
+    /// What the players did, when the draft answers them.
+    pub said: String,
+    pub narration: String,
+    pub effects: Vec<String>,
+    pub options: Vec<String>,
+}
+
+/// A model's answer waiting for the human master's verdict.
+pub struct Held {
+    pub said: String,
+    pub near: Option<String>,
+    pub draft: TurnDraft,
+}
+
+impl Held {
+    pub fn view(&self) -> DraftView {
+        const SHOWN: usize = 110;
+        let brief = |effect: &serde_json::Value| {
+            let text = effect.to_string();
+            if text.chars().count() > SHOWN { format!("{}…", text.chars().take(SHOWN).collect::<String>()) } else { text }
+        };
+        DraftView {
+            said: self.said.clone(),
+            narration: self.draft.narration.trim().to_string(),
+            effects: self.draft.effects.iter().map(brief).collect(),
+            options: self.draft.options.iter().map(|o| format!("{} — {}", o.label.trim(), o.outcome.trim())).collect(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -79,6 +132,12 @@ pub enum Down {
     /// The host's keys are spent; this guest's keys are asked to serve a request.
     Ask(Relayed),
     Chat { from: String, text: String },
+    /// For the player in the master's seat: a draft to judge, or word that there is none.
+    Draft(Option<DraftView>),
+    /// Words for this player alone.
+    Whisper(String),
+    /// A creature the model made for this player's library, or why it could not.
+    Card(Result<CreatureCard, String>),
     /// The host runs another version of the game.
     WrongVersion,
 }
@@ -138,6 +197,13 @@ impl Session {
         }
     }
 
+    /// Sends to one guest, by name. `false` unless this is the host and the guest is there.
+    pub fn send_to(&self, player: &str, message: &Down) -> bool {
+        let Session::Host(hosting) = self else { return false };
+        let hosting = hosting.lock().unwrap();
+        hosting.names.iter().find(|(_, name)| name.as_str() == player).is_some_and(|(peer, _)| hosting.net.send(*peer, message))
+    }
+
     /// Says something to the other players only; the game master does not hear it.
     pub fn chat(&self, table: &mut Table, me: &str, text: &str) {
         match self {
@@ -180,6 +246,14 @@ pub struct Table {
     pub status: Option<T>,
     /// Table talk, oldest first.
     pub chat: Vec<ChatLine>,
+    /// On the host: the model's answers a human master has yet to judge, oldest first.
+    pub drafts: VecDeque<Held>,
+    /// For the player in the master's seat: the draft to judge now.
+    pub judging: Option<DraftView>,
+    /// For the player in the master's seat: the last thing the panel has to say.
+    pub master_note: String,
+    /// This player's library of creatures, as last read from disk.
+    pub cards: Vec<CreatureCard>,
 }
 
 pub struct ChatLine {
@@ -192,6 +266,18 @@ pub struct ChatLine {
 const CHAT_KEPT: usize = 50;
 
 impl Table {
+    /// Keeps a creature the model made for this player's library, and says so on the panel.
+    pub fn keep_card(&mut self, store: &Store, card: Result<CreatureCard, String>, lang: Lang) {
+        self.master_note = match card {
+            Ok(card) => match store.save_card(&card) {
+                Ok(()) => format!("{} {}", T::CardSaved.text(lang), card.name),
+                Err(e) => e.to_string(),
+            },
+            Err(why) => why,
+        };
+        self.cards = store.load_cards();
+    }
+
     pub fn heard(&mut self, from: &str, text: &str) {
         self.chat.push(ChatLine { from: from.to_string(), text: text.to_string(), age: 0.0 });
         let extra = self.chat.len().saturating_sub(CHAT_KEPT);
@@ -444,7 +530,7 @@ fn presence(session: Res<Session>, settings: Res<Settings>, mut game: Option<Res
     }
     // A host who loads a table's save in which every hero is somebody else's needs one.
     let world = &game.world;
-    if session.is_host() && *screen.get() == Screen::Play && !world.party.is_empty() && !mine && world.owners.len() == world.party.len() && world.owners.iter().all(|o| !o.is_empty()) {
+    if session.is_host() && *screen.get() == Screen::Play && !world.party.is_empty() && !mine && world.gm.as_deref() != Some(me.as_str()) && world.owners.len() == world.party.len() && world.owners.iter().all(|o| !o.is_empty()) {
         next.set(Screen::Hero);
     }
 }
@@ -477,13 +563,13 @@ fn adopt(id: String, world: World, game: &mut Option<ResMut<Game>>, commands: &m
                     error!("could not save the game: {e}");
                 }
             }
-            // A guest who has no hero in this world yet makes one.
-            if screen == Screen::Play && !game.world.owners.iter().any(|o| o == me) && game.world.party.len() == game.world.owners.len() {
+            // A guest who has no hero in this world yet makes one, unless they run the game.
+            if screen == Screen::Play && !game.world.owners.iter().any(|o| o == me) && game.world.gm.as_deref() != Some(me) && game.world.party.len() == game.world.owners.len() {
                 next.set(Screen::Hero);
             }
         }
         None => {
-            let has_hero = world.owners.iter().any(|o| o == me);
+            let has_hero = world.owners.iter().any(|o| o == me) || world.gm.as_deref() == Some(me);
             commands.insert_resource(Phase::Arriving { t: 0.0 });
             commands.insert_resource(Game { world, world_id: id });
             next.set(if has_hero { Screen::Play } else { Screen::Hero });
@@ -562,6 +648,19 @@ fn client_pump(
                 });
             }
             ClientEvent::Message(Down::Chat { from, text }) => table.heard(&from, &text),
+            ClientEvent::Message(Down::Draft(view)) => {
+                match (&view, &*phase) {
+                    (Some(_), Phase::Walking | Phase::Master) => *phase = Phase::Judging,
+                    (None, Phase::Judging) => *phase = Phase::Walking,
+                    _ => {}
+                }
+                table.judging = view;
+            }
+            ClientEvent::Message(Down::Whisper(text)) => {
+                let turn = Turn { narration: format!("{} {text}", T::WhisperMark.text(settings.lang)), options: Vec::new() };
+                play::show(turn, &mut phase, &mut table);
+            }
+            ClientEvent::Message(Down::Card(card)) => table.keep_card(&store, card, settings.lang),
             ClientEvent::Message(Down::WrongVersion) => {
                 table.status = Some(T::LobbyWrongVersion);
                 *session = Session::Solo;

@@ -161,6 +161,18 @@ pub fn turn(said: &str) -> String {
     .to_string()
 }
 
+/// The answer to a human master's "make me a creature".
+pub fn creature(request: &str) -> String {
+    let name = request.trim().chars().take(24).collect::<String>();
+    json!({
+        "id": request, "name": if name.is_empty() { "Thing".to_string() } else { name },
+        "description": "Made to order.",
+        "rows": ["0330", "3333", "3003"],
+        "stats": { "ac": 12, "hp": 9, "speed": 30, "attacks": [{ "name": "Bite", "bonus": 3, "damage": "1d6+1", "range": 5 }], "xp": 25 }
+    })
+    .to_string()
+}
+
 /// The answer to "write the older story up as a chapter".
 pub fn chapter(lines: usize) -> String {
     json!({ "chapter": format!("A chapter covering {lines} lines of the story."), "facts": ["A chapter was written."] }).to_string()

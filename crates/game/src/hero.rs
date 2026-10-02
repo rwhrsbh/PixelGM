@@ -1,7 +1,7 @@
 //! Making a character for a world that has none yet, and showing the sheet of one that exists.
 
 use crate::art::Art;
-use crate::coop::{Session, Up, owner_name};
+use crate::coop::{GmAct, Intent, Session, Up, owner_name};
 use crate::i18n::{Lang, T};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::play::Game;
@@ -104,6 +104,8 @@ enum Action {
     Create,
     /// Take the hero of a player who is away instead of making a new one.
     Take(usize),
+    /// Sit in the master's seat and play no hero.
+    Lead,
 }
 
 #[derive(Component)]
@@ -187,7 +189,7 @@ fn spawn_screen(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: 
 
 /// Rebuilds everything that depends on the draft. The two text fields are left alone, so
 /// what was typed in them survives.
-fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, choices: Query<Entity, With<Choices>>, fresh: Query<(), Added<Choices>>) {
+fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, choices: Query<Entity, With<Choices>>, fresh: Query<(), Added<Choices>>, session: Res<Session>, game: Option<Res<Game>>) {
     let Ok(choices) = choices.single() else { return };
     if !draft.is_changed() && !lang.is_changed() && fresh.is_empty() {
         return;
@@ -256,6 +258,11 @@ fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<A
                     button(line, &art, &fonts, T::Back, true, Nav::Go(Screen::Main));
                     button(line, &art, &fonts, T::CreateHero, true, Action::Create);
                 });
+                // At a shared table somebody may run the game instead of playing in it.
+                let seat_free = game.as_ref().is_some_and(|g| g.world.gm.as_deref().is_none_or(|gm| !g.world.present.iter().any(|p| p == gm)));
+                if !matches!(*session, Session::Solo) && seat_free {
+                    right.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::SeatNoHero, true, Action::Lead));
+                }
             });
         });
     });
@@ -307,6 +314,13 @@ fn on_activate(
         Action::Plus(i) => draft.nudge(*i, 1),
         Action::Pick(i) => draft.pick(*i),
         Action::Skill(skill) => draft.toggle_skill(skill),
+        Action::Lead => {
+            if let Some(mut game) = game {
+                session.intend(Intent::Gm(GmAct::Seat(true)));
+                game.world.gm = Some(owner_name(&session, &settings));
+                next.set(Screen::Play);
+            }
+        }
         Action::Take(hero) => {
             if let Some(mut game) = game {
                 // The host decides; the local copy is changed too so the guest can walk on

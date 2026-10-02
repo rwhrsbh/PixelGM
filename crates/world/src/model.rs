@@ -247,6 +247,9 @@ pub struct World {
     /// it follows the party but takes no part. Empty means nobody is away (a game alone).
     #[serde(default)]
     pub present: Vec<String>,
+    /// The player in the game master's seat. Nobody means the model runs the game alone.
+    #[serde(default)]
+    pub gm: Option<String>,
     /// The other players' tokens in the place the party is in. Not saved: they are where
     /// their players last said they were.
     #[serde(skip)]

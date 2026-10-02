@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use world::World;
+use world::{CreatureCard, World};
 
 #[derive(Resource, Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -200,6 +200,26 @@ impl Store {
         write_whole(&self.dir.join("quota.json"), serde_json::to_string_pretty(state)?.as_bytes())
     }
 
+    fn library_dir(&self) -> PathBuf {
+        self.dir.join("library")
+    }
+
+    /// Keeps a creature in this player's own library, under its id. The library belongs to
+    /// the player, not to a world: a master brings its creatures into any game.
+    pub fn save_card(&self, card: &CreatureCard) -> io::Result<()> {
+        let name: String = card.id.chars().map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+        let name = if name.is_empty() { format!("creature-{}", unix_now()) } else { name };
+        write_whole(&self.library_dir().join(format!("{name}.json")), serde_json::to_string_pretty(card)?.as_bytes())
+    }
+
+    /// The library, by name. A card that cannot be read is left out.
+    pub fn load_cards(&self) -> Vec<CreatureCard> {
+        let mut cards: Vec<CreatureCard> =
+            fs::read_dir(self.library_dir()).into_iter().flatten().flatten().filter(|f| f.path().extension().is_some_and(|e| e == "json")).filter_map(|f| fs::read_to_string(f.path()).ok()).filter_map(|s| serde_json::from_str(&s).ok()).collect();
+        cards.sort_by(|a, b| a.name.cmp(&b.name));
+        cards
+    }
+
     pub fn save_keys(&self, keys: &[String]) -> io::Result<()> {
         let mut file = KeyFile::default();
         for key in keys {
@@ -332,4 +352,20 @@ mod tests {
         fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
         assert_eq!(store.load_keys(), ["good"]);
     }
+
+    #[test]
+    fn the_library_keeps_creatures_by_id_and_lists_them_by_name() {
+        let store = temp_store("library");
+        assert!(store.load_cards().is_empty());
+        let troll = CreatureCard { id: "bog_troll".into(), name: "Bog troll".into(), rows: vec!["11".into()], ..CreatureCard::default() };
+        let ant = CreatureCard { id: "ant".into(), name: "Ant".into(), ..CreatureCard::default() };
+        store.save_card(&troll).unwrap();
+        store.save_card(&ant).unwrap();
+        // Saving the same id again replaces the card.
+        store.save_card(&CreatureCard { description: "Wet.".into(), ..troll.clone() }).unwrap();
+        let cards = store.load_cards();
+        assert_eq!(cards.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Ant", "Bog troll"]);
+        assert_eq!(cards[1].description, "Wet.");
+    }
+
 }

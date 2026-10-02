@@ -2,7 +2,7 @@
 //! place to the next, and the conversation with the game master.
 
 use crate::art::{Art, ground_picture, sprite_picture};
-use crate::coop::{Down, Intent, Session, Table, player_name};
+use crate::coop::{Down, DraftView, GmAct, Held, Intent, Session, Table, player_name};
 use crate::gm::{Gm, Trouble, trouble_text};
 use crate::i18n::{Lang, T};
 use crate::master::{Answer, Ask, Master};
@@ -20,8 +20,9 @@ use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use world::base::{HERO_SPRITE, MARKER_SPRITE};
 use world::walk::FEET;
 use crate::hero::sheet_lines;
-use rules::{Ability, Rng, Side, tr};
-use world::{LocationDraft, Speaker, TILE, Turn, World, fake};
+use rules::dice::Edge;
+use rules::{Ability, Rng, Roll, Side, tr};
+use world::{CreatureCard, LocationDraft, Speaker, TILE, Turn, TurnDraft, Whisper, World, fake};
 
 /// The game being played.
 #[derive(Resource)]
@@ -63,6 +64,10 @@ pub enum Phase {
     Fighting,
     /// The character sheet.
     Sheet,
+    /// The player in the master's seat reads the model's draft before the others do.
+    Judging,
+    /// The master's panel: directions, tools, the library.
+    Master,
 }
 
 #[derive(Resource, Default)]
@@ -136,6 +141,61 @@ struct Overlay;
 #[derive(Component)]
 struct SayInput;
 
+/// The telling of a draft, for the master to change.
+#[derive(Component)]
+struct JudgeInput;
+
+/// How the model should redo a draft.
+#[derive(Component)]
+struct RedoInput;
+
+/// The parameter of the master's tools.
+#[derive(Component)]
+struct MasterInput;
+
+/// What the master's panel can do. The panel's text field is each tool's parameter.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Tool {
+    ToModel,
+    Narrate,
+    Whisper,
+    NextTarget,
+    Creature,
+    Mood,
+    Remove,
+    Tile,
+    Damage,
+    Heal,
+    Give,
+    Fight,
+    Roll,
+    Invent,
+    /// A creature of the library, by its place in the list.
+    Card(usize),
+}
+
+/// The master's panel as its owner left it.
+#[derive(Resource, Default)]
+struct Panel {
+    typed: String,
+    /// Which of the other players a whisper goes to.
+    target: usize,
+    /// Whether creatures brought in are hostile.
+    hostile: bool,
+    /// Raised by every press, so the panel is drawn again and its field emptied.
+    presses: u32,
+}
+
+/// How far from the master's token "nearest" reaches when removing a thing.
+const REMOVE_REACH: f32 = 48.0;
+
+#[derive(bevy::ecs::system::SystemParam)]
+struct MasterFields<'w, 's> {
+    judge: Query<'w, 's, &'static EditableText, With<JudgeInput>>,
+    redo: Query<'w, 's, &'static EditableText, With<RedoInput>>,
+    panel: Query<'w, 's, &'static EditableText, With<MasterInput>>,
+}
+
 /// The last things said at the table, in a corner of the screen.
 #[derive(Component)]
 struct ChatLog;
@@ -171,6 +231,13 @@ enum PlayAction {
     Improve(Ability),
     /// A night's rest.
     Rest,
+    SeatTake,
+    SeatLeave,
+    /// The master's verdict on the draft: let it through or throw it away.
+    Judge(bool),
+    /// Have the model redo the draft as the direction says.
+    Redo,
+    Tool(Tool),
 }
 
 const SPEED: f32 = 72.0;
@@ -400,13 +467,14 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         *phase = Phase::Reading { turn };
         return;
     }
+    // A fight or a check can begin mid-walk: a master declares one by hand, and a guest
+    // learns of them from the world the host sends.
+    let next = settled(&game.world);
+    if next != Phase::Walking {
+        *phase = next;
+        return;
+    }
     if session.is_client() {
-        // A guest learns of fights and checks from the world the host sends.
-        let next = settled(&game.world);
-        if next != Phase::Walking {
-            *phase = next;
-            return;
-        }
         if let Some(exit) = game.world.exit_here() {
             let to = exit.to.clone();
             session.intend(Intent::Exit { to: to.clone() });
@@ -459,15 +527,20 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
 
 /// Keys that open something while walking: interact, the journal, the pause menu. Escape
 /// also closes whatever sheet is open.
-fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Res<Game>, mut phase: ResMut<Phase>, mut was_walking: Local<bool>) {
+#[allow(clippy::too_many_arguments)]
+fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Res<Game>, mut phase: ResMut<Phase>, mut was_walking: Local<bool>, mut table: ResMut<Table>, settings: Res<Settings>, session: Res<Session>, store: Res<Store>) {
     let pad = |button: GamepadButton| gamepads.iter().any(|pad| pad.just_pressed(button));
+    // The draft went away while its sheet was open (judged, or the seat changed hands).
+    if *phase == Phase::Judging && table.judging.is_none() {
+        *phase = Phase::Walking;
+    }
     // The press that closes a sheet must not also act on the world behind it: a key only
     // opens something if the party was already walking on the frame before.
     let was_settled = std::mem::replace(&mut *was_walking, *phase == Phase::Walking);
     if keyboard.just_pressed(KeyCode::Escape) || pad(GamepadButton::Start) {
         let next = match &*phase {
             Phase::Walking => Phase::Paused,
-            Phase::Paused | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Journal | Phase::Sheet => Phase::Walking,
+            Phase::Paused | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Journal | Phase::Sheet | Phase::Judging | Phase::Master => Phase::Walking,
             // A telling with choices stays until one is made or it is closed by its button.
             Phase::Reading { turn } if turn.options.is_empty() => settled(&game.world),
             _ => return,
@@ -487,6 +560,14 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
         *phase = Phase::Journal;
     } else if (keyboard.just_pressed(KeyCode::KeyC) || pad(GamepadButton::West)) && !game.world.party.is_empty() {
         *phase = Phase::Sheet;
+    } else if (keyboard.just_pressed(KeyCode::KeyG) || pad(GamepadButton::Select)) && seat_state(&game.world, &session, &player_name(&settings)) == SeatState::Mine {
+        // A waiting draft comes first; otherwise the panel.
+        if table.judging.is_some() {
+            *phase = Phase::Judging;
+        } else {
+            table.cards = store.load_cards();
+            *phase = Phase::Master;
+        }
     }
 }
 
@@ -634,18 +715,26 @@ fn receive(
                     continue;
                 }
                 table.busy = None;
+                let mut desk = Desk { game: &mut game, table: &mut table, phase: &mut phase, redraw: &mut redraw, background: &mut background, session: &session, settings: &settings, store: &store, gm: &gm, master: &master };
                 match draft {
-                    Ok(draft) => {
-                        let (turn, notes) = game.world.take_turn(&said, &draft);
-                        let reading = told(turn.clone(), notes, &mut game, &store, &mut redraw, &mut background, &session, &mut table);
-                        if mine {
-                            *phase = reading;
-                        } else {
-                            show(turn, &mut phase, &mut table);
+                    // A human master reads the model's answer before the players do.
+                    Ok(draft) if seated(&desk.game.world).is_some() => {
+                        desk.table.drafts.push_back(Held { said, near, draft: *draft });
+                        if desk.table.drafts.len() == 1 {
+                            offer(&mut desk);
                         }
                     }
-                    Err(trouble) if mine => *phase = Phase::Refused { said, near, trouble },
-                    Err(trouble) => session.broadcast(&Down::Trouble(trouble_text(&trouble, gm.dispatcher.now(), settings.lang))),
+                    Ok(draft) => finish(&mut desk, &said, &draft),
+                    Err(trouble) if mine => *desk.phase = Phase::Refused { said, near, trouble },
+                    Err(trouble) => {
+                        let why = trouble_text(&trouble, gm.dispatcher.now(), settings.lang);
+                        // A master's own direction that failed is the master's to hear about.
+                        desk.table.master_note = why.clone();
+                        if let Some(master) = seated(&desk.game.world) {
+                            session.send_to(master, &Down::Card(Err(why.clone())));
+                        }
+                        session.broadcast(&Down::Trouble(why));
+                    }
                 }
             }
             Answer::Event(draft) => {
@@ -654,9 +743,10 @@ fn receive(
                 // An event interrupts a walk, never a conversation or a menu.
                 if let (Ok(draft), Phase::Walking) = (draft, &*phase)
                     && !draft.narration.trim().is_empty()
+                    && seated(&game.world).is_none()
                 {
-                    let (turn, notes) = game.world.take_turn("", &draft);
-                    *phase = told(turn, notes, &mut game, &store, &mut redraw, &mut background, &session, &mut table);
+                    let mut desk = Desk { game: &mut game, table: &mut table, phase: &mut phase, redraw: &mut redraw, background: &mut background, session: &session, settings: &settings, store: &store, gm: &gm, master: &master };
+                    finish(&mut desk, "", &draft);
                 }
             }
             Answer::Chapter(draft) => {
@@ -667,6 +757,14 @@ fn receive(
                         autosave(&store, &game);
                     }
                     _ => background.chapter_rest = BACKGROUND_REST,
+                }
+            }
+            Answer::Card { for_player, card } => {
+                let card = card.map(|card| *card).map_err(|trouble| trouble_text(&trouble, gm.dispatcher.now(), settings.lang));
+                if for_player == player_name(&settings) {
+                    table.keep_card(&store, card, settings.lang);
+                } else {
+                    session.send_to(&for_player, &Down::Card(card));
                 }
             }
             Answer::World(_) => {}
@@ -703,6 +801,7 @@ fn background_work(time: Res<Time>, phase: Res<Phase>, game: Res<Game>, gm: Res<
     if let Some(after) = event_after(settings.initiative)
         && background.quiet >= after
         && !background.event_asked
+        && seated(world).is_none()
     {
         background.event_asked = true;
         master.ask(&gm, &store, &settings, Ask::Event { world: Box::new(world.clone()) });
@@ -711,7 +810,7 @@ fn background_work(time: Res<Time>, phase: Res<Phase>, game: Res<Game>, gm: Res<
 
 fn veil(phase: Res<Phase>, mut veils: Query<&mut BackgroundColor, With<Veil>>) {
     let darkness = match &*phase {
-        Phase::Walking | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Reading { .. } | Phase::Asking { .. } | Phase::Rolling | Phase::Fighting => 0.0,
+        Phase::Walking | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Reading { .. } | Phase::Asking { .. } | Phase::Rolling | Phase::Fighting | Phase::Judging | Phase::Master => 0.0,
         Phase::Leaving { t, .. } => *t,
         Phase::Arriving { t } => 1.0 - t,
         Phase::Drawing { .. } | Phase::Stuck { .. } => 0.8,
@@ -738,6 +837,8 @@ fn hud(
     mut hints: Query<&mut Text, (With<HudHint>, Without<PlaceName>, Without<ArrivalText>)>,
     mut described: Query<&mut Text, (With<ArrivalText>, Without<PlaceName>, Without<HudHint>)>,
     mut sheets: Query<&mut Node, With<ArrivalSheet>>,
+    session: Res<Session>,
+    settings: Res<Settings>,
 ) {
     let world = &game.world;
     let here = world.here();
@@ -753,6 +854,7 @@ fn hud(
         (None, Some(name), _) => format!("E: {name}"),
         (None, None, Some(exit)) if exit.label.is_empty() => format!("→ {}", world.place_name(&exit.to)),
         (None, None, Some(exit)) => format!("{} → {}", exit.label, world.place_name(&exit.to)),
+        (None, None, None) if seat_state(world, &session, &player_name(&settings)) == SeatState::Mine => format!("{}{}", T::HudHint.text(*lang), T::HudMaster.text(*lang)),
         (None, None, None) => T::HudHint.text(*lang).to_string(),
     };
     for mut text in &mut hints {
@@ -809,7 +911,9 @@ enum Sheet {
     None,
     Drawing(String),
     Stuck(String),
-    Paused,
+    Paused { seat: SeatState },
+    Judging(DraftView),
+    Master(PanelView),
     Looking { name: String, description: String, actions: Vec<String> },
     /// Whether there are other players to talk to.
     Writing { table: bool },
@@ -823,11 +927,59 @@ enum Sheet {
     Character { lines: Vec<String>, points: bool },
 }
 
-fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, at_table: bool) -> Sheet {
+/// Where this player stands with the master's seat.
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
+enum SeatState {
+    /// Playing alone: there is no seat to take.
+    #[default]
+    Alone,
+    Free,
+    Mine,
+    Taken,
+}
+
+fn seat_state(world: &World, session: &Session, me: &str) -> SeatState {
+    if matches!(session, Session::Solo) {
+        return SeatState::Alone;
+    }
+    match seated(world) {
+        Some(master) if master == me => SeatState::Mine,
+        Some(_) => SeatState::Taken,
+        None => SeatState::Free,
+    }
+}
+
+/// The master's panel as it is drawn.
+#[derive(Clone, PartialEq, Default)]
+struct PanelView {
+    typed: String,
+    /// Who a whisper would go to.
+    target: String,
+    hostile: bool,
+    note: String,
+    cards: Vec<String>,
+    presses: u32,
+}
+
+/// What the sheets show that is not in the world.
+#[derive(Default)]
+struct Extra {
+    seat: SeatState,
+    judging: Option<DraftView>,
+    panel: PanelView,
+}
+
+fn others_at_table(world: &World, me: &str) -> Vec<String> {
+    world.present.iter().filter(|p| p.as_str() != me).cloned().collect()
+}
+
+fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) -> Sheet {
     match phase {
         Phase::Drawing { to } => Sheet::Drawing(world.place_name(to).to_string()),
         Phase::Stuck { trouble, .. } => Sheet::Stuck(trouble_text(trouble, now, lang)),
-        Phase::Paused => Sheet::Paused,
+        Phase::Paused => Sheet::Paused { seat: extra.seat },
+        Phase::Judging => extra.judging.clone().map_or(Sheet::None, Sheet::Judging),
+        Phase::Master => Sheet::Master(extra.panel.clone()),
         Phase::Looking { thing } => {
             let here = world.here();
             let found = here
@@ -841,7 +993,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, at_table: bool)
                 None => Sheet::None,
             }
         }
-        Phase::Writing { .. } => Sheet::Writing { table: at_table },
+        Phase::Writing { .. } => Sheet::Writing { table: extra.seat != SeatState::Alone },
         Phase::Asking { said, .. } => Sheet::Asking(said.clone()),
         Phase::Reading { turn } => Sheet::Reading(turn.clone()),
         Phase::Refused { trouble, .. } => Sheet::Refused(trouble_text(trouble, now, lang)),
@@ -872,12 +1024,39 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, at_table: bool)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<Gm>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, session: Res<Session>, mut shown: Local<Sheet>, old: Query<Entity, With<Overlay>>) {
+fn overlay(
+    mut commands: Commands,
+    phase: Res<Phase>,
+    game: Res<Game>,
+    gm: Res<Gm>,
+    lang: Res<Lang>,
+    art: Res<Art>,
+    fonts: Res<Fonts>,
+    session: Res<Session>,
+    table: Res<Table>,
+    panel: Res<Panel>,
+    settings: Res<Settings>,
+    mut shown: Local<Sheet>,
+    old: Query<Entity, With<Overlay>>,
+) {
+    let me = player_name(&settings);
+    let mut extra = Extra { seat: seat_state(&game.world, &session, &me), judging: table.judging.clone(), panel: PanelView::default() };
+    if *phase == Phase::Master {
+        let others = others_at_table(&game.world, &me);
+        extra.panel = PanelView {
+            typed: panel.typed.clone(),
+            target: others.get(panel.target % others.len().max(1)).cloned().unwrap_or_default(),
+            hostile: panel.hostile,
+            note: table.master_note.clone(),
+            cards: table.cards.iter().map(|card| card.name.clone()).collect(),
+            presses: panel.presses,
+        };
+    }
     // A countdown in a refusal would rebuild the sheet every second and swallow clicks, so
     // the time is fixed when the sheet first appears.
     let wanted = match (&*phase, &*shown) {
         (Phase::Stuck { .. }, Sheet::Stuck(_)) | (Phase::Refused { .. }, Sheet::Refused(_)) if !old.is_empty() => shown.clone(),
-        _ => sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang, !matches!(*session, Session::Solo)),
+        _ => sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang, &extra),
     };
     if *shown == wanted && (wanted == Sheet::None || !old.is_empty()) {
         return;
@@ -893,7 +1072,7 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
     let faded = TextColor(color(FADED));
     // Sheets about the story sit at the bottom, where the eye rests while walking; the rest
     // take the middle of the screen.
-    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Rolling(_));
+    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Rolling(_) | Sheet::Judging(_) | Sheet::Master(_));
     let full = Node {
         position_type: PositionType::Absolute,
         left: px(0),
@@ -921,10 +1100,115 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
                 button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
                 button(sheet, &art, &fonts, T::StayHere, true, PlayAction::Stay);
             }
-            Sheet::Paused => {
+            Sheet::Judging(view) => {
+                sheet.spawn((Text::default(), T::DraftTitle, fonts.title(1), ink));
+                if !view.said.is_empty() {
+                    sheet.spawn((Text::new(format!("«{}»", view.said)), fonts.body(), faded));
+                }
+                sheet.spawn(Node { height: px(72), padding: UiRect::all(px(4)), overflow: Overflow::clip(), ..default() }).with_children(|field| {
+                    field.spawn(backing(art.field.clone(), 4.0));
+                    field.spawn((
+                        JudgeInput,
+                        AutoFocus,
+                        AutoDirectionalNavigation::default(),
+                        Node { width: percent(100), height: percent(100), ..default() },
+                        EditableText { allow_newlines: false, max_characters: Some(2000), ..EditableText::new(&view.narration) },
+                        TextLayout { linebreak: LineBreak::WordOrCharacter, ..default() },
+                        fonts.body(),
+                        ink,
+                        TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
+                    ));
+                });
+                if !view.effects.is_empty() || !view.options.is_empty() {
+                    sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, 34.0)).with_children(|rows| {
+                        for effect in &view.effects {
+                            rows.spawn((Text::new(format!("• {effect}")), fonts.body(), faded));
+                        }
+                        for option in &view.options {
+                            rows.spawn((Text::new(format!("→ {option}")), fonts.body(), ink));
+                        }
+                    });
+                }
+                sheet.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                    button(line, &art, &fonts, T::Accept, true, PlayAction::Judge(true));
+                    button(line, &art, &fonts, T::Reject, true, PlayAction::Judge(false));
+                    line.spawn((Text::default(), T::RedoLabel, fonts.body(), faded));
+                    line.spawn(Node { flex_grow: 1.0, height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }).with_children(|field| {
+                        field.spawn(backing(art.field.clone(), 4.0));
+                        field.spawn((
+                            RedoInput,
+                            AutoDirectionalNavigation::default(),
+                            Node { width: percent(100), ..default() },
+                            EditableText { allow_newlines: false, max_characters: Some(300), ..default() },
+                            TextLayout::no_wrap(),
+                            fonts.body(),
+                            ink,
+                            TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
+                        ));
+                    });
+                    button(line, &art, &fonts, T::Redo, true, PlayAction::Redo);
+                });
+            }
+            Sheet::Master(view) => {
+                sheet.spawn((Text::default(), T::MasterTitle, fonts.title(1), ink));
+                sheet.spawn(Node { height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }).with_children(|field| {
+                    field.spawn(backing(art.field.clone(), 4.0));
+                    field.spawn((
+                        MasterInput,
+                        AutoFocus,
+                        AutoDirectionalNavigation::default(),
+                        Node { width: percent(100), ..default() },
+                        EditableText { allow_newlines: false, max_characters: Some(400), ..EditableText::new(&view.typed) },
+                        TextLayout::no_wrap(),
+                        fonts.body(),
+                        ink,
+                        TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
+                    ));
+                });
+                let tool = |tool: Tool| PlayAction::Tool(tool);
+                let wrap = || Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, align_items: AlignItems::Center, ..default() };
+                sheet.spawn(wrap()).with_children(|line| {
+                    button(line, &art, &fonts, T::ToModel, true, tool(Tool::ToModel));
+                    button(line, &art, &fonts, T::Narrate, true, tool(Tool::Narrate));
+                    let target = if view.target.is_empty() { "—" } else { view.target.as_str() };
+                    text_button(line, &art, &fonts, format!("{} {target}", T::WhisperTo.text(*lang)), tool(Tool::Whisper));
+                    button(line, &art, &fonts, T::NextPlayer, true, tool(Tool::NextTarget));
+                });
+                sheet.spawn(wrap()).with_children(|line| {
+                    button(line, &art, &fonts, T::ToolCreature, true, tool(Tool::Creature));
+                    button(line, &art, &fonts, if view.hostile { T::MoodHostile } else { T::MoodNeutral }, true, tool(Tool::Mood));
+                    button(line, &art, &fonts, T::ToolRemove, true, tool(Tool::Remove));
+                    button(line, &art, &fonts, T::ToolTile, true, tool(Tool::Tile));
+                    button(line, &art, &fonts, T::ToolDamage, true, tool(Tool::Damage));
+                    button(line, &art, &fonts, T::ToolHeal, true, tool(Tool::Heal));
+                    button(line, &art, &fonts, T::ToolGive, true, tool(Tool::Give));
+                    button(line, &art, &fonts, T::ToolFight, true, tool(Tool::Fight));
+                    button(line, &art, &fonts, T::ToolRoll, true, tool(Tool::Roll));
+                });
+                sheet.spawn(wrap()).with_children(|line| {
+                    button(line, &art, &fonts, T::ToolInvent, true, tool(Tool::Invent));
+                    for (n, card) in view.cards.iter().enumerate() {
+                        text_button(line, &art, &fonts, card.clone(), tool(Tool::Card(n)));
+                    }
+                });
+                // The line is there even when empty, so the buttons do not move under the cursor.
+                let note = if view.note.is_empty() { " ".to_string() } else { view.note.clone() };
+                sheet.spawn((Text::new(note), TextLayout::no_wrap(), Node { overflow: Overflow::clip(), ..default() }, fonts.body(), TextColor(color(WAX_DARK))));
+                sheet.spawn((Text::default(), T::MasterHint, fonts.body(), faded));
+                sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                    button(line, &art, &fonts, T::SeatLeave, true, PlayAction::SeatLeave);
+                    button(line, &art, &fonts, T::Leave, true, PlayAction::Close);
+                });
+            }
+            Sheet::Paused { seat } => {
                 sheet.spawn((Text::default(), T::Paused, fonts.title(1), ink));
                 button(sheet, &art, &fonts, T::Continue, true, PlayAction::Resume);
                 button(sheet, &art, &fonts, T::SaveGame, true, PlayAction::Save);
+                match seat {
+                    SeatState::Alone => {}
+                    SeatState::Mine => button(sheet, &art, &fonts, T::SeatLeave, true, PlayAction::SeatLeave),
+                    SeatState::Free | SeatState::Taken => button(sheet, &art, &fonts, T::SeatTake, *seat == SeatState::Free, PlayAction::SeatTake),
+                }
                 button(sheet, &art, &fonts, T::LongRest, !game.world.party.is_empty(), PlayAction::Rest);
                 button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
                 button(sheet, &art, &fonts, T::ToMainMenu, true, PlayAction::MainMenu);
@@ -1027,10 +1311,14 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
 }
 
 #[allow(clippy::too_many_arguments)]
-fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store, settings: &Settings, master: &Master, session: &Session) -> Phase {
+fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store, settings: &Settings, master: &Master, session: &Session, table: &Table) -> Phase {
     let said = said.trim().to_string();
     if said.is_empty() {
         return Phase::Writing { near };
+    }
+    // One question to the master at a time, the host's own included.
+    if session.is_host() && (table.busy.is_some() || !table.drafts.is_empty()) {
+        return Phase::Reading { turn: Turn { narration: T::MasterBusy.text(settings.lang).to_string(), options: Vec::new() } };
     }
     if session.is_client() {
         session.intend(Intent::Say { text: said.clone(), near: near.clone() });
@@ -1041,7 +1329,7 @@ fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store,
         (true, Some(hero)) => format!("{hero}: {said}"),
         _ => said,
     };
-    master.ask(gm, store, settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near: near.clone() });
+    master.ask(gm, store, settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near: near.clone(), direction: None });
     Phase::Asking { said, near }
 }
 
@@ -1058,13 +1346,14 @@ fn submit(
     settings: Res<Settings>,
     master: Res<Master>,
     session: Res<Session>,
+    table: Res<Table>,
 ) {
     if !keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
         return;
     }
     let (Phase::Writing { near }, Ok((entity, input))) = (&*phase, input.single()) else { return };
     if focus.get() == Some(entity) {
-        *phase = send(input.value().to_string(), near.clone(), &game, &gm, &store, &settings, &master, &session);
+        *phase = send(input.value().to_string(), near.clone(), &game, &gm, &store, &settings, &master, &session, &table);
     }
 }
 
@@ -1188,7 +1477,7 @@ fn on_activate(
         (PlayAction::Own, _) => *phase = Phase::Writing { near: None },
         (PlayAction::Send, Phase::Writing { near }) => {
             if let Ok(input) = input.single() {
-                *phase = send(input.value().to_string(), near, &game, &gm, &store, &settings, &master, &session);
+                *phase = send(input.value().to_string(), near, &game, &gm, &store, &settings, &master, &session, &table);
             }
         }
         (PlayAction::Choose(index), Phase::Reading { turn }) => {
@@ -1197,7 +1486,7 @@ fn on_activate(
                 *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
             }
         }
-        (PlayAction::AskAgain, Phase::Refused { said, near, .. }) => *phase = send(said, near, &game, &gm, &store, &settings, &master, &session),
+        (PlayAction::AskAgain, Phase::Refused { said, near, .. }) => *phase = send(said, near, &game, &gm, &store, &settings, &master, &session, &table),
         _ => {}
     }
 }
@@ -1234,14 +1523,14 @@ fn guests(
             }),
             Intent::Say { text, near } => {
                 // One question to the master at a time; a second one is told to wait.
-                if table.busy.is_some() || matches!(*phase, Phase::Asking { .. }) {
+                if table.busy.is_some() || !table.drafts.is_empty() || matches!(*phase, Phase::Asking { .. }) {
                     session.broadcast(&Down::Trouble(T::MasterBusy.text(settings.lang).to_string()));
                 } else {
                     let said = match hero_of(&game.world, &player) {
                         Some(hero) => format!("{hero}: {}", text.trim()),
                         None => format!("{player}: {}", text.trim()),
                     };
-                    master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near });
+                    master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None });
                     session.broadcast(&Down::Thinking(said.clone()));
                     table.busy = Some(said);
                 }
@@ -1266,6 +1555,11 @@ fn guests(
                 }
                 None
             }
+            Intent::Gm(act) => {
+                let mut desk = Desk { game: &mut game, table: &mut table, phase: &mut phase, redraw: &mut redraw, background: &mut background, session: &session, settings: &settings, store: &store, gm: &gm, master: &master };
+                gm_act(&mut desk, &player, act);
+                None
+            }
             Intent::Improve(ability) => {
                 if let Some(index) = game.world.owners.iter().position(|o| *o == player)
                     && let Some(hero) = game.world.party.get_mut(index)
@@ -1280,6 +1574,333 @@ fn guests(
             show(turn, &mut phase, &mut table);
         }
     }
+    // A master who left the table leaves no draft waiting: the model's word stands.
+    if !session.is_client() && !table.drafts.is_empty() && seated(&game.world).is_none() {
+        let gone = game.world.gm.clone().unwrap_or_default();
+        let mut desk = Desk { game: &mut game, table: &mut table, phase: &mut phase, redraw: &mut redraw, background: &mut background, session: &session, settings: &settings, store: &store, gm: &gm, master: &master };
+        release(&mut desk, &gone);
+    }
+}
+
+/// Everything the host has at hand when it changes the world and tells the table.
+struct Desk<'a> {
+    game: &'a mut Game,
+    table: &'a mut Table,
+    phase: &'a mut Phase,
+    redraw: &'a mut Redraw,
+    background: &'a mut Background,
+    session: &'a Session,
+    settings: &'a Settings,
+    store: &'a Store,
+    gm: &'a Gm,
+    master: &'a Master,
+}
+
+/// The player in the master's seat, if they are at the table now.
+fn seated(world: &World) -> Option<&str> {
+    world.gm.as_deref().filter(|master| world.present.iter().any(|p| p == master))
+}
+
+/// Applies a turn and tells the table; whispers go only to those they are for. Gives the
+/// telling back when there was something to tell.
+fn carry_out(desk: &mut Desk, said: &str, draft: &TurnDraft) -> Option<Turn> {
+    let (turn, notes) = desk.game.world.take_turn(said, draft);
+    let told_turn = if turn.narration.is_empty() && turn.options.is_empty() {
+        for note in notes {
+            info!("turn repaired: {note}");
+        }
+        desk.redraw.0 = true;
+        autosave(desk.store, desk.game);
+        None
+    } else {
+        match told(turn, notes, desk.game, desk.store, desk.redraw, desk.background, desk.session, desk.table) {
+            Phase::Reading { turn } => Some(turn),
+            _ => None,
+        }
+    };
+    whisper(desk, &draft.whispers);
+    told_turn
+}
+
+/// Carries a turn out and puts its telling in front of the host's own player: at once in
+/// place of the sheet they were waiting on, otherwise when they are free to read.
+fn finish(desk: &mut Desk, said: &str, draft: &TurnDraft) {
+    let waiting = matches!(*desk.phase, Phase::Asking { .. } | Phase::Judging);
+    match carry_out(desk, said, draft) {
+        Some(turn) if waiting => *desk.phase = Phase::Reading { turn },
+        Some(turn) => show(turn, desk.phase, desk.table),
+        None if waiting => *desk.phase = Phase::Walking,
+        None => {}
+    }
+}
+
+/// Words for one player alone. `to` names a character or a player.
+fn whisper(desk: &mut Desk, whispers: &[Whisper]) {
+    let me = player_name(desk.settings);
+    for said in whispers.iter().filter(|w| !w.text.trim().is_empty()) {
+        let world = &desk.game.world;
+        let wanted = said.to.trim().to_lowercase();
+        let owner = world
+            .party
+            .iter()
+            .position(|hero| hero.name.to_lowercase() == wanted)
+            .and_then(|index| world.owners.get(index).cloned())
+            .or_else(|| world.present.iter().find(|p| p.to_lowercase() == wanted).cloned());
+        match owner {
+            Some(owner) if !owner.is_empty() && owner != me => {
+                desk.session.send_to(&owner, &Down::Whisper(said.text.trim().to_string()));
+            }
+            // The host's own, a hero nobody owns, or a name nobody answers to.
+            _ => desk.table.unread.push_back(Turn { narration: format!("{} {}", T::WhisperMark.text(desk.settings.lang), said.text.trim()), options: Vec::new() }),
+        }
+    }
+}
+
+/// Puts the draft at the front of the queue before the master.
+fn offer(desk: &mut Desk) {
+    let Some(view) = desk.table.drafts.front().map(Held::view) else { return };
+    let Some(master) = seated(&desk.game.world).map(str::to_string) else { return };
+    if master == player_name(desk.settings) {
+        desk.table.judging = Some(view);
+        if matches!(*desk.phase, Phase::Walking | Phase::Asking { .. } | Phase::Master) {
+            *desk.phase = Phase::Judging;
+        }
+    } else {
+        desk.session.send_to(&master, &Down::Draft(Some(view)));
+    }
+}
+
+/// Takes the judged draft's sheet away from the master.
+fn clear_judging(desk: &mut Desk, master: &str) {
+    if master == player_name(desk.settings) {
+        desk.table.judging = None;
+    } else {
+        desk.session.send_to(master, &Down::Draft(None));
+    }
+}
+
+/// The master has judged the draft at the front of the queue.
+fn conclude(desk: &mut Desk, master: &str, accept: bool, narration: &str) {
+    let Some(held) = desk.table.drafts.pop_front() else { return };
+    clear_judging(desk, master);
+    if accept {
+        let mut draft = held.draft;
+        if !narration.trim().is_empty() {
+            draft.narration = narration.trim().to_string();
+        }
+        finish(desk, &held.said, &draft);
+    } else {
+        desk.session.broadcast(&Down::Trouble(T::MasterDeclined.text(desk.settings.lang).to_string()));
+        if matches!(*desk.phase, Phase::Asking { .. } | Phase::Judging) {
+            *desk.phase = Phase::Walking;
+        }
+    }
+    offer(desk);
+}
+
+/// With the seat empty the drafts that were waiting go through as the model wrote them.
+fn release(desk: &mut Desk, master: &str) {
+    while !desk.table.drafts.is_empty() {
+        conclude(desk, master, true, "");
+    }
+}
+
+/// What the player in the master's seat asked for, done on the host. Anyone may take an
+/// empty seat; everything else is only the master's to do.
+fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
+    if let GmAct::Seat(true) = act {
+        if seated(&desk.game.world).is_none() {
+            desk.game.world.gm = Some(player.to_string());
+        }
+        return;
+    }
+    if desk.game.world.gm.as_deref() != Some(player) {
+        return;
+    }
+    match act {
+        GmAct::Seat(_) => {
+            desk.game.world.gm = None;
+            release(desk, player);
+        }
+        GmAct::Verdict { accept, narration } => conclude(desk, player, accept, &narration),
+        GmAct::Direct(text) => {
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                return;
+            }
+            if desk.table.busy.is_some() {
+                let busy = T::MasterBusy.text(desk.settings.lang).to_string();
+                if player == player_name(desk.settings) {
+                    desk.table.master_note = busy;
+                } else {
+                    desk.session.send_to(player, &Down::Card(Err(busy)));
+                }
+                return;
+            }
+            // Over a waiting draft the direction says how that answer is to be redone.
+            let (said, near) = match desk.table.drafts.pop_front() {
+                Some(held) => {
+                    clear_judging(desk, player);
+                    (held.said, held.near)
+                }
+                None => (String::new(), None),
+            };
+            if *desk.phase == Phase::Judging {
+                *desk.phase = Phase::Walking;
+            }
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Turn { world: Box::new(desk.game.world.clone()), said: said.clone(), near, direction: Some(text.clone()) });
+            desk.session.broadcast(&Down::Thinking(text));
+            desk.table.busy = Some(said);
+        }
+        GmAct::Apply(draft) => finish(desk, "", &draft),
+        GmAct::Whisper { to, text } => whisper(desk, &[Whisper { to, text }]),
+        GmAct::Invent(request) => {
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Invent { world: Box::new(desk.game.world.clone()), request, for_player: player.to_string() });
+        }
+    }
+}
+
+/// What a tool of the master's panel comes to, given the text in the panel's field.
+/// `None` when the press only changed the panel, or could not be carried out.
+fn tool_act(tool: Tool, typed: &str, world: &World, panel: &mut Panel, table: &mut Table, lang: Lang, me: &str) -> Option<GmAct> {
+    let typed = typed.trim();
+    panel.typed = typed.to_string();
+    panel.presses = panel.presses.wrapping_add(1);
+    let (x, y) = world.player.cell();
+    let (x, y) = (x.max(0) as usize, y.max(0) as usize);
+    let apply = |effects: serde_json::Value| GmAct::Apply(Box::new(TurnDraft { effects: effects.as_array().cloned().unwrap_or_default(), ..TurnDraft::default() }));
+    let needs_text = matches!(tool, Tool::ToModel | Tool::Narrate | Tool::Whisper | Tool::Creature | Tool::Tile | Tool::Damage | Tool::Heal | Tool::Give | Tool::Invent);
+    if needs_text && typed.is_empty() {
+        table.master_note = T::NeedText.text(lang).to_string();
+        return None;
+    }
+    table.master_note.clear();
+    let act = match tool {
+        Tool::ToModel => GmAct::Direct(typed.to_string()),
+        Tool::Narrate => GmAct::Apply(Box::new(TurnDraft { narration: typed.to_string(), ..TurnDraft::default() })),
+        Tool::Whisper => {
+            let others = others_at_table(world, me);
+            let Some(to) = others.get(panel.target % others.len().max(1)) else {
+                table.master_note = T::NobodyToWhisper.text(lang).to_string();
+                return None;
+            };
+            GmAct::Whisper { to: to.clone(), text: typed.to_string() }
+        }
+        Tool::NextTarget => {
+            panel.target = panel.target.wrapping_add(1);
+            return None;
+        }
+        Tool::Mood => {
+            panel.hostile = !panel.hostile;
+            return None;
+        }
+        Tool::Creature => {
+            // A monster of the rules by its index, or anything at all by its name.
+            let index = typed.to_lowercase().replace([' ', '_'], "-");
+            let card = match rules::srd().monsters.get(index.as_str()) {
+                Some(monster) => CreatureCard { id: index.clone(), name: tr(lang == Lang::Ru, &monster.name).to_string(), monster: Some(index), ..CreatureCard::default() },
+                None => CreatureCard { id: typed.to_string(), name: typed.to_string(), ..CreatureCard::default() },
+            };
+            GmAct::Apply(Box::new(card.summon(x + 1, y, panel.hostile)))
+        }
+        Tool::Remove => match world.thing_near(REMOVE_REACH) {
+            Some(id) => apply(serde_json::json!([{ "op": "remove", "id": id }])),
+            None => {
+                table.master_note = T::NothingNear.text(lang).to_string();
+                return None;
+            }
+        },
+        Tool::Tile => apply(serde_json::json!([{ "op": "tile", "x": x, "y": y, "tile": typed }])),
+        Tool::Damage => apply(serde_json::json!([{ "op": "damage", "amount": typed }])),
+        Tool::Heal => apply(serde_json::json!([{ "op": "heal", "amount": typed }])),
+        Tool::Give => apply(serde_json::json!([{ "op": "give", "name": typed }])),
+        Tool::Fight => apply(serde_json::json!([{ "op": "fight" }])),
+        Tool::Roll => {
+            // Nobody else sees this roll. The field, if it holds a number, is the bonus.
+            let roll = Roll::d20(&mut Rng::from_clock(), typed.parse().unwrap_or(0), Edge::Plain);
+            table.master_note = format!("d20: {}{:+} = {}", roll.die, roll.bonus, roll.total());
+            return None;
+        }
+        Tool::Invent => {
+            table.master_note = T::Inventing.text(lang).to_string();
+            GmAct::Invent(typed.to_string())
+        }
+        Tool::Card(n) => GmAct::Apply(Box::new(table.cards.get(n)?.summon(x + 1, y, panel.hostile))),
+    };
+    // The parameter was used up.
+    panel.typed.clear();
+    Some(act)
+}
+
+/// The buttons of the master's seat, on whichever machine the master sits at.
+#[allow(clippy::too_many_arguments)]
+fn on_master_activate(
+    used: On<Activate>,
+    buttons: Query<&PlayAction>,
+    fields: MasterFields,
+    mut phase: ResMut<Phase>,
+    game: Option<ResMut<Game>>,
+    mut table: ResMut<Table>,
+    mut panel: ResMut<Panel>,
+    mut toast: ResMut<Toast>,
+    mut redraw: ResMut<Redraw>,
+    mut background: ResMut<Background>,
+    session: Res<Session>,
+    settings: Res<Settings>,
+    store: Res<Store>,
+    gm: Res<Gm>,
+    master: Res<Master>,
+) {
+    let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
+    let text_of = |field: Result<&EditableText, bevy::ecs::query::QuerySingleError>| field.map(|f| f.value().to_string()).unwrap_or_default();
+    let me = player_name(&settings);
+    let guest = session.is_client();
+    let act = match (*action, phase.clone()) {
+        (PlayAction::SeatTake, _) => {
+            *toast = Toast { text: Some(T::SeatYours), left: 6.0 };
+            *phase = Phase::Walking;
+            GmAct::Seat(true)
+        }
+        (PlayAction::SeatLeave, _) => {
+            *phase = Phase::Walking;
+            GmAct::Seat(false)
+        }
+        (PlayAction::Judge(accept), Phase::Judging) => {
+            let narration = text_of(fields.judge.single());
+            if guest {
+                table.judging = None;
+                *phase = Phase::Walking;
+            }
+            GmAct::Verdict { accept, narration }
+        }
+        (PlayAction::Redo, Phase::Judging) => {
+            let direction = text_of(fields.redo.single());
+            if direction.trim().is_empty() {
+                return;
+            }
+            if guest {
+                table.judging = None;
+                *phase = Phase::Walking;
+            }
+            GmAct::Direct(direction)
+        }
+        (PlayAction::Tool(tool), Phase::Master) => {
+            let typed = text_of(fields.panel.single());
+            let Some(act) = tool_act(tool, &typed, &game.world, &mut panel, &mut table, settings.lang, &me) else { return };
+            // A direction is answered with a draft: the panel steps aside for it.
+            if tool == Tool::ToModel {
+                *phase = Phase::Walking;
+            }
+            act
+        }
+        _ => return,
+    };
+    if guest {
+        session.intend(Intent::Gm(act));
+    } else {
+        let mut desk = Desk { game: &mut game, table: &mut table, phase: &mut phase, redraw: &mut redraw, background: &mut background, session: &session, settings: &settings, store: &store, gm: &gm, master: &master };
+        gm_act(&mut desk, &me, act);
+    }
 }
 
 pub struct PlayPlugin;
@@ -1292,13 +1913,15 @@ impl Plugin for PlayPlugin {
             .init_resource::<Toast>()
             .init_resource::<HeroPose>()
             .init_resource::<Background>()
+            .init_resource::<Panel>()
             .add_systems(OnEnter(Screen::Play), enter)
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
                 (submit, keys, walk, advance, receive, guests, background_work, draw, place_hero, place_fellows, idle, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
-            .add_observer(on_activate);
+            .add_observer(on_activate)
+            .add_observer(on_master_activate);
     }
 }
 
@@ -1326,7 +1949,7 @@ mod tests {
     #[test]
     fn looking_at_a_thing_shows_its_name_and_what_can_be_done_with_it() {
         let w = world();
-        let sheet = sheet_for(&Phase::Looking { thing: "cat".into() }, &w, 0, Lang::En, false);
+        let sheet = sheet_for(&Phase::Looking { thing: "cat".into() }, &w, 0, Lang::En, &Extra::default());
         let Sheet::Looking { name, actions, .. } = sheet else { panic!("expected the looking sheet") };
         assert_eq!(name, "Grey cat");
         assert_eq!(actions, ["Pet the cat", "Shoo it away"]);
@@ -1334,14 +1957,14 @@ mod tests {
 
     #[test]
     fn looking_at_something_that_is_gone_shows_nothing() {
-        assert!(sheet_for(&Phase::Looking { thing: "ghost".into() }, &world(), 0, Lang::En, false) == Sheet::None);
+        assert!(sheet_for(&Phase::Looking { thing: "ghost".into() }, &world(), 0, Lang::En, &Extra::default()) == Sheet::None);
     }
 
     #[test]
     fn the_journal_lists_what_is_carried_and_what_was_said() {
         let mut w = world();
         w.perform("cat", 1);
-        let Sheet::Journal { carried, lines } = sheet_for(&Phase::Journal, &w, 0, Lang::En, false) else { panic!("expected the journal") };
+        let Sheet::Journal { carried, lines } = sheet_for(&Phase::Journal, &w, 0, Lang::En, &Extra::default()) else { panic!("expected the journal") };
         assert_eq!(carried, "Cat hair");
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], (Speaker::Player, "Shoo it away".to_string()));

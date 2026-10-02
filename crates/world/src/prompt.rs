@@ -19,7 +19,7 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
   {"op": "move", "id": "…", "x": 0, "y": 0}
   {"op": "tile", "x": 0, "y": 0, "tile": "tile_id"} — one cell of ground changes (a door opens, a bridge falls)
-  {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral"}
+  {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral"} — a creature that might fight also takes "monster" or "stats"
   {"op": "exit", "x": 0, "y": 0, "to": "place_id", "label": "…"} — a way out appears
   {"op": "fact", "text": "…"} — something that must be remembered for the rest of the campaign
   {"op": "check", "ability": "str|dex|con|int|wis|cha", "skill": "stealth", "dc": 15, "success": {"narration": "…", "effects": []}, "failure": {"narration": "…", "effects": []}} — the outcome is uncertain: the game rolls the die and takes one branch. Write both. Skills: acrobatics, animal-handling, arcana, athletics, deception, history, insight, intimidation, investigation, medicine, nature, perception, performance, persuasion, religion, sleight-of-hand, stealth, survival. Difficulty: 5 trivial, 10 easy, 15 moderate, 20 hard, 25 very hard.
@@ -206,14 +206,58 @@ const TURN_SHAPE: &str = r##"{
   "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": []}]
 }"##;
 
+/// With several players at the table one of them can be told something alone.
+const WHISPERS: &str = r##"Several players sit at this table. When one character alone would notice, know or be told something, add "whispers": [{"to": "that character's name", "text": "…"}] to the object: only that player reads it. Use it rarely; most turns need none."##;
+
+fn whispers_note(world: &World) -> &'static str {
+    let players = (0..world.party.len()).filter(|i| world.takes_part(*i)).count();
+    if players > 1 { WHISPERS } else { "" }
+}
+
+/// A human game master sits at the table and tells the model what should happen; the model
+/// writes it up as a turn, which the master reads before the players do.
+pub fn directive(world: &World, said: &str, text: &str) -> String {
+    let did = if said.trim().is_empty() { String::new() } else { format!("The party now does this: «{}»
+", said.trim()) };
+    format!(
+        "{}
+{did}A human game master runs this table and directs you: «{}»
+
+Carry the direction out: tell what happens in your own words, with the effects it needs, and offer two to four \"options\" for what the party might do next, each with its outcome already written. Do not add events the direction does not call for. {}
+
+Answer with this JSON object:
+{TURN_SHAPE}",
+        situation(world, 0..),
+        text.trim(),
+        whispers_note(world)
+    )
+}
+
+/// A human game master asks for a creature to keep in their library.
+pub fn invent(world: &World, request: &str) -> String {
+    format!(
+        "A human game master asks you for a creature to keep and use in their games: «{}»
+The world it is first meant for: {}. Party level: {}.
+
+Draw it as a sprite the same way you draw everything else (rows of palette characters, at most 16 by 16, '0' transparent). {FIGHTERS}
+
+Answer with this JSON object:
+{{\"id\": \"snake_case_id\", \"name\": \"…\", \"description\": \"one or two sentences\", \"rows\": [\"…\"], \"monster\": null, \"stats\": {{\"ac\": 13, \"hp\": 11, \"speed\": 30, \"attacks\": [{{\"name\": \"…\", \"bonus\": 4, \"damage\": \"1d6+2\", \"range\": 5}}], \"xp\": 50}}}}",
+        request.trim(),
+        world.title,
+        world.party_level()
+    )
+}
+
 /// The party does something the master has not prepared an outcome for. `near` is the thing
 /// they stand next to, if any.
 pub fn turn(world: &World, said: &str, near: Option<&str>) -> String {
     let beside = near.map(|id| format!(" They are standing next to \"{id}\".")).unwrap_or_default();
     format!(
-        "{}\nThe party now does this: «{}»{beside}\n\nTell what happens. Offer two to four \"options\" for what the party might do next, each with its outcome already written, so that picking one needs no further question to you. Leave \"sprites\" empty unless an effect needs a sprite that does not exist.\n\nAnswer with this JSON object:\n{TURN_SHAPE}",
+        "{}\nThe party now does this: «{}»{beside}\n\nTell what happens. Offer two to four \"options\" for what the party might do next, each with its outcome already written, so that picking one needs no further question to you. Leave \"sprites\" empty unless an effect needs a sprite that does not exist. {}\n\nAnswer with this JSON object:\n{TURN_SHAPE}",
         situation(world, 0..),
-        said.trim()
+        said.trim(),
+        whispers_note(world)
     )
 }
 

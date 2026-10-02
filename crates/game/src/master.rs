@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use world::story::KEPT_LINES;
-use world::{ChapterDraft, LocationDraft, TurnDraft, World, WorldDraft, build_world, extract_json, fake, prompt};
+use world::{ChapterDraft, CreatureCard, LocationDraft, TurnDraft, World, WorldDraft, build_world, extract_json, fake, prompt};
 
 pub enum Ask {
     NewWorld {
@@ -33,6 +33,15 @@ pub enum Ask {
         world: Box<World>,
         said: String,
         near: Option<String>,
+        /// What a human master told the model to make of it.
+        direction: Option<String>,
+    },
+    /// A human master asks for a creature to keep in their library.
+    Invent {
+        world: Box<World>,
+        request: String,
+        /// Whose library it is for.
+        for_player: String,
     },
     /// The master may make something happen of its own accord.
     Event {
@@ -50,6 +59,7 @@ pub enum Answer {
     Turn { said: String, near: Option<String>, draft: Result<Box<TurnDraft>, Trouble> },
     Event(Result<Box<TurnDraft>, Trouble>),
     Chapter(Result<ChapterDraft, Trouble>),
+    Card { for_player: String, card: Result<Box<CreatureCard>, Trouble> },
 }
 
 /// How many times an answer that cannot be read is asked for again before giving up. Each
@@ -252,9 +262,17 @@ impl Master {
                     drawing.lock().unwrap().remove(&id);
                     Answer::Location { id, from, ahead, draft: draft.map(Box::new) }
                 }
-                Ask::Turn { world, said, near } => {
-                    let draft: Result<TurnDraft, Trouble> = if fake { faked(fake::turn(&said)) } else { call.read(prompt::play_prompt(&world), &prompt::turn(&world, &said, near.as_deref())) };
+                Ask::Turn { world, said, near, direction } => {
+                    let asked = match &direction {
+                        Some(direction) => prompt::directive(&world, &said, direction),
+                        None => prompt::turn(&world, &said, near.as_deref()),
+                    };
+                    let draft: Result<TurnDraft, Trouble> = if fake { faked(fake::turn(direction.as_deref().unwrap_or(&said))) } else { call.read(prompt::play_prompt(&world), &asked) };
                     Answer::Turn { said, near, draft: draft.map(Box::new) }
+                }
+                Ask::Invent { world, request, for_player } => {
+                    let card: Result<CreatureCard, Trouble> = if fake { faked(fake::creature(&request)) } else { call.read(prompt::play_prompt(&world), &prompt::invent(&world, &request)) };
+                    Answer::Card { for_player, card: card.map(Box::new) }
                 }
                 Ask::Event { world } => {
                     let draft: Result<TurnDraft, Trouble> =

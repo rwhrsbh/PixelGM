@@ -506,7 +506,7 @@ fn on_activate(
             *view = FightView::default();
             redraw.0 = true;
             let said = T::DefeatSaid.text(*lang).to_string();
-            master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(world.clone()), said: said.clone(), near: None });
+            master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(world.clone()), said: said.clone(), near: None, direction: None });
             *phase = Phase::Asking { said, near: None };
             return;
         }

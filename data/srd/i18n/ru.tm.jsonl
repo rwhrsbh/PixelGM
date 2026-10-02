@@ -130,10 +130,10 @@
 {"src":"Giant","ru":"Великаний","model":"seed"}
 {"src":"Gnomish","ru":"Гномий","model":"seed"}
 {"src":"The Gnomish language, which uses the Dwarvish script, is renowned for its technical treatises and its catalogs of knowledge about the natural world.","ru":"Гномий язык, использующий дварфийский алфавит, известен своими техническими трактатами и каталогами знаний об окружающем мире.","model":"seed"}
-{"src":"Goblin","ru":"Гоблинский","model":"seed"}
+{"src":"Goblin","ru":"Гоблин","model":"hand"}
 {"src":"Halfling","ru":"Полуросликов","model":"seed"}
 {"src":"The Halfling language isn't secret, but halflings are loath to share it with others. They write very little, so they don't have a rich body of literature. Their oral tradition, however, is very strong.","ru":"Язык полуросликов не является секретным, но полурослики неохотно делятся им с другими. Они мало пишут, поэтому у них нет богатой литературы. Однако их устная традиция очень сильна.","model":"seed"}
-{"src":"Orc","ru":"Орочий","model":"seed"}
+{"src":"Orc","ru":"Орк","model":"hand"}
 {"src":"Orc is a harsh, grating language with hard consonants. It has no script of its own but is written in the Dwarvish script.","ru":"Орочий — резкий, скрипучий язык с твёрдыми согласными. У него нет собственного алфавита, и он записывается дварфийским письмом.","model":"seed"}
 {"src":"Abyssal","ru":"Бездны","model":"seed"}
 {"src":"Celestial","ru":"Небесный","model":"seed"}
