@@ -108,7 +108,7 @@ fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, sett
                     }
                 });
             }
-            sheet.spawn(Node { margin: UiRect::top(px(4)), ..default() }).with_children(|slot| button(slot, &art, &fonts, T::Back, true, Nav::Go(Screen::Main)));
+            sheet.spawn(Node { margin: UiRect::top(px(4)), ..default() }).with_children(|slot| button(slot, &art, &fonts, T::Back, true, Nav::Back));
         });
     });
 }

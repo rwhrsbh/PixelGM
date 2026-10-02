@@ -2,8 +2,8 @@
 //! is left.
 
 use crate::art::Art;
-use crate::gm::{Gm, GmTest, Health, KeyBook, TestFailure, masked};
-use crate::i18n::{Lang, T};
+use crate::gm::{Gm, GmTest, Health, KeyBook, masked, trouble_text};
+use crate::i18n::{Lang, T, wait_text};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::store::Settings;
 use crate::theme::*;
@@ -40,19 +40,6 @@ const KEY_ROW_GAP: f32 = 2.0;
 const VISIBLE_KEY_ROWS: f32 = 4.0;
 /// Where a player gets a key. An address, so it is the same in every language.
 const KEY_PAGE: &str = "aistudio.google.com/apikey";
-
-/// A wait rounded up, in the two largest units that matter.
-pub fn wait_text(ms: u64, lang: Lang) -> String {
-    let secs = ms.div_ceil(1000);
-    let (hours, minutes) = (secs / 3600, secs % 3600 / 60);
-    if hours > 0 {
-        format!("{hours} {} {minutes} {}", T::Hours.text(lang), T::Minutes.text(lang))
-    } else if minutes > 0 {
-        format!("{minutes} {}", T::Minutes.text(lang))
-    } else {
-        format!("{secs} {}", T::Seconds.text(lang))
-    }
-}
 
 fn model_status(a: Availability, now: u64, lang: Lang) -> String {
     match (a.live_keys, a.free_keys, a.next_free) {
@@ -115,7 +102,7 @@ fn spawn_keys(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
                 });
             });
             sheet.spawn(row(6.0)).with_children(|line| {
-                button(line, &art, &fonts, T::Back, true, Nav::Go(Screen::Main));
+                button(line, &art, &fonts, T::Back, true, Nav::Back);
                 button(line, &art, &fonts, T::TestGm, true, KeyAction::TestGm);
                 line.spawn((Node { flex_grow: 1.0, flex_basis: px(0), ..default() }, Text::default(), TestResult, fonts.body(), ink));
             });
@@ -223,16 +210,7 @@ fn test_text(test: &GmTest, now: u64, lang: Lang) -> (String, Rgba) {
         GmTest::Idle => (T::TestGmHint.text(lang).to_string(), PARCHMENT_DARK),
         GmTest::Running => (T::TestRunning.text(lang).to_string(), PARCHMENT_DARK),
         GmTest::Answered { model, seconds, text } => (format!("{model} {} {seconds:.1} {}: {text}", T::TestAnswered.text(lang), T::Seconds.text(lang)), MOSS),
-        GmTest::Failed(failure) => {
-            let text = match failure {
-                TestFailure::NoKeys => T::TestNoKeys.text(lang).to_string(),
-                TestFailure::Exhausted { retry_at } => format!("{} {}.", T::TestExhausted.text(lang), wait_text(retry_at.saturating_sub(now), lang)),
-                TestFailure::Network => T::TestNetwork.text(lang).to_string(),
-                TestFailure::Blocked(reason) => format!("{} {reason}", T::TestBlocked.text(lang)),
-                TestFailure::Rejected(reason) => format!("{} {reason}", T::TestRejected.text(lang)),
-            };
-            (text, WAX)
-        }
+        GmTest::Failed(trouble) => (trouble_text(trouble, now, lang), WAX),
     }
 }
 
@@ -298,22 +276,15 @@ impl Plugin for KeysPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn waits_are_rounded_up_and_use_the_largest_units() {
-        assert_eq!(wait_text(29_594_000, Lang::Ru), "8 ч 13 мин");
-        assert_eq!(wait_text(125_000, Lang::En), "2 min");
-        assert_eq!(wait_text(1, Lang::En), "1 s");
-        assert_eq!(wait_text(59_001, Lang::Ru), "1 мин");
-    }
+    use crate::gm::Trouble;
 
     #[test]
     fn test_result_names_the_model_or_says_what_went_wrong() {
         let answered = GmTest::Answered { model: "gemini-9-flash".into(), seconds: 4.26, text: "Добро пожаловать.".into() };
         assert_eq!(test_text(&answered, 0, Lang::Ru), ("gemini-9-flash ответил за 4.3 с: Добро пожаловать.".to_string(), MOSS));
-        let spent = GmTest::Failed(TestFailure::Exhausted { retry_at: 3_700_000 });
+        let spent = GmTest::Failed(Trouble::Exhausted { retry_at: 3_700_000 });
         assert_eq!(test_text(&spent, 100_000, Lang::En).0, "Every allowed model is resting. The first returns in 1 h 0 min.");
-        assert_eq!(test_text(&GmTest::Failed(TestFailure::NoKeys), 0, Lang::En), ("No working keys.".to_string(), WAX));
+        assert_eq!(test_text(&GmTest::Failed(Trouble::NoKeys), 0, Lang::En), ("No working keys.".to_string(), WAX));
         assert_eq!(test_text(&GmTest::Idle, 0, Lang::En).0, "One real request with the current settings. Spends one turn.");
     }
 

@@ -8,6 +8,7 @@ pub mod fake;
 pub mod model;
 pub mod path;
 pub mod prompt;
+pub mod walk;
 
 pub use build::{LocationDraft, WorldDraft, build_location, build_world, extract_json};
 pub use model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, Palette, Player, Prop, Sprite, Stub, TILE, TileDef, World};

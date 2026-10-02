@@ -2,8 +2,12 @@ mod art;
 mod gm;
 mod i18n;
 mod keys;
+mod master;
 mod menu;
 mod nav;
+mod newgame;
+mod play;
+mod saves;
 mod screen;
 mod secret;
 mod settings;
@@ -30,6 +34,7 @@ fn main() -> AppExit {
     .insert_resource(settings)
     .init_resource::<theme::Fonts>()
     .init_resource::<art::Art>()
+    .insert_resource(master::Master::new(args.fake_gm))
     .add_plugins((
         screen::ScreenPlugin,
         i18n::I18nPlugin,
@@ -39,6 +44,9 @@ fn main() -> AppExit {
         menu::MenuPlugin,
         keys::KeysPlugin,
         settings::SettingsPlugin,
+        newgame::NewGamePlugin,
+        saves::SavesPlugin,
+        play::PlayPlugin,
         shot::ShotPlugin(args),
     ));
     app.run()

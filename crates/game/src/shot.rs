@@ -3,11 +3,12 @@
 //! - `--do "<step>;<step>;…"` plays a script through the real input path: the steps become
 //!   the same window messages a mouse and keyboard produce. Steps: `wait:<seconds>`,
 //!   `move:<x>,<y>` and `click:<x>,<y>` (canvas pixels), `type:<text>`, `key:<name>`,
-//!   `shot:<file.png>`, `quit`.
+//!   `shot:<file.png>`, `hold:<key>,<seconds>`, `warp:<cell x>,<cell y>`, `quit`.
 //! - `--shot <file.png>` is short for "let the picture settle, save it, quit".
 //! - `--screen <main|keys|settings>` opens a screen, `--size <W>x<H>` sets the window size,
 //!   `--lang <ru|en>` the language, `--keys-file <file>` adds the keys listed in a file,
-//!   `--hidden true` keeps the window off the desktop.
+//!   `--hidden true` keeps the window off the desktop, `--fake-gm true` lets a rule-based
+//!   stand-in answer for the game master.
 
 use crate::gm::{Gm, KeyBook};
 use crate::i18n::Lang;
@@ -30,8 +31,14 @@ pub enum Step {
     Type(String),
     Key(KeyCode, Key, ButtonState),
     Shot(String),
+    /// Put the party in a cell of the current location, to test what lies beyond a walk.
+    Warp(usize, usize),
     Quit,
 }
+
+/// A cell the script asked the party to be moved to; the play screen carries it out.
+#[derive(Resource, Default)]
+pub struct Warp(pub Option<(usize, usize)>);
 
 #[derive(Clone, Default)]
 pub struct Args {
@@ -40,6 +47,8 @@ pub struct Args {
     pub lang: Option<Lang>,
     pub keys_file: Option<String>,
     pub hidden: bool,
+    /// Let a rule-based stand-in answer for the game master: no network, no quota.
+    pub fake_gm: bool,
     pub script: Vec<Step>,
 }
 
@@ -59,6 +68,10 @@ fn named_key(name: &str) -> Option<(KeyCode, Key)> {
         "up" => (KeyCode::ArrowUp, Key::ArrowUp),
         "down" => (KeyCode::ArrowDown, Key::ArrowDown),
         "left" => (KeyCode::ArrowLeft, Key::ArrowLeft),
+        "w" => (KeyCode::KeyW, Key::Character("w".into())),
+        "a" => (KeyCode::KeyA, Key::Character("a".into())),
+        "s" => (KeyCode::KeyS, Key::Character("s".into())),
+        "d" => (KeyCode::KeyD, Key::Character("d".into())),
         "right" => (KeyCode::ArrowRight, Key::ArrowRight),
         _ => return None,
     })
@@ -90,12 +103,19 @@ pub fn parse_script(script: &str) -> Vec<Step> {
                 }
             }
             "type" => steps.push(Step::Type(arg.to_string())),
+            // Hold a key for a while: `hold:d,1.5` walks right for a second and a half.
+            "hold" => {
+                if let Some(((code, key), seconds)) = arg.split_once(',').and_then(|(name, time)| Some((named_key(name.trim())?, time.trim().parse().ok()?))) {
+                    steps.extend([Step::Key(code, key.clone(), ButtonState::Pressed), Step::Wait(seconds), Step::Key(code, key, ButtonState::Released), Step::Frames(1)]);
+                }
+            }
             "key" => {
                 if let Some((code, key)) = named_key(arg) {
                     steps.extend([Step::Key(code, key.clone(), ButtonState::Pressed), Step::Frames(1), Step::Key(code, key, ButtonState::Released), Step::Frames(1)]);
                 }
             }
             "shot" => steps.extend([Step::Shot(arg.to_string()), Step::Frames(SETTLE_FRAMES)]),
+            "warp" => steps.extend(point(arg).map(|p| Step::Warp(p.x as usize, p.y as usize))),
             "quit" => steps.push(Step::Quit),
             _ => {}
         }
@@ -116,6 +136,8 @@ impl Args {
                         "main" => Some(Screen::Main),
                         "keys" => Some(Screen::Keys),
                         "settings" => Some(Screen::Settings),
+                        "newgame" => Some(Screen::NewGame),
+                        "load" => Some(Screen::Load),
                         _ => None,
                     }
                 }
@@ -129,6 +151,7 @@ impl Args {
                 }
                 "--keys-file" => out.keys_file = Some(value),
                 "--hidden" => out.hidden = value == "true",
+                "--fake-gm" => out.fake_gm = value == "true",
                 _ => {}
             }
         }
@@ -175,6 +198,7 @@ fn play_script(
     mut buttons: MessageWriter<MouseButtonInput>,
     mut keys: MessageWriter<KeyboardInput>,
     mut exit: MessageWriter<AppExit>,
+    mut warp: ResMut<Warp>,
 ) {
     if progress.frames > 0 {
         progress.frames -= 1;
@@ -219,6 +243,7 @@ fn play_script(
         Step::Shot(path) => {
             commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
         }
+        Step::Warp(x, y) => warp.0 = Some((x, y)),
         Step::Quit => {
             exit.write(AppExit::Success);
         }
@@ -232,7 +257,7 @@ pub struct ShotPlugin(pub Args);
 
 impl Plugin for ShotPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(StartArgs(self.0.clone())).add_systems(Startup, apply_start).add_systems(First, play_script);
+        app.insert_resource(StartArgs(self.0.clone())).init_resource::<Warp>().add_systems(Startup, apply_start).add_systems(First, play_script);
     }
 }
 

@@ -1,8 +1,9 @@
-//! The screens before a game starts: the table and the main menu. The key and settings
-//! screens live in their own modules and hang off this one.
+//! The screens before a game starts: the table and the main menu. The other screens live in
+//! their own modules and hang off this one.
 
 use crate::art::{Art, CANDLE_SIZE};
 use crate::i18n::T;
+use crate::store::Store;
 use crate::theme::*;
 use crate::widgets::{Activate, button, panel_backing, panel_node};
 use bevy::prelude::*;
@@ -13,16 +14,36 @@ pub enum Screen {
     Main,
     Keys,
     Settings,
+    /// The form where the host says what world they want.
+    NewGame,
+    /// Waiting for the game master to invent and draw the world.
+    Creating,
+    Load,
+    Play,
 }
 
-/// What a navigation button does when clicked.
-#[derive(Component, Clone, Copy)]
+/// What a navigation button does when used.
+#[derive(Component, Clone, Copy, PartialEq)]
 pub enum Nav {
     Go(Screen),
+    /// Back to where this screen was opened from; the main menu unless something else is
+    /// recorded in `ReturnTo`.
+    Back,
+    /// Load the newest save.
+    Continue,
     Quit,
     /// Leads to a part of the game that is not built yet; the button is shown disabled.
     Nothing,
 }
+
+/// Set by a screen that opens another one and wants to be returned to: the key screen opened
+/// from a running game goes back to the game, not to the main menu.
+#[derive(Resource, Default)]
+pub struct ReturnTo(pub Option<Screen>);
+
+/// The table and candles behind the menus. Hidden while a game is on screen.
+#[derive(Component)]
+pub struct Backdrop;
 
 /// A full-canvas column that lives exactly as long as its screen.
 pub fn screen_root(screen: Screen) -> impl Bundle {
@@ -59,10 +80,10 @@ fn at(x: f32, y: f32, w: f32, h: f32) -> Node {
 
 fn spawn_backdrop(mut commands: Commands, art: Res<Art>) {
     commands
-        .spawn((Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() }, GlobalZIndex(-10)))
+        .spawn((Backdrop, Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() }, GlobalZIndex(-10)))
         .with_children(|table| {
             table.spawn((at(0.0, 0.0, crate::screen::CANVAS.x as f32, crate::screen::CANVAS.y as f32), ImageNode::new(art.table.clone())));
-            for (x, y, phase) in [(112.0, 118.0, 0.0), (358.0, 118.0, 2.1), (60.0, 196.0, 4.4)] {
+            for (x, y, phase) in [(96.0, 118.0, 0.0), (374.0, 118.0, 2.1), (60.0, 206.0, 4.4)] {
                 // The light is centred on the flame, not on the candle.
                 table.spawn((at(x + 4.5 - GLOW_SIZE / 2.0, y + 5.0 - GLOW_SIZE / 2.0, GLOW_SIZE, GLOW_SIZE), ImageNode::new(art.glow.clone()), Glow { phase }));
                 table.spawn((
@@ -101,49 +122,59 @@ fn breathe(time: Res<Time>, mut glows: Query<(&Glow, &mut ImageNode)>) {
     }
 }
 
-fn spawn_main(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
+fn spawn_main(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, store: Res<Store>) {
+    let has_saves = !store.list_saves().is_empty();
     commands.spawn(screen_root(Screen::Main)).with_children(|root| {
         root.spawn((
-            Node { margin: UiRect::top(px(28)), ..default() },
+            Node { margin: UiRect::top(px(22)), ..default() },
             Text::new("PIXEL GM"),
             fonts.title(2),
             TextColor(color(BRASS_LIGHT)),
             TextShadow { offset: Vec2::new(2.0, 2.0), color: color(INK) },
         ));
         root.spawn((Node { margin: UiRect::top(px(6)), ..default() }, Text::default(), T::Tagline, fonts.body(), TextColor(color(PARCHMENT_SHADE))));
-        let sheet = Node { margin: UiRect::top(px(18)), width: px(156), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
+        let sheet = Node { margin: UiRect::top(px(14)), width: px(156), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
         spawn_panel(root, &art, sheet, |sheet| {
-            for (label, nav) in [
-                (T::NewGame, Nav::Nothing),
-                (T::Continue, Nav::Nothing),
-                (T::Multiplayer, Nav::Nothing),
-                (T::Keys, Nav::Go(Screen::Keys)),
-                (T::Settings, Nav::Go(Screen::Settings)),
-                (T::Quit, Nav::Quit),
+            for (label, nav, enabled) in [
+                (T::NewGame, Nav::Go(Screen::NewGame), true),
+                (T::Continue, Nav::Continue, has_saves),
+                (T::LoadGame, Nav::Go(Screen::Load), has_saves),
+                (T::Multiplayer, Nav::Nothing, false),
+                (T::Keys, Nav::Go(Screen::Keys), true),
+                (T::Settings, Nav::Go(Screen::Settings), true),
+                (T::Quit, Nav::Quit, true),
             ] {
-                button(sheet, &art, &fonts, label, !matches!(nav, Nav::Nothing), nav);
+                button(sheet, &art, &fonts, label, enabled, nav);
             }
         });
     });
 }
 
-fn on_activate(used: On<Activate>, buttons: Query<&Nav>, mut next: ResMut<NextState<Screen>>, mut exit: MessageWriter<AppExit>) {
+fn on_activate(used: On<Activate>, buttons: Query<&Nav>, mut return_to: ResMut<ReturnTo>, mut next: ResMut<NextState<Screen>>, mut exit: MessageWriter<AppExit>) {
     let Ok(nav) = buttons.get(used.entity) else { return };
     match nav {
         Nav::Go(screen) => next.set(*screen),
+        Nav::Back => next.set(return_to.0.take().unwrap_or(Screen::Main)),
         Nav::Quit => {
             exit.write(AppExit::Success);
         }
-        Nav::Nothing => {}
+        // Loading the newest save is the save module's business.
+        Nav::Continue | Nav::Nothing => {}
     }
 }
 
-/// Escape, or the right-hand button of a gamepad, leaves a sub-screen the same way its Back
-/// button does.
-fn escape_goes_back(keys: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, screen: Res<State<Screen>>, mut next: ResMut<NextState<Screen>>) {
+/// Escape, or the right-hand button of a gamepad, leaves a menu screen the same way its Back
+/// button does. The play screen and the wait for a new world handle Escape themselves.
+fn escape_goes_back(
+    keys: Res<ButtonInput<KeyCode>>,
+    gamepads: Query<&Gamepad>,
+    screen: Res<State<Screen>>,
+    mut return_to: ResMut<ReturnTo>,
+    mut next: ResMut<NextState<Screen>>,
+) {
     let back = keys.just_pressed(KeyCode::Escape) || gamepads.iter().any(|pad| pad.just_pressed(GamepadButton::East));
-    if back && *screen.get() != Screen::Main {
-        next.set(Screen::Main);
+    if back && matches!(screen.get(), Screen::Keys | Screen::Settings | Screen::NewGame | Screen::Load) {
+        next.set(return_to.0.take().unwrap_or(Screen::Main));
     }
 }
 
@@ -152,6 +183,7 @@ pub struct MenuPlugin;
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<Screen>()
+            .init_resource::<ReturnTo>()
             .add_systems(Startup, spawn_backdrop)
             .add_systems(OnEnter(Screen::Main), spawn_main)
             .add_systems(Update, (flicker, breathe, escape_goes_back))

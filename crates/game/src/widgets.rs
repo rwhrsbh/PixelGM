@@ -46,6 +46,10 @@ pub fn backing(image: Handle<Image>, border: f32) -> impl Bundle {
     (Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), ..default() }, sliced(image, border))
 }
 
+fn button_node(justify: JustifyContent) -> Node {
+    Node { height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(8), px(0)), justify_content: justify, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }
+}
+
 /// Spawns a button with a translated label. `extra` carries whatever says what the button
 /// does. Disabled buttons are left out of keyboard and gamepad navigation.
 pub fn button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: T, enabled: bool, extra: impl Bundle) {
@@ -54,7 +58,7 @@ pub fn button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label
         Button,
         PixelButton { enabled, look },
         extra,
-        Node { height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(8), px(0)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() },
+        button_node(JustifyContent::Center),
         children![
             (backing(art.button(look), BUTTON_BORDER), ButtonFace),
             (Text::default(), label, fonts.body(), TextColor(label_color(look)), ButtonLabel),
@@ -63,6 +67,23 @@ pub fn button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label
     if enabled {
         entity.insert(AutoDirectionalNavigation::default());
     }
+}
+
+/// Spawns a button whose label is data rather than a translated string, such as a row in a
+/// list. The text starts at the left and is cut off rather than wrapped.
+pub fn text_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: String, extra: impl Bundle) {
+    let look = ButtonLook::Idle;
+    parent.spawn((
+        Button,
+        PixelButton { enabled: true, look },
+        extra,
+        AutoDirectionalNavigation::default(),
+        Node { overflow: Overflow::clip(), ..button_node(JustifyContent::FlexStart) },
+        children![
+            (backing(art.button(look), BUTTON_BORDER), ButtonFace),
+            (Text::new(label), TextLayout::no_wrap(), fonts.body(), TextColor(label_color(look)), ButtonLabel),
+        ],
+    ));
 }
 
 /// A list that scrolls when it holds more than fits in `height`.

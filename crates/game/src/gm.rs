@@ -2,7 +2,7 @@
 //! health. Network calls run on their own threads and report back through a queue, so a slow
 //! answer never freezes the picture.
 
-use crate::i18n::Lang;
+use crate::i18n::{Lang, T, wait_text};
 use crate::store::{Settings, Store};
 use bevy::prelude::*;
 use llm::{Dispatcher, GenError, GenRequest, KeyHealth, KeyId, SavedState, UreqTransport};
@@ -39,13 +39,28 @@ pub fn masked(secret: &str) -> String {
     format!("{}…{}", chars[..4].iter().collect::<String>(), chars[chars.len() - 4..].iter().collect::<String>())
 }
 
+/// Why the game master did not answer, in the terms a player can act on.
 #[derive(Clone, PartialEq, Debug)]
-pub enum TestFailure {
+pub enum Trouble {
     NoKeys,
     Exhausted { retry_at: u64 },
     Network,
     Blocked(String),
     Rejected(String),
+    /// A model answered, but not with anything that could be used.
+    Unreadable(String),
+}
+
+/// A sentence for the player about what went wrong.
+pub fn trouble_text(trouble: &Trouble, now: u64, lang: Lang) -> String {
+    match trouble {
+        Trouble::NoKeys => T::TestNoKeys.text(lang).to_string(),
+        Trouble::Exhausted { retry_at } => format!("{} {}.", T::TestExhausted.text(lang), wait_text(retry_at.saturating_sub(now), lang)),
+        Trouble::Network => T::TestNetwork.text(lang).to_string(),
+        Trouble::Blocked(reason) => format!("{} {reason}", T::TestBlocked.text(lang)),
+        Trouble::Rejected(reason) => format!("{} {reason}", T::TestRejected.text(lang)),
+        Trouble::Unreadable(reason) => format!("{} {reason}", T::TestUnreadable.text(lang)),
+    }
 }
 
 /// One real request through the rotation, started from the key screen, so the player can see
@@ -60,17 +75,17 @@ pub enum GmTest {
         seconds: f32,
         text: String,
     },
-    Failed(TestFailure),
+    Failed(Trouble),
 }
 
-impl From<GenError> for TestFailure {
+impl From<GenError> for Trouble {
     fn from(error: GenError) -> Self {
         match error {
-            GenError::NoKeys => TestFailure::NoKeys,
-            GenError::Exhausted { retry_at } => TestFailure::Exhausted { retry_at },
-            GenError::Network(_) => TestFailure::Network,
-            GenError::Blocked(reason) => TestFailure::Blocked(reason),
-            GenError::BadRequest(reason) => TestFailure::Rejected(reason),
+            GenError::NoKeys => Trouble::NoKeys,
+            GenError::Exhausted { retry_at } => Trouble::Exhausted { retry_at },
+            GenError::Network(_) => Trouble::Network,
+            GenError::Blocked(reason) => Trouble::Blocked(reason),
+            GenError::BadRequest(reason) => Trouble::Rejected(reason),
         }
     }
 }

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use world::World;
 
 #[derive(Resource, Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -24,6 +25,37 @@ impl Default for Settings {
     fn default() -> Self {
         Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma }
     }
+}
+
+/// What a save says about itself, shown in the list of saves.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct SaveMeta {
+    /// The world this save belongs to; all saves of one world share a folder.
+    pub world_id: String,
+    pub title: String,
+    /// The place the party was in.
+    pub place: String,
+    /// Seconds since the Unix epoch.
+    pub saved_at: u64,
+    /// Made by the player, as opposed to the automatic save.
+    pub manual: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveFile {
+    meta: SaveMeta,
+    world: World,
+}
+
+/// A save found on disk: where it is and what it says about itself.
+#[derive(Clone, PartialEq, Debug)]
+pub struct SaveEntry {
+    pub path: PathBuf,
+    pub meta: SaveMeta,
+}
+
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -85,6 +117,43 @@ impl Store {
             .filter_map(|blob| secret::unprotect(&blob).ok())
             .filter_map(|plain| String::from_utf8(plain).ok())
             .collect()
+    }
+
+    fn saves_dir(&self) -> PathBuf {
+        self.dir.join("saves")
+    }
+
+    /// Writes the world. The automatic save of a world is one file that is overwritten;
+    /// each manual save is a new file.
+    pub fn save_game(&self, world_id: &str, world: &World, manual: bool) -> io::Result<SaveMeta> {
+        let meta = SaveMeta { world_id: world_id.to_string(), title: world.title.clone(), place: world.here().name.clone(), saved_at: unix_now(), manual };
+        let name = if manual { format!("manual-{}.json", meta.saved_at) } else { "auto.json".to_string() };
+        let file = SaveFile { meta: meta.clone(), world: world.clone() };
+        write_whole(&self.saves_dir().join(world_id).join(name), serde_json::to_string(&file)?.as_bytes())?;
+        Ok(meta)
+    }
+
+    /// Every readable save, newest first. A file that cannot be read is left out, not fatal.
+    pub fn list_saves(&self) -> Vec<SaveEntry> {
+        let mut saves = Vec::new();
+        for world_dir in fs::read_dir(self.saves_dir()).into_iter().flatten().flatten() {
+            for file in fs::read_dir(world_dir.path()).into_iter().flatten().flatten() {
+                let path = file.path();
+                if path.extension().is_none_or(|e| e != "json") {
+                    continue;
+                }
+                if let Some(save) = fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<SaveFile>(&s).ok()) {
+                    saves.push(SaveEntry { path, meta: save.meta });
+                }
+            }
+        }
+        saves.sort_by(|a, b| b.meta.saved_at.cmp(&a.meta.saved_at).then_with(|| a.path.cmp(&b.path)));
+        saves
+    }
+
+    pub fn load_game(&self, path: &Path) -> io::Result<(SaveMeta, World)> {
+        let file: SaveFile = serde_json::from_str(&fs::read_to_string(path)?)?;
+        Ok((file.meta, file.world))
     }
 
     /// Spent quotas and model quirks learned in earlier sessions; empty when there is no file.
@@ -150,6 +219,45 @@ mod tests {
             let on_disk = fs::read_to_string(store.dir.join("keys.json")).unwrap();
             assert!(!on_disk.contains("AIza-first"));
         }
+    }
+
+    fn test_world() -> World {
+        let draft: world::WorldDraft = serde_json::from_str(&world::fake::world("saves")).unwrap();
+        world::build_world(&draft, "saves", "English").unwrap().0
+    }
+
+    #[test]
+    fn a_saved_game_loads_back_exactly() {
+        let store = temp_store("game");
+        let world = test_world();
+        let meta = store.save_game("w1", &world, false).unwrap();
+        assert_eq!((meta.title.as_str(), meta.place.as_str(), meta.manual), ("Test Hollow", "The Camp", false));
+        let saves = store.list_saves();
+        assert_eq!(saves.len(), 1);
+        assert_eq!(store.load_game(&saves[0].path).unwrap(), (meta, world));
+    }
+
+    #[test]
+    fn the_automatic_save_is_overwritten_and_manual_saves_pile_up() {
+        let store = temp_store("slots");
+        let world = test_world();
+        store.save_game("w1", &world, false).unwrap();
+        store.save_game("w1", &world, false).unwrap();
+        store.save_game("w1", &world, true).unwrap();
+        store.save_game("w2", &world, false).unwrap();
+        let saves = store.list_saves();
+        assert_eq!(saves.len(), 3);
+        assert_eq!(saves.iter().filter(|s| s.meta.manual).count(), 1);
+        assert_eq!(saves.iter().filter(|s| s.meta.world_id == "w1").count(), 2);
+    }
+
+    #[test]
+    fn a_broken_save_is_left_out_of_the_list_and_no_saves_is_an_empty_list() {
+        let store = temp_store("badsave");
+        assert!(store.list_saves().is_empty());
+        store.save_game("w1", &test_world(), false).unwrap();
+        fs::write(store.dir.join("saves/w1/manual-1.json"), "{ truncated").unwrap();
+        assert_eq!(store.list_saves().len(), 1);
     }
 
     #[test]
