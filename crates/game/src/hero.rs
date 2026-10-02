@@ -31,12 +31,116 @@ struct Draft {
     /// The ability picked first of two to swap, under methods that deal fixed numbers.
     picked: Option<usize>,
     problem: Option<String>,
+    look: rules::Look,
+    tab: Tab,
+    /// Which way the hero in the preview faces.
+    facing: crate::doll::Facing,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Tab {
+    #[default]
+    Look,
+    Stats,
+}
+
+/// One of the things about a hero's looks a player can turn through.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Feature {
+    Build,
+    Skin,
+    Hair,
+    HairColor,
+    Beard,
+    Eyes,
+    Cloth,
+    Trim,
+}
+
+impl Feature {
+    const ALL: [Feature; 8] = [Feature::Build, Feature::Skin, Feature::Hair, Feature::HairColor, Feature::Beard, Feature::Eyes, Feature::Cloth, Feature::Trim];
+
+    fn label(self) -> T {
+        match self {
+            Feature::Build => T::LookBuild,
+            Feature::Skin => T::LookSkin,
+            Feature::Hair => T::LookHair,
+            Feature::HairColor => T::LookHairColor,
+            Feature::Beard => T::LookBeard,
+            Feature::Eyes => T::LookEyes,
+            Feature::Cloth => T::LookCloth,
+            Feature::Trim => T::LookTrim,
+        }
+    }
+
+    fn count(self) -> usize {
+        use crate::doll::*;
+        match self {
+            Feature::Build => BUILDS,
+            Feature::Skin => SKINS.len(),
+            Feature::Hair => HAIRS,
+            Feature::HairColor => HAIR_COLORS.len(),
+            Feature::Beard => BEARDS,
+            Feature::Eyes => EYE_COLORS.len(),
+            Feature::Cloth | Feature::Trim => CLOTHS.len(),
+        }
+    }
+
+    fn slot(self, look: &mut rules::Look) -> &mut u8 {
+        match self {
+            Feature::Build => &mut look.build,
+            Feature::Skin => &mut look.skin,
+            Feature::Hair => &mut look.hair,
+            Feature::HairColor => &mut look.hair_color,
+            Feature::Beard => &mut look.beard,
+            Feature::Eyes => &mut look.eyes,
+            Feature::Cloth => &mut look.cloth,
+            Feature::Trim => &mut look.trim,
+        }
+    }
+
+    /// A swatch for the features that are colours.
+    fn swatch(self, value: u8) -> Option<(u8, u8, u8)> {
+        use crate::doll::*;
+        let at = |list: &[(u8, u8, u8)]| list[value as usize % list.len()];
+        match self {
+            Feature::Skin => Some(at(&SKINS)),
+            Feature::HairColor => Some(at(&HAIR_COLORS)),
+            Feature::Eyes => Some(at(&EYE_COLORS)),
+            Feature::Cloth | Feature::Trim => Some(at(&CLOTHS)),
+            _ => None,
+        }
+    }
+
+    /// The name of a choice that is a shape rather than a colour.
+    fn name(self, value: u8, ru: bool) -> String {
+        let pick = |names: &[(&str, &str)]| {
+            let (r, e) = names[value as usize % names.len()];
+            if ru { r } else { e }.to_string()
+        };
+        match self {
+            Feature::Build => pick(&[("стройное", "slim"), ("среднее", "average"), ("крепкое", "broad")]),
+            Feature::Hair => pick(&[
+                ("короткая", "short"),
+                ("бритая", "shaved"),
+                ("до плеч", "medium"),
+                ("длинная", "long"),
+                ("хвост", "ponytail"),
+                ("ирокез", "mohawk"),
+                ("кудри", "curly"),
+                ("пучок", "bun"),
+                ("косы", "braids"),
+            ]),
+            Feature::Beard => pick(&[("нет", "none"), ("щетина", "stubble"), ("полная", "full"), ("длинная", "long"), ("усы", "moustache")]),
+            _ => format!("{}/{}", value as usize % self.count() + 1, self.count()),
+        }
+    }
 }
 
 impl Default for Draft {
     fn default() -> Self {
         let class = srd().classes.iter().position(|c| c.index == "fighter").unwrap_or(0);
-        Self { race: srd().races.iter().position(|r| r.index == "human").unwrap_or(0), class, method: AbilityMethod::PointBuy, base: suggested_scores("fighter", STANDARD_ARRAY), rolled: STANDARD_ARRAY, skills: Vec::new(), spells: Vec::new(), picked: None, problem: None }
+        Self { race: srd().races.iter().position(|r| r.index == "human").unwrap_or(0), class, method: AbilityMethod::PointBuy, base: suggested_scores("fighter", STANDARD_ARRAY), rolled: STANDARD_ARRAY, skills: Vec::new(), spells: Vec::new(), picked: None, problem: None, look: rules::Look::default(), tab: Tab::Look, facing: crate::doll::Facing::Down }
     }
 }
 
@@ -44,6 +148,7 @@ impl Draft {
     /// A draft under the method the host chose for the world.
     fn with_method(method: AbilityMethod) -> Self {
         let mut draft = Self { method, ..Self::default() };
+        draft.randomize(&mut Rng::from_clock());
         if method == AbilityMethod::Roll {
             draft.rolled = roll_scores(&mut Rng::from_clock());
         }
@@ -81,6 +186,30 @@ impl Draft {
 }
 
 impl Draft {
+    /// A face to start from, so that no two new heroes look the same.
+    fn randomize(&mut self, rng: &mut Rng) {
+        for feature in Feature::ALL {
+            *feature.slot(&mut self.look) = (rng.die(feature.count() as u32) - 1) as u8;
+        }
+        // Mostly the skin colours of people, now and then one of the stranger ones.
+        let strange = rng.die(6) == 1;
+        self.look.skin = (rng.die(if strange { crate::doll::SKINS.len() as u32 } else { 7 }) - 1) as u8;
+        self.look.helmet = (rng.die(2) - 1) == 0;
+    }
+
+    fn turn(&mut self, feature: Feature, by: i32) {
+        let count = feature.count() as i32;
+        let slot = feature.slot(&mut self.look);
+        *slot = (*slot as i32 + by).rem_euclid(count) as u8;
+    }
+
+    /// The hero as the choices so far would make it, to show it.
+    fn preview(&self) -> Option<Character> {
+        let class = &srd().classes[self.class];
+        let preview = Draft { skills: class.skill_options.iter().take(class.skill_picks).cloned().collect(), picked: None, problem: None, ..clone_of(self) };
+        preview.build("x", "").ok()
+    }
+
     fn class_index(&self) -> &'static str {
         &srd().classes[self.class].index
     }
@@ -134,6 +263,7 @@ impl Draft {
             let spells = suggested_spells(data, &hero);
             hero.set_spells(&spells)?;
         }
+        hero.look = self.look;
         Ok(hero)
     }
 }
@@ -153,7 +283,16 @@ enum Action {
     Take(usize),
     /// Sit in the master's seat and play no hero.
     Lead,
+    Show(Tab),
+    Turn(Feature, i32),
+    Helmet,
+    Random,
+    Rotate,
 }
+
+/// The hero in the preview, walking on the spot.
+#[derive(Component)]
+struct Preview(Vec<Handle<Image>>, crate::doll::Facing);
 
 #[derive(Component)]
 struct NameInput;
@@ -236,7 +375,19 @@ fn spawn_screen(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: 
 
 /// Rebuilds everything that depends on the draft. The two text fields are left alone, so
 /// what was typed in them survives.
-fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, choices: Query<Entity, With<Choices>>, fresh: Query<(), Added<Choices>>, session: Res<Session>, game: Option<Res<Game>>) {
+#[allow(clippy::too_many_arguments)]
+fn redraw(
+    mut commands: Commands,
+    draft: Res<Draft>,
+    lang: Res<Lang>,
+    art: Res<Art>,
+    fonts: Res<Fonts>,
+    choices: Query<Entity, With<Choices>>,
+    fresh: Query<(), Added<Choices>>,
+    session: Res<Session>,
+    game: Option<Res<Game>>,
+    mut images: ResMut<Assets<Image>>,
+) {
     let Ok(choices) = choices.single() else { return };
     if !draft.is_changed() && !lang.is_changed() && fresh.is_empty() {
         return;
@@ -252,10 +403,19 @@ fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<A
             text_button(line, &art, &fonts, format!("{}: {}", T::HeroClass.text(*lang), tr(ru, &class.name)), Action::Class);
             // The host chose the method for the whole world.
             line.spawn((Text::new(method_label(draft.method).text(*lang).to_string()), fonts.body(), faded));
-            if draft.method == AbilityMethod::Roll {
+            if draft.method == AbilityMethod::Roll && draft.tab == Tab::Stats {
                 button(line, &art, &fonts, T::Reroll, true, Action::Reroll);
             }
+            line.spawn(Node { flex_grow: 1.0, ..default() });
+            for (tab, label) in [(Tab::Look, T::TabLook), (Tab::Stats, T::TabStats)] {
+                let mark = if draft.tab == tab { "> " } else { "" };
+                text_button(line, &art, &fonts, format!("{mark}{}", label.text(*lang)), Action::Show(tab));
+            }
         });
+        if draft.tab == Tab::Look {
+            look_tab(area, &draft, *lang, &art, &fonts, &mut images, &session, game.as_deref());
+            return;
+        }
         area.spawn(Node { column_gap: px(10), align_items: AlignItems::FlexStart, ..default() }).with_children(|columns| {
             columns.spawn(Node { width: px(214), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }).with_children(|left| {
                 let hint = match draft.method {
@@ -310,29 +470,109 @@ fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<A
                     });
                 }
                 // What the choices come to, so the player sees the character before making it.
-                let preview = Draft { skills: class.skill_options.iter().take(class.skill_picks).cloned().collect(), picked: None, problem: None, ..clone_of(&draft) };
-                if let Ok(hero) = preview.build("x", "") {
+                if let Some(hero) = draft.preview() {
                     right.spawn((Text::new(format!("{} {} · {} {}", T::HitPoints.text(*lang), hero.max_hp, T::ArmorClass.text(*lang), hero.ac())), fonts.body(), ink));
                 }
-                if let Some(problem) = &draft.problem {
-                    right.spawn((Text::new(problem.clone()), fonts.body(), TextColor(color(WAX))));
-                }
-                right.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                    button(line, &art, &fonts, T::Back, true, Nav::Go(Screen::Main));
-                    button(line, &art, &fonts, T::CreateHero, true, Action::Create);
-                });
-                // At a shared table somebody may run the game instead of playing in it.
-                let seat_free = game.as_ref().is_some_and(|g| g.world.gm.as_deref().is_none_or(|gm| !g.world.present.iter().any(|p| p == gm)));
-                if !matches!(*session, Session::Solo) && seat_free {
-                    right.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::SeatNoHero, true, Action::Lead));
-                }
+                finish(right, &draft, &art, &fonts, &session, game.as_deref());
             });
         });
     });
 }
 
+/// What ends either tab: a problem with the hero, if any, and the ways out of the screen.
+fn finish(parent: &mut ChildSpawnerCommands, draft: &Draft, art: &Art, fonts: &Fonts, session: &Session, game: Option<&Game>) {
+    if let Some(problem) = &draft.problem {
+        parent.spawn((Text::new(problem.clone()), fonts.body(), TextColor(color(WAX))));
+    }
+    parent.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+        button(line, art, fonts, T::Back, true, Nav::Go(Screen::Main));
+        button(line, art, fonts, T::CreateHero, true, Action::Create);
+    });
+    // At a shared table somebody may run the game instead of playing in it.
+    let seat_free = game.is_some_and(|g| g.world.gm.as_deref().is_none_or(|gm| !g.world.present.iter().any(|p| p == gm)));
+    if !matches!(*session, Session::Solo) && seat_free {
+        parent.spawn(Node::default()).with_children(|slot| button(slot, art, fonts, T::SeatNoHero, true, Action::Lead));
+    }
+}
+
+/// The looks of the hero: a large figure that walks on the spot, and a row for each feature.
+#[allow(clippy::too_many_arguments)]
+fn look_tab(area: &mut ChildSpawnerCommands, draft: &Draft, lang: Lang, art: &Art, fonts: &Fonts, images: &mut Assets<Image>, session: &Session, game: Option<&Game>) {
+    let ru = lang == Lang::Ru;
+    let ink = TextColor(color(INK));
+    area.spawn(Node { column_gap: px(10), align_items: AlignItems::FlexStart, ..default() }).with_children(|columns| {
+        columns.spawn(Node { width: px(150), flex_shrink: 0.0, flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: px(3), ..default() }).with_children(|left| {
+            // The figure at four times its size in the world, on a patch of ground.
+            left.spawn((Node { width: px(120), height: px(118), justify_content: JustifyContent::Center, align_items: AlignItems::FlexEnd, padding: UiRect::bottom(px(6)), ..default() }, BackgroundColor(Color::srgb(0.3, 0.36, 0.24))))
+                .with_children(|stage| {
+                    if let Some(hero) = draft.preview() {
+                        let frames: Vec<Handle<Image>> = crate::doll::frames(&hero).into_iter().map(|frame| images.add(frame.into_image())).collect();
+                        let first = frames[crate::doll::frame_index(draft.facing, 0)].clone();
+                        stage.spawn((Preview(frames, draft.facing), Node { width: px(64), height: px(96), ..default() }, ImageNode::new(first)));
+                    }
+                });
+            left.spawn(Node { column_gap: px(3), ..default() }).with_children(|line| {
+                button(line, art, fonts, T::LookTurn, true, Action::Rotate);
+                button(line, art, fonts, T::LookRandom, true, Action::Random);
+            });
+            finish(left, draft, art, fonts, session, game);
+        });
+        columns.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }).with_children(|right| {
+            for feature in Feature::ALL {
+                let value = feature.slot(&mut draft.look.clone()).to_owned();
+                right.spawn(Node { column_gap: px(3), align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                    line.spawn((Node { width: px(78), flex_shrink: 0.0, ..default() }, Text::new(feature.label().text(lang).to_string()), TextLayout::no_wrap(), fonts.body(), ink));
+                    text_button(line, art, fonts, "<".to_string(), Action::Turn(feature, -1));
+                    line.spawn(Node { width: px(78), flex_shrink: 0.0, column_gap: px(3), align_items: AlignItems::Center, ..default() }).with_children(|cell| {
+                        if let Some((r, g, b)) = feature.swatch(value) {
+                            cell.spawn((Node { width: px(10), height: px(10), flex_shrink: 0.0, border: UiRect::all(px(1)), ..default() }, BackgroundColor(Color::srgb_u8(r, g, b)), BorderColor::all(color(INK))));
+                        }
+                        cell.spawn((Text::new(feature.name(value, ru)), TextLayout::no_wrap(), fonts.body(), ink));
+                    });
+                    text_button(line, art, fonts, ">".to_string(), Action::Turn(feature, 1));
+                });
+            }
+            right.spawn(Node { column_gap: px(3), align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                line.spawn((Node { width: px(78), flex_shrink: 0.0, ..default() }, Text::new(T::LookHelmet.text(lang).to_string()), TextLayout::no_wrap(), fonts.body(), ink));
+                let mark = if draft.look.helmet { "[x]" } else { "[ ]" };
+                text_button(line, art, fonts, mark.to_string(), Action::Helmet);
+            });
+        });
+    });
+}
+
+/// The figure in the preview walks on the spot.
+fn walk_preview(time: Res<Time>, mut figures: Query<(&Preview, &mut ImageNode)>, mut since: Local<f32>, mut step: Local<usize>) {
+    *since += time.delta_secs();
+    if *since < 0.14 {
+        return;
+    }
+    *since = 0.0;
+    *step = (*step + 1) % crate::doll::STEPS;
+    for (preview, mut image) in &mut figures {
+        if let Some(frame) = preview.0.get(crate::doll::frame_index(preview.1, *step))
+            && image.image != *frame
+        {
+            image.image = frame.clone();
+        }
+    }
+}
+
 fn clone_of(draft: &Draft) -> Draft {
-    Draft { race: draft.race, class: draft.class, method: draft.method, base: draft.base, rolled: draft.rolled, skills: draft.skills.clone(), spells: draft.spells.clone(), picked: draft.picked, problem: draft.problem.clone() }
+    Draft {
+        race: draft.race,
+        class: draft.class,
+        method: draft.method,
+        base: draft.base,
+        rolled: draft.rolled,
+        skills: draft.skills.clone(),
+        spells: draft.spells.clone(),
+        picked: draft.picked,
+        problem: draft.problem.clone(),
+        look: draft.look,
+        tab: draft.tab,
+        facing: draft.facing,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -366,6 +606,19 @@ fn on_activate(
         Action::Reroll => {
             draft.rolled = roll_scores(&mut Rng::from_clock());
             draft.deal();
+        }
+        Action::Show(tab) => draft.tab = *tab,
+        Action::Turn(feature, by) => draft.turn(*feature, *by),
+        Action::Helmet => draft.look.helmet = !draft.look.helmet,
+        Action::Random => draft.randomize(&mut Rng::from_clock()),
+        Action::Rotate => {
+            use crate::doll::Facing;
+            draft.facing = match draft.facing {
+                Facing::Down => Facing::Left,
+                Facing::Left => Facing::Up,
+                Facing::Up => Facing::Right,
+                Facing::Right => Facing::Down,
+            };
         }
         Action::Minus(i) => draft.nudge(*i, -1),
         Action::Plus(i) => draft.nudge(*i, 1),
@@ -480,7 +733,7 @@ pub struct HeroPlugin;
 
 impl Plugin for HeroPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Screen::Hero), spawn_screen).add_systems(Update, redraw.run_if(in_state(Screen::Hero)).run_if(resource_exists::<Draft>)).add_observer(on_activate);
+        app.add_systems(OnEnter(Screen::Hero), spawn_screen).add_systems(Update, (redraw.run_if(resource_exists::<Draft>), walk_preview).run_if(in_state(Screen::Hero))).add_observer(on_activate);
     }
 }
 
