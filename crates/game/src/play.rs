@@ -18,6 +18,8 @@ use bevy::text::{EditableText, TextCursorStyle};
 use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use world::base::{HERO_SPRITE, MARKER_SPRITE};
 use world::walk::FEET;
+use crate::hero::sheet_lines;
+use rules::{Ability, Rng, Side, tr};
 use world::{LocationDraft, Speaker, TILE, Turn, World, fake};
 
 /// The game being played.
@@ -54,10 +56,16 @@ pub enum Phase {
     Refused { said: String, near: Option<String>, trouble: Trouble },
     /// The story so far, and what the party carries.
     Journal,
+    /// The master called for a check; the die has not been rolled yet.
+    Rolling,
+    /// A fight is on; the fight module runs the screen.
+    Fighting,
+    /// The character sheet.
+    Sheet,
 }
 
 #[derive(Resource, Default)]
-struct Redraw(bool);
+pub struct Redraw(pub bool);
 
 /// The words shown on arrival: the place's name at once, its description letter by letter.
 #[derive(Resource, Default)]
@@ -142,6 +150,12 @@ enum PlayAction {
     /// Back to walking.
     Close,
     AskAgain,
+    /// Roll the check that is waiting.
+    Roll,
+    /// Put an earned point into an ability of the first hero who has points to place.
+    Improve(Ability),
+    /// A night's rest.
+    Rest,
 }
 
 const SPEED: f32 = 72.0;
@@ -152,18 +166,20 @@ const EXIT_HINT_REACH: f32 = 28.0;
 const THING_REACH: f32 = 26.0;
 const LETTERS_PER_SECOND: f32 = 70.0;
 const ARRIVAL_LINGER: f32 = 4.0;
-const HUD_HEIGHT: f32 = 14.0;
+pub const HUD_HEIGHT: f32 = 14.0;
+/// A hostile creature this many cells away notices the party and attacks.
+const NOTICE_CELLS: u32 = 3;
 /// After the master refuses unasked-for work, how long before it is offered again.
 const BACKGROUND_REST: f32 = 600.0;
 const JOURNAL_LINES: usize = 80;
 
 /// A point of the location, in pixels from its top-left corner, as a point of the screen.
-fn on_screen(x: f32, y: f32) -> Vec2 {
+pub fn on_screen(x: f32, y: f32) -> Vec2 {
     Vec2::new(x - CANVAS.x as f32 / 2.0, CANVAS.y as f32 / 2.0 - y)
 }
 
 /// Things lower on the screen are drawn over things higher up.
-fn depth(y: f32) -> f32 {
+pub fn depth(y: f32) -> f32 {
     1.0 + y * 0.001
 }
 
@@ -178,10 +194,12 @@ fn event_after(initiative: Initiative) -> Option<f32> {
 
 /// Puts a world on the play screen. Used by a new game and by loading a save.
 pub fn begin(commands: &mut Commands, next: &mut NextState<Screen>, world: World, world_id: String) {
-    commands.insert_resource(Game { world, world_id });
+    // A world without a character goes to the character screen first.
+    let screen = if world.party.is_empty() { Screen::Hero } else { Screen::Play };
     commands.insert_resource(Phase::Arriving { t: 0.0 });
+    commands.insert_resource(Game { world, world_id });
     commands.insert_resource(Background::default());
-    next.set(Screen::Play);
+    next.set(screen);
 }
 
 fn autosave(store: &Store, game: &Game) {
@@ -265,14 +283,34 @@ fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut
         }
     }
     for (n, creature) in here.creatures.iter().enumerate() {
-        let (x, y) = foot(creature.x, creature.y);
+        // In a fight a creature is where the encounter says it is, and the dead are gone.
+        let fighter = world.fight.as_ref().and_then(|f| f.combatants.iter().find(|c| c.id == creature.id));
+        if fighter.is_some_and(|c| c.dead) {
+            continue;
+        }
+        let (cx, cy) = fighter.map_or((creature.x, creature.y), |c| (c.x.max(0) as usize, c.y.max(0) as usize));
+        let (x, y) = foot(cx, cy);
         if let Some(image) = picture(&creature.sprite) {
             let at = on_screen(x, y);
             commands.spawn((InLocation, Idler { phase: n as f32 * 0.37, rest_y: at.y }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::from_translation(at.extend(depth(y)))));
         }
     }
-    if let Some(image) = picture(HERO_SPRITE) {
-        commands.spawn((InLocation, Hero, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::default()));
+    match &world.fight {
+        // In a fight every hero stands in a cell of its own; the fallen are darkened.
+        Some(fight) => {
+            for c in fight.combatants.iter().filter(|c| c.side == Side::Party && !c.dead) {
+                let (x, y) = foot(c.x.max(0) as usize, c.y.max(0) as usize);
+                if let Some(image) = picture(HERO_SPRITE) {
+                    let tint = if c.hp > 0 { Color::WHITE } else { Color::srgb(0.35, 0.3, 0.3) };
+                    commands.spawn((InLocation, Sprite { color: tint, flip_y: c.hp <= 0, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(x, y).extend(depth(y)))));
+                }
+            }
+        }
+        None => {
+            if let Some(image) = picture(HERO_SPRITE) {
+                commands.spawn((InLocation, Hero, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::default()));
+            }
+        }
     }
 }
 
@@ -312,6 +350,11 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         *phase = Phase::Leaving { to: exit.to.clone(), t: 0.0 };
         return;
     }
+    // Something hostile close by does not wait to be spoken to.
+    if game.world.hostile_near(NOTICE_CELLS) && game.world.start_fight(Rng::from_clock()) {
+        *phase = Phase::Fighting;
+        return;
+    }
     let held = |keys: [KeyCode; 2]| keyboard.any_pressed(keys) as i32 as f32;
     let mut direction = Vec2::new(
         held([KeyCode::KeyD, KeyCode::ArrowRight]) - held([KeyCode::KeyA, KeyCode::ArrowLeft]),
@@ -342,19 +385,19 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
     let pad = |button: GamepadButton| gamepads.iter().any(|pad| pad.just_pressed(button));
     // The press that closes a sheet must not also act on the world behind it: a key only
     // opens something if the party was already walking on the frame before.
-    let settled = std::mem::replace(&mut *was_walking, *phase == Phase::Walking);
+    let was_settled = std::mem::replace(&mut *was_walking, *phase == Phase::Walking);
     if keyboard.just_pressed(KeyCode::Escape) || pad(GamepadButton::Start) {
         let next = match &*phase {
             Phase::Walking => Phase::Paused,
-            Phase::Paused | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Journal => Phase::Walking,
+            Phase::Paused | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Journal | Phase::Sheet => Phase::Walking,
             // A telling with choices stays until one is made or it is closed by its button.
-            Phase::Reading { turn } if turn.options.is_empty() => Phase::Walking,
+            Phase::Reading { turn } if turn.options.is_empty() => settled(&game.world),
             _ => return,
         };
         *phase = next;
         return;
     }
-    if *phase != Phase::Walking || !settled {
+    if *phase != Phase::Walking || !was_settled {
         return;
     }
     if keyboard.any_just_pressed([KeyCode::KeyE, KeyCode::Enter, KeyCode::NumpadEnter]) || pad(GamepadButton::South) {
@@ -364,6 +407,20 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
         };
     } else if keyboard.just_pressed(KeyCode::KeyJ) || pad(GamepadButton::North) {
         *phase = Phase::Journal;
+    } else if (keyboard.just_pressed(KeyCode::KeyC) || pad(GamepadButton::West)) && !game.world.party.is_empty() {
+        *phase = Phase::Sheet;
+    }
+}
+
+/// What the screen should be doing once a sheet is closed: a fight that broke out, a check
+/// that is waiting, or simply walking on.
+fn settled(world: &World) -> Phase {
+    if world.fight.is_some() {
+        Phase::Fighting
+    } else if world.pending.is_some() {
+        Phase::Rolling
+    } else {
+        Phase::Walking
     }
 }
 
@@ -425,9 +482,13 @@ fn settle(draft: Result<Box<LocationDraft>, Trouble>, id: &str, from: &str, game
 }
 
 /// The master told something: it is shown, the picture is brought up to date, the game saved.
-fn told(turn: Turn, notes: Vec<String>, game: &Game, store: &Store, redraw: &mut Redraw, background: &mut Background) -> Phase {
+fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redraw: &mut Redraw, background: &mut Background) -> Phase {
     for note in notes {
         info!("turn repaired: {note}");
+    }
+    // Levels gained from the story are told with it.
+    for (name, up) in game.world.level_ups.drain(..) {
+        turn.narration.push_str(&format!("\n★ {name}: {}", up.level));
     }
     redraw.0 = true;
     background.quiet = 0.0;
@@ -474,7 +535,7 @@ fn receive(
                 *phase = match draft {
                     Ok(draft) => {
                         let (turn, notes) = game.world.take_turn(&said, &draft);
-                        told(turn, notes, &game, &store, &mut redraw, &mut background)
+                        told(turn, notes, &mut game, &store, &mut redraw, &mut background)
                     }
                     Err(trouble) => Phase::Refused { said, near, trouble },
                 };
@@ -487,7 +548,7 @@ fn receive(
                     && !draft.narration.trim().is_empty()
                 {
                     let (turn, notes) = game.world.take_turn("", &draft);
-                    *phase = told(turn, notes, &game, &store, &mut redraw, &mut background);
+                    *phase = told(turn, notes, &mut game, &store, &mut redraw, &mut background);
                 }
             }
             Answer::Chapter(draft) => {
@@ -538,11 +599,11 @@ fn background_work(time: Res<Time>, phase: Res<Phase>, game: Res<Game>, gm: Res<
 
 fn veil(phase: Res<Phase>, mut veils: Query<&mut BackgroundColor, With<Veil>>) {
     let darkness = match &*phase {
-        Phase::Walking | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Reading { .. } | Phase::Asking { .. } => 0.0,
+        Phase::Walking | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Reading { .. } | Phase::Asking { .. } | Phase::Rolling | Phase::Fighting => 0.0,
         Phase::Leaving { t, .. } => *t,
         Phase::Arriving { t } => 1.0 - t,
         Phase::Drawing { .. } | Phase::Stuck { .. } => 0.8,
-        Phase::Paused | Phase::Journal | Phase::Refused { .. } => 0.55,
+        Phase::Paused | Phase::Journal | Phase::Refused { .. } | Phase::Sheet => 0.55,
     };
     // A fade in a few flat steps reads as pixel art; a smooth one does not.
     let stepped = (darkness.clamp(0.0, 1.0) * 5.0).round() / 5.0;
@@ -621,6 +682,10 @@ enum Sheet {
     Reading(Turn),
     Refused(String),
     Journal { carried: String, lines: Vec<(Speaker, String)> },
+    /// What is being rolled, in words.
+    Rolling(String),
+    /// The sheets of the party, and whether there are points to place.
+    Character { lines: Vec<String>, points: bool },
 }
 
 fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang) -> Sheet {
@@ -650,6 +715,23 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang) -> Sheet {
             let skip = world.story.log.len().saturating_sub(JOURNAL_LINES);
             Sheet::Journal { carried, lines: world.story.log.iter().skip(skip).map(|l| (l.speaker, l.text.clone())).collect() }
         }
+        Phase::Rolling => match &world.pending {
+            Some(check) => {
+                let ru = lang == Lang::Ru;
+                let skill = check.skill.as_deref().and_then(|s| rules::srd().skill(s)).map(|s| format!(" ({})", tr(ru, &s.name))).unwrap_or_default();
+                Sheet::Rolling(format!("{}{skill} — {} {}", tr(ru, check.ability.name()), T::Difficulty.text(lang), check.difficulty))
+            }
+            None => Sheet::None,
+        },
+        Phase::Sheet => {
+            let mut lines = Vec::new();
+            for hero in &world.party {
+                lines.extend(sheet_lines(hero, lang));
+                lines.push(String::new());
+            }
+            lines.pop();
+            Sheet::Character { lines, points: world.party.iter().any(|h| h.points_to_place > 0) }
+        }
         _ => Sheet::None,
     }
 }
@@ -676,7 +758,7 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
     let faded = TextColor(color(FADED));
     // Sheets about the story sit at the bottom, where the eye rests while walking; the rest
     // take the middle of the screen.
-    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing | Sheet::Asking(_) | Sheet::Reading(_));
+    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Rolling(_));
     let full = Node {
         position_type: PositionType::Absolute,
         left: px(0),
@@ -689,7 +771,7 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
         ..default()
     };
     commands.spawn((Overlay, full, GlobalZIndex(10))).with_children(|root| {
-        let sheet = Node { width: px(if low || matches!(wanted, Sheet::Journal { .. }) { 440.0 } else { 240.0 }), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
+        let sheet = Node { width: px(if low || matches!(wanted, Sheet::Journal { .. } | Sheet::Character { .. }) { 440.0 } else { 240.0 }), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
         spawn_panel(root, &art, sheet, |sheet| match &wanted {
             Sheet::Drawing(place) => {
                 sheet.spawn((Text::default(), T::Drawing, fonts.body(), ink));
@@ -708,6 +790,7 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
                 sheet.spawn((Text::default(), T::Paused, fonts.title(1), ink));
                 button(sheet, &art, &fonts, T::Continue, true, PlayAction::Resume);
                 button(sheet, &art, &fonts, T::SaveGame, true, PlayAction::Save);
+                button(sheet, &art, &fonts, T::LongRest, !game.world.party.is_empty(), PlayAction::Rest);
                 button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
                 button(sheet, &art, &fonts, T::ToMainMenu, true, PlayAction::MainMenu);
             }
@@ -781,6 +864,25 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
                 });
                 sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Leave, true, PlayAction::Close));
             }
+            Sheet::Rolling(what) => {
+                sheet.spawn((Text::default(), T::CheckTitle, fonts.title(1), ink));
+                sheet.spawn((Text::new(what.clone()), fonts.body(), ink));
+                sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::RollDie, true, PlayAction::Roll));
+            }
+            Sheet::Character { lines, points } => {
+                for line in lines {
+                    sheet.spawn((Text::new(line.clone()), fonts.body(), ink));
+                }
+                if *points {
+                    let ru = *lang == Lang::Ru;
+                    sheet.spawn(Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
+                        for ability in Ability::ALL {
+                            text_button(line, &art, &fonts, format!("+1 {}", tr(ru, ability.name())), PlayAction::Improve(ability));
+                        }
+                    });
+                }
+                sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Leave, true, PlayAction::Close));
+            }
             Sheet::None => {}
         });
     });
@@ -839,7 +941,27 @@ fn on_activate(
     let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
     let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
     match (*action, phase.clone()) {
-        (PlayAction::Resume | PlayAction::Close, _) => *phase = Phase::Walking,
+        (PlayAction::Resume, _) => *phase = Phase::Walking,
+        (PlayAction::Close, _) => *phase = settled(&game.world),
+        (PlayAction::Roll, Phase::Rolling) => {
+            if let Some(done) = game.world.roll_check(&mut Rng::from_clock()) {
+                let verdict = if done.success { T::CheckSuccess } else { T::CheckFailure };
+                let line = format!("{}: d20 {}{:+} = {} / {} — {}\n{}", done.hero, done.roll.die, done.roll.bonus, done.roll.total(), done.difficulty, verdict.text(settings.lang), done.narration);
+                *phase = told(outcome_of(line), Vec::new(), &mut game, &store, &mut redraw, &mut background);
+            }
+        }
+        (PlayAction::Improve(ability), _) => {
+            if let Some(hero) = game.world.party.iter_mut().find(|h| h.points_to_place > 0) {
+                hero.improve(ability);
+            }
+            autosave(&store, &game);
+        }
+        (PlayAction::Rest, _) => {
+            game.world.long_rest();
+            *toast = Toast { text: Some(T::Rested), left: 3.0 };
+            autosave(&store, &game);
+            *phase = Phase::Walking;
+        }
         (PlayAction::Save, _) => {
             match store.save_game(&game.world_id, &game.world, true) {
                 Ok(_) => *toast = Toast { text: Some(T::Saved), left: 3.0 },
@@ -874,7 +996,7 @@ fn on_activate(
         }
         (PlayAction::Do(index), Phase::Looking { thing }) => {
             if let Some(outcome) = game.world.perform(&thing, index) {
-                *phase = told(outcome_of(outcome), Vec::new(), &game, &store, &mut redraw, &mut background);
+                *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background);
             }
         }
         (PlayAction::Own, Phase::Looking { thing }) => *phase = Phase::Writing { near: Some(thing) },
@@ -887,7 +1009,7 @@ fn on_activate(
         (PlayAction::Choose(index), Phase::Reading { turn }) => {
             if let Some(option) = turn.options.get(index) {
                 let outcome = game.world.choose(option);
-                *phase = told(outcome_of(outcome), Vec::new(), &game, &store, &mut redraw, &mut background);
+                *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background);
             }
         }
         (PlayAction::AskAgain, Phase::Refused { said, near, .. }) => *phase = send(said, near, &game, &gm, &store, &settings, &master),

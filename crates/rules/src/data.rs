@@ -120,7 +120,7 @@ impl Spell {
     /// Whether the rules engine can carry the spell out by itself. The others are told to
     /// the game master, who decides what they do.
     pub fn mechanised(&self) -> bool {
-        (!self.damage.is_empty() && (self.attack.is_some() || self.save.is_some())) || !self.heal.is_empty()
+        !self.damage.is_empty() || !self.heal.is_empty()
     }
 
     /// The dice for a casting with a slot of `slot` (levelled) by a character of `level`
@@ -551,6 +551,7 @@ mod tests {
         assert_eq!((cure.range, Spell::dice_at(&cure.heal, 2, 3)), (5, Some(Dice::new(2, 8, 3))));
         assert!(bolt.mechanised() && fireball.mechanised() && cure.mechanised());
         assert!(!s.spells["charm-person"].mechanised());
+        assert!(s.spells["magic-missile"].mechanised(), "damage with neither attack nor save simply lands");
         assert!(s.class_spells("wizard", 1).iter().any(|sp| sp.index == "magic-missile"));
         assert!(s.class_spells("wizard", 0).iter().all(|sp| sp.level == 0));
     }

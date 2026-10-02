@@ -1,5 +1,7 @@
 mod art;
+mod fight;
 mod gm;
+mod hero;
 mod i18n;
 mod keys;
 mod master;
@@ -47,6 +49,8 @@ fn main() -> AppExit {
         newgame::NewGamePlugin,
         saves::SavesPlugin,
         play::PlayPlugin,
+        hero::HeroPlugin,
+        fight::FightPlugin,
         shot::ShotPlugin(args),
     ));
     app.run()

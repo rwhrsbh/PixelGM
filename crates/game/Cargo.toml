@@ -8,6 +8,7 @@ license.workspace = true
 bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "png", "system_clipboard"] }
 llm = { path = "../llm" }
 world = { path = "../world" }
+rules = { path = "../rules" }
 serde.workspace = true
 serde_json.workspace = true
 

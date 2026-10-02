@@ -32,6 +32,8 @@ pub struct Strike {
     pub area: u32,
     /// The strike restores hit points instead of taking them.
     pub heals: bool,
+    /// The strike cannot miss and cannot be resisted: no roll is made.
+    pub sure: bool,
 }
 
 fn cells(feet: u32) -> u32 {
@@ -61,7 +63,7 @@ impl Strike {
         match (spell.attack, spell.save) {
             (Some(_), _) => Some(Self { bonus: character.spell_attack(), damage, ..base }),
             (None, Some((save, half))) => Some(Self { save: Some((save, character.spell_dc(), half)), damage, ..base }),
-            _ => None,
+            (None, None) => Some(Self { sure: true, damage, ..base }),
         }
     }
 }
@@ -148,7 +150,7 @@ impl Combatant {
         let strikes: Vec<Strike> = monster
             .attacks
             .iter()
-            .map(|a| Strike { name: a.name.clone(), bonus: a.bonus, damage: a.damage.clone(), range: cells(a.range), long_range: cells(a.range), save: a.save, area: if a.save.is_some() { 2 } else { 0 }, heals: false })
+            .map(|a| Strike { name: a.name.clone(), bonus: a.bonus, damage: a.damage.clone(), range: cells(a.range), long_range: cells(a.range), save: a.save, area: if a.save.is_some() { 2 } else { 0 }, heals: false, sure: false })
             .collect();
         let mut routine: Vec<usize> = monster.multiattack.iter().flat_map(|(wanted, count)| strikes.iter().position(|s| &s.name == wanted).into_iter().flat_map(move |i| std::iter::repeat_n(i, *count as usize))).collect();
         if routine.is_empty() && !strikes.is_empty() {
@@ -218,6 +220,8 @@ pub enum Event {
     TurnBegan { who: String, round: u32 },
     Moved { who: String, path: Vec<Cell> },
     Attacked { who: String, target: String, strike: String, roll: Roll, hit: bool, critical: bool, damage: i32 },
+    /// A strike that needs no roll landed.
+    Struck { who: String, target: String, strike: String, damage: i32 },
     Saved { who: String, strike: String, roll: Roll, difficulty: i32, success: bool, damage: i32 },
     Healed { who: String, target: String, amount: i32 },
     Fell { who: String },
@@ -458,6 +462,12 @@ impl Encounter {
                 events.push(Event::Saved { who: self.combatants[i].id.clone(), strike: strike.name.clone(), roll, difficulty, success, damage });
                 events.extend(self.combatants[i].hurt(damage));
             }
+            return events;
+        }
+        if strike.sure {
+            let damage = strike.damage.iter().map(|d| d.roll(&mut self.rng)).sum::<i32>().max(1);
+            events.push(Event::Struck { who, target: self.combatants[target].id.clone(), strike: strike.name.clone(), damage });
+            events.extend(self.combatants[target].hurt(damage));
             return events;
         }
         let (from, to) = (self.combatants[attacker].at(), self.combatants[target].at());
@@ -793,6 +803,8 @@ mod tests {
     fn spells_the_rules_cannot_carry_out_make_no_strike() {
         let wizard = Character::create("Zed", "", "human", "wizard", [8, 14, 13, 15, 12, 10], &["arcana".to_string(), "history".to_string()], &[]).unwrap();
         assert_eq!(Strike::spell(&wizard, &srd().spells["charm-person"], 1), None);
+        let missile = Strike::spell(&wizard, &srd().spells["magic-missile"], 1).unwrap();
+        assert!(missile.sure && missile.save.is_none());
         let bolt = Strike::spell(&wizard, &srd().spells["fire-bolt"], 0).unwrap();
         assert_eq!((bolt.bonus, bolt.range, bolt.save), (5, 24, None));
         assert_eq!(bolt.damage, [Dice::new(1, 10, 0)]);

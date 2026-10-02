@@ -19,6 +19,8 @@ pub enum Screen {
     /// Waiting for the game master to invent and draw the world.
     Creating,
     Load,
+    /// Making a character for a world that has none.
+    Hero,
     Play,
 }
 
