@@ -68,12 +68,18 @@ fn named_key(name: &str) -> Option<(KeyCode, Key)> {
         "up" => (KeyCode::ArrowUp, Key::ArrowUp),
         "down" => (KeyCode::ArrowDown, Key::ArrowDown),
         "left" => (KeyCode::ArrowLeft, Key::ArrowLeft),
-        "w" => (KeyCode::KeyW, Key::Character("w".into())),
-        "a" => (KeyCode::KeyA, Key::Character("a".into())),
-        "s" => (KeyCode::KeyS, Key::Character("s".into())),
-        "d" => (KeyCode::KeyD, Key::Character("d".into())),
         "right" => (KeyCode::ArrowRight, Key::ArrowRight),
-        _ => return None,
+        letter => {
+            // Any single Latin letter is that letter's key.
+            const LETTERS: [KeyCode; 26] = [
+                KeyCode::KeyA, KeyCode::KeyB, KeyCode::KeyC, KeyCode::KeyD, KeyCode::KeyE, KeyCode::KeyF, KeyCode::KeyG, KeyCode::KeyH, KeyCode::KeyI,
+                KeyCode::KeyJ, KeyCode::KeyK, KeyCode::KeyL, KeyCode::KeyM, KeyCode::KeyN, KeyCode::KeyO, KeyCode::KeyP, KeyCode::KeyQ, KeyCode::KeyR,
+                KeyCode::KeyS, KeyCode::KeyT, KeyCode::KeyU, KeyCode::KeyV, KeyCode::KeyW, KeyCode::KeyX, KeyCode::KeyY, KeyCode::KeyZ,
+            ];
+            let mut chars = letter.chars();
+            let (Some(ch @ 'a'..='z'), None) = (chars.next(), chars.next()) else { return None };
+            (LETTERS[(ch as u8 - b'a') as usize], Key::Character(letter.into()))
+        }
     })
 }
 

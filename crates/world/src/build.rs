@@ -8,6 +8,7 @@
 use crate::base::{FALLBACK_TILE, MARKER_SPRITE, base_sprites, base_tiles, default_palette};
 use crate::model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, PALETTE_MAX, Player, Prop, SAVE_VERSION, Sprite, Stub, TILE, TileDef, World, index_of};
 use crate::path::{Cell, elbow, nearest, reachable};
+use crate::story::{ActionDraft, Story, read_actions};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,6 +58,7 @@ pub struct PropDraft {
     pub y: i64,
     pub blocking: bool,
     pub sprite: String,
+    pub actions: Vec<ActionDraft>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -71,6 +73,7 @@ pub struct CreatureDraft {
     pub y: i64,
     pub sprite: String,
     pub attitude: String,
+    pub actions: Vec<ActionDraft>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -129,6 +132,9 @@ pub fn extract_json(text: &str) -> Option<&str> {
 
 /// An id safe to use as a key: lower case, letters, digits and underscores only.
 pub fn slug(raw: &str) -> String {
+    if raw == "self" {
+        return raw.to_string();
+    }
     let cleaned: String = raw.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
     cleaned.trim_matches('_').chars().take(48).collect()
 }
@@ -163,7 +169,7 @@ fn has_pixels(rows: &[String]) -> bool {
     rows.iter().any(|r| r.chars().any(|c| index_of(c).is_some_and(|i| i != 0)))
 }
 
-fn sprite_from(rows: &[String], palette_len: usize) -> Option<Sprite> {
+pub(crate) fn sprite_from(rows: &[String], palette_len: usize) -> Option<Sprite> {
     if !has_pixels(rows) {
         return None;
     }
@@ -312,7 +318,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             notes.push(format!("prop '{}' names sprite '{}', which was not drawn", p.id, p.sprite));
             sprite = MARKER_SPRITE.to_string();
         }
-        props.push(Prop { id: unique(slug(&p.id), &format!("prop_{n}"), &mut taken), name: p.name.trim().to_string(), description: p.description.trim().to_string(), x, y, blocking: p.blocking, sprite });
+        props.push(Prop { id: unique(slug(&p.id), &format!("prop_{n}"), &mut taken), name: p.name.trim().to_string(), description: p.description.trim().to_string(), x, y, blocking: p.blocking, sprite, actions: read_actions(&p.actions, &mut notes) });
     }
 
     let mut creatures: Vec<Creature> = Vec::new();
@@ -328,7 +334,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             "hostile" => Attitude::Hostile,
             _ => Attitude::Neutral,
         };
-        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude });
+        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes) });
     }
 
     let id = forced_id.map(str::to_string).unwrap_or_else(|| {
@@ -508,6 +514,9 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         current: built.id.clone(),
         stubs: built.stubs.into_iter().collect(),
         locations: BTreeMap::from([(built.id, built.location)]),
+        story: Story::default(),
+        violence: true,
+        sex: true,
     };
     Ok((world, notes))
 }

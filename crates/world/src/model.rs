@@ -1,5 +1,6 @@
 //! The saved shape of a world.
 
+use crate::story::{Action, Story};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -87,6 +88,9 @@ pub struct Prop {
     pub y: usize,
     pub blocking: bool,
     pub sprite: String,
+    /// What the players can do with it without asking the game master.
+    #[serde(default)]
+    pub actions: Vec<Action>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -107,6 +111,8 @@ pub struct Creature {
     pub y: usize,
     pub sprite: String,
     pub attitude: Attitude,
+    #[serde(default)]
+    pub actions: Vec<Action>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -198,6 +204,19 @@ pub struct World {
     pub stubs: BTreeMap<String, Stub>,
     pub current: String,
     pub player: Player,
+    /// Inventory, the story so far and what must be remembered.
+    #[serde(default)]
+    pub story: Story,
+    /// Whether the table wants graphic violence and sexual content in the telling. Both are
+    /// on unless the host turned them off when creating the world.
+    #[serde(default = "yes")]
+    pub violence: bool,
+    #[serde(default = "yes")]
+    pub sex: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl World {

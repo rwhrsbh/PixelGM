@@ -19,11 +19,27 @@ pub struct Settings {
     pub thinking: ThinkingSetting,
     /// The weakest tier the game master may fall back to when better models are spent.
     pub lowest_tier: Tier,
+    /// Draw neighbouring places before the party walks into them.
+    pub predraw: bool,
+    /// Whether the game master makes things happen when the players are idle.
+    pub initiative: Initiative,
+    /// Tokens of word-for-word story the master is sent; past four fifths of it the older
+    /// part is written up as a chapter. Far below any model's window on purpose: every
+    /// request carries it, and the smallest fallback model must fit it too.
+    pub memory_budget: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Initiative {
+    Off,
+    #[default]
+    Rare,
+    Often,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma }
+        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000 }
     }
 }
 
@@ -204,7 +220,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash };
+        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000 };
         store.save_settings(&settings).unwrap();
         assert_eq!(store.load_settings(), settings);
     }

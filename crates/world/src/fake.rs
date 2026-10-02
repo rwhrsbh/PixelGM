@@ -128,8 +128,13 @@ pub fn world(request: &str) -> String {
             "map": clearing(seed, &[east, south]),
             "spawn": [8, 12],
             "sprites": [{ "id": "campfire", "rows": rows(&CAMPFIRE) }, { "id": "cat", "rows": rows(&CAT) }],
-            "props": [{ "id": "fire", "name": "Campfire", "description": "It crackles.", "x": 10, "y": 12, "blocking": true, "sprite": "campfire" }],
-            "creatures": [{ "id": "cat", "name": "Grey cat", "description": "It watches you.", "x": 12, "y": 11, "sprite": "cat", "attitude": "friendly" }],
+            "props": [{ "id": "fire", "name": "Campfire", "description": "It crackles.", "x": 10, "y": 12, "blocking": true, "sprite": "campfire",
+                "actions": [{ "label": "Warm your hands", "outcome": "The heat seeps into your fingers. Someone fed this fire not long ago.", "effects": [{ "op": "fact", "text": "Someone tends the campfire." }] }] }],
+            "creatures": [{ "id": "cat", "name": "Grey cat", "description": "It watches you.", "x": 12, "y": 11, "sprite": "cat", "attitude": "friendly",
+                "actions": [
+                    { "label": "Pet the cat", "outcome": "The cat leans into your hand and purrs.", "effects": [{ "op": "describe", "id": "self", "description": "It purrs when you look at it." }] },
+                    { "label": "Shoo it away", "outcome": "The cat slips away between the trees, leaving a tuft of fur.", "effects": [{ "op": "remove", "id": "self" }, { "op": "give", "name": "Cat hair", "description": "A tuft of grey fur." }] }
+                ] }],
             "exits": [
                 { "x": east.0, "y": east.1, "to": "east_road", "label": "A road east" },
                 { "x": south.0, "y": south.1, "to": "south_marsh", "label": "A path south" }
@@ -141,6 +146,24 @@ pub fn world(request: &str) -> String {
         }
     })
     .to_string()
+}
+
+/// The answer to "the party does this".
+pub fn turn(said: &str) -> String {
+    json!({
+        "narration": format!("You said: {said}. The hollow listens, and something in it answers."),
+        "effects": [{ "op": "fact", "text": "The party made itself heard." }],
+        "options": [
+            { "label": "Search the ground", "outcome": "Under the leaves you find a coin, worn smooth.", "effects": [{ "op": "give", "name": "Old coin", "description": "Worn smooth." }] },
+            { "label": "Wait and listen", "outcome": "Nothing comes. The trees creak.", "effects": [] }
+        ]
+    })
+    .to_string()
+}
+
+/// The answer to "write the older story up as a chapter".
+pub fn chapter(lines: usize) -> String {
+    json!({ "chapter": format!("A chapter covering {lines} lines of the story."), "facts": ["A chapter was written."] }).to_string()
 }
 
 /// The answer to "draw the place `id`, the party walks in from `from`".

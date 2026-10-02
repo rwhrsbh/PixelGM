@@ -1,5 +1,5 @@
-//! Playing: the current location on screen, the party walking about it, and the passage
-//! from one place to the next — drawn by the game master the first time it is entered.
+//! Playing: the current location on screen, the party walking about it, the passage from one
+//! place to the next, and the conversation with the game master.
 
 use crate::art::{Art, ground_picture, sprite_picture};
 use crate::gm::{Gm, Trouble, trouble_text};
@@ -8,14 +8,17 @@ use crate::master::{Answer, Ask, Master};
 use crate::menu::{Backdrop, ReturnTo, Screen, spawn_panel};
 use crate::screen::CANVAS;
 use crate::shot::Warp;
-use crate::store::{Settings, Store};
+use crate::store::{Initiative, Settings, Store};
 use crate::theme::*;
-use crate::widgets::{Activate, button};
+use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, scroll_list, text_button};
+use bevy::input_focus::{AutoFocus, InputFocus};
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
+use bevy::text::{EditableText, TextCursorStyle};
+use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use world::base::{HERO_SPRITE, MARKER_SPRITE};
 use world::walk::FEET;
-use world::{LocationDraft, TILE, World, fake};
+use world::{LocationDraft, Speaker, TILE, Turn, World, fake};
 
 /// The game being played.
 #[derive(Resource)]
@@ -31,24 +34,26 @@ pub enum Phase {
     #[default]
     Walking,
     /// The screen darkens as the party steps through an exit to `to`.
-    Leaving {
-        to: String,
-        t: f32,
-    },
+    Leaving { to: String, t: f32 },
     /// The game master is drawing `to`, which had only a name until now.
-    Drawing {
-        to: String,
-    },
+    Drawing { to: String },
     /// The screen lightens on the new place.
-    Arriving {
-        t: f32,
-    },
+    Arriving { t: f32 },
     /// The place beyond the exit could not be drawn; the player decides what to do.
-    Stuck {
-        to: String,
-        trouble: Trouble,
-    },
+    Stuck { to: String, trouble: Trouble },
     Paused,
+    /// The party is looking at a thing and choosing what to do with it.
+    Looking { thing: String },
+    /// The player is typing what the party does.
+    Writing { near: Option<String> },
+    /// The game master is working out what happens.
+    Asking { said: String, near: Option<String> },
+    /// The players are reading what happened.
+    Reading { turn: Turn },
+    /// The master could not answer what the party did.
+    Refused { said: String, near: Option<String>, trouble: Trouble },
+    /// The story so far, and what the party carries.
+    Journal,
 }
 
 #[derive(Resource, Default)]
@@ -70,6 +75,18 @@ struct Toast {
 struct HeroPose {
     moving: bool,
     facing_left: bool,
+}
+
+/// Work the master does without being asked: drawing places ahead, events, chapters.
+#[derive(Resource, Default)]
+struct Background {
+    /// Seconds of play since the master last spoke.
+    quiet: f32,
+    /// Seconds before another place may be drawn ahead; set after a refusal.
+    ahead_rest: f32,
+    chapter_asked: bool,
+    chapter_rest: f32,
+    event_asked: bool,
 }
 
 #[derive(Component)]
@@ -103,6 +120,9 @@ struct ArrivalText;
 #[derive(Component)]
 struct Overlay;
 
+#[derive(Component)]
+struct SayInput;
+
 #[derive(Component, Clone, Copy)]
 enum PlayAction {
     Resume,
@@ -112,15 +132,30 @@ enum PlayAction {
     Retry,
     Sketch,
     Stay,
+    /// A prepared action of the thing being looked at.
+    Do(usize),
+    /// Open the field for the party's own words.
+    Own,
+    Send,
+    /// One of the choices offered with the last telling.
+    Choose(usize),
+    /// Back to walking.
+    Close,
+    AskAgain,
 }
 
 const SPEED: f32 = 72.0;
 const FADE_SECONDS: f32 = 0.25;
 /// How close to an exit the party must be for the interface to say where it leads.
 const EXIT_HINT_REACH: f32 = 28.0;
+/// How close to a thing the party must be to interact with it.
+const THING_REACH: f32 = 26.0;
 const LETTERS_PER_SECOND: f32 = 70.0;
 const ARRIVAL_LINGER: f32 = 4.0;
 const HUD_HEIGHT: f32 = 14.0;
+/// After the master refuses unasked-for work, how long before it is offered again.
+const BACKGROUND_REST: f32 = 600.0;
+const JOURNAL_LINES: usize = 80;
 
 /// A point of the location, in pixels from its top-left corner, as a point of the screen.
 fn on_screen(x: f32, y: f32) -> Vec2 {
@@ -132,10 +167,20 @@ fn depth(y: f32) -> f32 {
     1.0 + y * 0.001
 }
 
+/// Seconds of silence after which the master may make something happen.
+fn event_after(initiative: Initiative) -> Option<f32> {
+    match initiative {
+        Initiative::Off => None,
+        Initiative::Rare => Some(600.0),
+        Initiative::Often => Some(240.0),
+    }
+}
+
 /// Puts a world on the play screen. Used by a new game and by loading a save.
 pub fn begin(commands: &mut Commands, next: &mut NextState<Screen>, world: World, world_id: String) {
     commands.insert_resource(Game { world, world_id });
     commands.insert_resource(Phase::Arriving { t: 0.0 });
+    commands.insert_resource(Background::default());
     next.set(Screen::Play);
 }
 
@@ -160,7 +205,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
 
     let full = Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), ..default() };
     commands.spawn((DespawnOnExit(Screen::Play), Veil, full.clone(), BackgroundColor(Color::BLACK), GlobalZIndex(5)));
-    commands.spawn((DespawnOnExit(Screen::Play), Node { flex_direction: FlexDirection::Column, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..full })).with_children(|root| {
+    commands.spawn((DespawnOnExit(Screen::Play), Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..full })).with_children(|root| {
         root.spawn((ArrivalSheet, Node { margin: UiRect::top(px(8)), ..default() })).with_children(|slot| {
             spawn_panel(slot, &art, Node { width: px(380), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }, |sheet| {
                 sheet.spawn((Text::default(), PlaceName, fonts.title(1), TextColor(color(INK))));
@@ -291,6 +336,37 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
     }
 }
 
+/// Keys that open something while walking: interact, the journal, the pause menu. Escape
+/// also closes whatever sheet is open.
+fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Res<Game>, mut phase: ResMut<Phase>, mut was_walking: Local<bool>) {
+    let pad = |button: GamepadButton| gamepads.iter().any(|pad| pad.just_pressed(button));
+    // The press that closes a sheet must not also act on the world behind it: a key only
+    // opens something if the party was already walking on the frame before.
+    let settled = std::mem::replace(&mut *was_walking, *phase == Phase::Walking);
+    if keyboard.just_pressed(KeyCode::Escape) || pad(GamepadButton::Start) {
+        let next = match &*phase {
+            Phase::Walking => Phase::Paused,
+            Phase::Paused | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Journal => Phase::Walking,
+            // A telling with choices stays until one is made or it is closed by its button.
+            Phase::Reading { turn } if turn.options.is_empty() => Phase::Walking,
+            _ => return,
+        };
+        *phase = next;
+        return;
+    }
+    if *phase != Phase::Walking || !settled {
+        return;
+    }
+    if keyboard.any_just_pressed([KeyCode::KeyE, KeyCode::Enter, KeyCode::NumpadEnter]) || pad(GamepadButton::South) {
+        *phase = match game.world.thing_near(THING_REACH) {
+            Some(thing) => Phase::Looking { thing: thing.to_string() },
+            None => Phase::Writing { near: None },
+        };
+    } else if keyboard.just_pressed(KeyCode::KeyJ) || pad(GamepadButton::North) {
+        *phase = Phase::Journal;
+    }
+}
+
 /// The party has arrived somewhere that is drawn.
 fn arrive(game: &mut Game, to: &str, store: &Store, redraw: &mut Redraw, arrival: &mut Arrival) {
     game.world.travel(to);
@@ -318,7 +394,10 @@ fn advance(
                 arrive(&mut game, to, &store, &mut redraw, &mut arrival);
                 Phase::Arriving { t: 0.0 }
             } else {
-                master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id: to.clone(), from: game.world.current.clone() });
+                // A place already being drawn ahead is waited for, not asked for twice.
+                if !master.is_drawing(to) {
+                    master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id: to.clone(), from: game.world.current.clone(), ahead: false });
+                }
                 Phase::Drawing { to: to.clone() }
             }
         }
@@ -345,35 +424,125 @@ fn settle(draft: Result<Box<LocationDraft>, Trouble>, id: &str, from: &str, game
     }
 }
 
-fn receive(master: Res<Master>, mut phase: ResMut<Phase>, mut game: ResMut<Game>, store: Res<Store>, mut redraw: ResMut<Redraw>, mut arrival: ResMut<Arrival>) {
+/// The master told something: it is shown, the picture is brought up to date, the game saved.
+fn told(turn: Turn, notes: Vec<String>, game: &Game, store: &Store, redraw: &mut Redraw, background: &mut Background) -> Phase {
+    for note in notes {
+        info!("turn repaired: {note}");
+    }
+    redraw.0 = true;
+    background.quiet = 0.0;
+    autosave(store, game);
+    Phase::Reading { turn }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn receive(
+    master: Res<Master>,
+    gm: Res<Gm>,
+    settings: Res<Settings>,
+    mut phase: ResMut<Phase>,
+    mut game: ResMut<Game>,
+    store: Res<Store>,
+    mut redraw: ResMut<Redraw>,
+    mut arrival: ResMut<Arrival>,
+    mut background: ResMut<Background>,
+) {
     for answer in master.take() {
-        let Answer::Location { id, from, draft } = answer else { continue };
-        // An answer for a place the party is no longer waiting on is of no use.
-        if *phase != (Phase::Drawing { to: id.clone() }) {
-            continue;
+        match answer {
+            Answer::Location { id, from, ahead, draft } => {
+                let waited_for = *phase == (Phase::Drawing { to: id.clone() });
+                if waited_for && ahead && draft.is_err() {
+                    // Drawn ahead with the best models only, and they refused. Now that the
+                    // party is at the door the request is made in earnest.
+                    master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id, from, ahead: false });
+                } else if waited_for {
+                    *phase = settle(draft, &id, &from, &mut game, &store, &mut redraw, &mut arrival);
+                } else if game.world.stubs.contains_key(&id) {
+                    match draft.and_then(|d| game.world.add_location(&d, &id, Some(&from)).map_err(Trouble::Unreadable)) {
+                        Ok(_) => autosave(&store, &game),
+                        Err(trouble) => {
+                            info!("place '{id}' was not drawn ahead: {trouble:?}");
+                            background.ahead_rest = BACKGROUND_REST;
+                        }
+                    }
+                }
+            }
+            Answer::Turn { said, near, draft } => {
+                if !matches!(&*phase, Phase::Asking { said: asked, .. } if *asked == said) {
+                    continue;
+                }
+                *phase = match draft {
+                    Ok(draft) => {
+                        let (turn, notes) = game.world.take_turn(&said, &draft);
+                        told(turn, notes, &game, &store, &mut redraw, &mut background)
+                    }
+                    Err(trouble) => Phase::Refused { said, near, trouble },
+                };
+            }
+            Answer::Event(draft) => {
+                background.event_asked = false;
+                background.quiet = 0.0;
+                // An event interrupts a walk, never a conversation or a menu.
+                if let (Ok(draft), Phase::Walking) = (draft, &*phase)
+                    && !draft.narration.trim().is_empty()
+                {
+                    let (turn, notes) = game.world.take_turn("", &draft);
+                    *phase = told(turn, notes, &game, &store, &mut redraw, &mut background);
+                }
+            }
+            Answer::Chapter(draft) => {
+                background.chapter_asked = false;
+                match draft {
+                    Ok(draft) if !draft.chapter.trim().is_empty() => {
+                        game.world.story.close_chapter(&draft.chapter, &draft.facts);
+                        autosave(&store, &game);
+                    }
+                    _ => background.chapter_rest = BACKGROUND_REST,
+                }
+            }
+            Answer::World(_) => {}
         }
-        *phase = settle(draft, &id, &from, &mut game, &store, &mut redraw, &mut arrival);
     }
 }
 
-fn toggle_pause(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut phase: ResMut<Phase>) {
-    if !(keyboard.just_pressed(KeyCode::Escape) || gamepads.iter().any(|pad| pad.just_pressed(GamepadButton::Start))) {
+/// Work done unasked while the party walks: the nearest undrawn neighbour is drawn, a long
+/// story is written up, and after a long silence the master may make something happen.
+#[allow(clippy::too_many_arguments)]
+fn background_work(time: Res<Time>, phase: Res<Phase>, game: Res<Game>, gm: Res<Gm>, store: Res<Store>, settings: Res<Settings>, master: Res<Master>, mut background: ResMut<Background>) {
+    let dt = time.delta_secs();
+    background.ahead_rest = (background.ahead_rest - dt).max(0.0);
+    background.chapter_rest = (background.chapter_rest - dt).max(0.0);
+    if *phase != Phase::Walking {
         return;
     }
-    match *phase {
-        Phase::Walking => *phase = Phase::Paused,
-        Phase::Paused => *phase = Phase::Walking,
-        _ => {}
+    background.quiet += dt;
+    let world = &game.world;
+    if !background.chapter_asked && background.chapter_rest == 0.0 && world.story.needs_chapter(settings.memory_budget) {
+        background.chapter_asked = true;
+        master.ask(&gm, &store, &settings, Ask::Chapter { world: Box::new(world.clone()) });
+    }
+    if settings.predraw && background.ahead_rest == 0.0 && !master.is_drawing_anything() {
+        // Exits are tried in the order the master listed them.
+        if let Some(exit) = world.here().exits.iter().find(|e| world.stubs.contains_key(&e.to)) {
+            master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(world.clone()), id: exit.to.clone(), from: world.current.clone(), ahead: true });
+        }
+    }
+    if let Some(after) = event_after(settings.initiative)
+        && background.quiet >= after
+        && !background.event_asked
+    {
+        background.event_asked = true;
+        master.ask(&gm, &store, &settings, Ask::Event { world: Box::new(world.clone()) });
     }
 }
 
 fn veil(phase: Res<Phase>, mut veils: Query<&mut BackgroundColor, With<Veil>>) {
     let darkness = match &*phase {
-        Phase::Walking => 0.0,
+        Phase::Walking | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Reading { .. } | Phase::Asking { .. } => 0.0,
         Phase::Leaving { t, .. } => *t,
         Phase::Arriving { t } => 1.0 - t,
         Phase::Drawing { .. } | Phase::Stuck { .. } => 0.8,
-        Phase::Paused => 0.55,
+        Phase::Paused | Phase::Journal | Phase::Refused { .. } => 0.55,
     };
     // A fade in a few flat steps reads as pixel art; a smooth one does not.
     let stepped = (darkness.clamp(0.0, 1.0) * 5.0).round() / 5.0;
@@ -405,11 +574,13 @@ fn hud(
         }
     }
     toast.left = (toast.left - time.delta_secs()).max(0.0);
-    let hint = match (toast.text.filter(|_| toast.left > 0.0), world.exit_near(EXIT_HINT_REACH)) {
-        (Some(said), _) => said.text(*lang).to_string(),
-        (None, Some(exit)) if exit.label.is_empty() => format!("→ {}", world.place_name(&exit.to)),
-        (None, Some(exit)) => format!("{} → {}", exit.label, world.place_name(&exit.to)),
-        (None, None) => T::HudMenuHint.text(*lang).to_string(),
+    let thing_name = world.thing_near(THING_REACH).and_then(|id| here.props.iter().map(|p| (&p.id, &p.name)).chain(here.creatures.iter().map(|c| (&c.id, &c.name))).find(|(i, _)| i.as_str() == id).map(|(_, name)| name.clone()));
+    let hint = match (toast.text.filter(|_| toast.left > 0.0), thing_name, world.exit_near(EXIT_HINT_REACH)) {
+        (Some(said), _, _) => said.text(*lang).to_string(),
+        (None, Some(name), _) => format!("E: {name}"),
+        (None, None, Some(exit)) if exit.label.is_empty() => format!("→ {}", world.place_name(&exit.to)),
+        (None, None, Some(exit)) => format!("{} → {}", exit.label, world.place_name(&exit.to)),
+        (None, None, None) => T::HudHint.text(*lang).to_string(),
     };
     for mut text in &mut hints {
         if text.0 != hint {
@@ -435,7 +606,8 @@ fn hud(
     }
 }
 
-/// Which sheet, if any, lies over the game.
+/// Which sheet, if any, lies over the game, with everything it shows: when this value
+/// changes the sheet is rebuilt.
 #[derive(Clone, PartialEq, Default)]
 enum Sheet {
     #[default]
@@ -443,15 +615,52 @@ enum Sheet {
     Drawing(String),
     Stuck(String),
     Paused,
+    Looking { name: String, description: String, actions: Vec<String> },
+    Writing,
+    Asking(String),
+    Reading(Turn),
+    Refused(String),
+    Journal { carried: String, lines: Vec<(Speaker, String)> },
+}
+
+fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang) -> Sheet {
+    match phase {
+        Phase::Drawing { to } => Sheet::Drawing(world.place_name(to).to_string()),
+        Phase::Stuck { trouble, .. } => Sheet::Stuck(trouble_text(trouble, now, lang)),
+        Phase::Paused => Sheet::Paused,
+        Phase::Looking { thing } => {
+            let here = world.here();
+            let found = here
+                .props
+                .iter()
+                .find(|p| &p.id == thing)
+                .map(|p| (&p.name, &p.description, &p.actions))
+                .or_else(|| here.creatures.iter().find(|c| &c.id == thing).map(|c| (&c.name, &c.description, &c.actions)));
+            match found {
+                Some((name, description, actions)) => Sheet::Looking { name: name.clone(), description: description.clone(), actions: actions.iter().map(|a| a.label.clone()).collect() },
+                None => Sheet::None,
+            }
+        }
+        Phase::Writing { .. } => Sheet::Writing,
+        Phase::Asking { said, .. } => Sheet::Asking(said.clone()),
+        Phase::Reading { turn } => Sheet::Reading(turn.clone()),
+        Phase::Refused { trouble, .. } => Sheet::Refused(trouble_text(trouble, now, lang)),
+        Phase::Journal => {
+            let carried = world.story.inventory.iter().map(|i| if i.count > 1 { format!("{} ×{}", i.name, i.count) } else { i.name.clone() }).collect::<Vec<_>>().join(", ");
+            let skip = world.story.log.len().saturating_sub(JOURNAL_LINES);
+            Sheet::Journal { carried, lines: world.story.log.iter().skip(skip).map(|l| (l.speaker, l.text.clone())).collect() }
+        }
+        _ => Sheet::None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<Gm>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, mut shown: Local<Sheet>, old: Query<Entity, With<Overlay>>) {
-    let wanted = match &*phase {
-        Phase::Drawing { to } => Sheet::Drawing(game.world.place_name(to).to_string()),
-        Phase::Stuck { trouble, .. } => Sheet::Stuck(trouble_text(trouble, gm.dispatcher.now(), *lang)),
-        Phase::Paused => Sheet::Paused,
-        _ => Sheet::None,
+    // A countdown in a refusal would rebuild the sheet every second and swallow clicks, so
+    // the time is fixed when the sheet first appears.
+    let wanted = match (&*phase, &*shown) {
+        (Phase::Stuck { .. }, Sheet::Stuck(_)) | (Phase::Refused { .. }, Sheet::Refused(_)) if !old.is_empty() => shown.clone(),
+        _ => sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang),
     };
     if *shown == wanted && (wanted == Sheet::None || !old.is_empty()) {
         return;
@@ -464,23 +673,28 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
         return;
     }
     let ink = TextColor(color(INK));
+    let faded = TextColor(color(FADED));
+    // Sheets about the story sit at the bottom, where the eye rests while walking; the rest
+    // take the middle of the screen.
+    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing | Sheet::Asking(_) | Sheet::Reading(_));
     let full = Node {
         position_type: PositionType::Absolute,
         left: px(0),
         top: px(0),
         width: percent(100),
         height: percent(100),
+        padding: UiRect::bottom(px(HUD_HEIGHT + 4.0)),
         justify_content: JustifyContent::Center,
-        align_items: AlignItems::Center,
+        align_items: if low { AlignItems::FlexEnd } else { AlignItems::Center },
         ..default()
     };
     commands.spawn((Overlay, full, GlobalZIndex(10))).with_children(|root| {
-        let sheet = Node { width: px(220), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
+        let sheet = Node { width: px(if low || matches!(wanted, Sheet::Journal { .. }) { 440.0 } else { 240.0 }), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
         spawn_panel(root, &art, sheet, |sheet| match &wanted {
             Sheet::Drawing(place) => {
                 sheet.spawn((Text::default(), T::Drawing, fonts.body(), ink));
                 sheet.spawn((Text::new(place.clone()), fonts.title(1), ink));
-                sheet.spawn((Text::default(), T::DrawingHint, fonts.body(), TextColor(color(FADED))));
+                sheet.spawn((Text::default(), T::DrawingHint, fonts.body(), faded));
             }
             Sheet::Stuck(why) => {
                 sheet.spawn((Text::default(), T::StuckTitle, fonts.title(1), ink));
@@ -497,20 +711,123 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
                 button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
                 button(sheet, &art, &fonts, T::ToMainMenu, true, PlayAction::MainMenu);
             }
+            Sheet::Looking { name, description, actions } => {
+                sheet.spawn((Text::new(name.clone()), fonts.title(1), ink));
+                sheet.spawn((Text::new(description.clone()), fonts.body(), ink));
+                for (n, label) in actions.iter().enumerate() {
+                    text_button(sheet, &art, &fonts, label.clone(), PlayAction::Do(n));
+                }
+                sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                    button(line, &art, &fonts, T::OwnAction, true, PlayAction::Own);
+                    button(line, &art, &fonts, T::Leave, true, PlayAction::Close);
+                });
+            }
+            Sheet::Writing => {
+                sheet.spawn((Text::default(), T::WhatDoYouDo, fonts.body(), ink));
+                sheet.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                    line.spawn(Node { flex_grow: 1.0, height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }).with_children(|field| {
+                        field.spawn(backing(art.field.clone(), 4.0));
+                        field.spawn((
+                            SayInput,
+                            AutoFocus,
+                            AutoDirectionalNavigation::default(),
+                            Node { width: percent(100), ..default() },
+                            EditableText { allow_newlines: false, max_characters: Some(300), ..default() },
+                            TextLayout::no_wrap(),
+                            fonts.body(),
+                            ink,
+                            TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
+                        ));
+                    });
+                    button(line, &art, &fonts, T::Say, true, PlayAction::Send);
+                });
+                sheet.spawn((Text::default(), T::WritingHint, fonts.body(), faded));
+            }
+            Sheet::Asking(said) => {
+                sheet.spawn((Text::new(format!("«{said}»")), fonts.body(), faded));
+                sheet.spawn((Text::default(), T::TestRunning, fonts.body(), ink));
+            }
+            Sheet::Reading(turn) => {
+                sheet.spawn((Text::new(turn.narration.clone()), fonts.body(), ink));
+                for (n, option) in turn.options.iter().enumerate() {
+                    text_button(sheet, &art, &fonts, option.label.clone(), PlayAction::Choose(n));
+                }
+                sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                    if !turn.options.is_empty() {
+                        button(line, &art, &fonts, T::OwnAction, true, PlayAction::Own);
+                    }
+                    button(line, &art, &fonts, T::Onward, true, PlayAction::Close);
+                });
+            }
+            Sheet::Refused(why) => {
+                sheet.spawn((Text::default(), T::RefusedTitle, fonts.title(1), ink));
+                sheet.spawn((Text::new(why.clone()), fonts.body(), TextColor(color(WAX))));
+                button(sheet, &art, &fonts, T::Recheck, true, PlayAction::AskAgain);
+                button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
+                button(sheet, &art, &fonts, T::Leave, true, PlayAction::Close);
+            }
+            Sheet::Journal { carried, lines } => {
+                sheet.spawn((Text::default(), T::Journal, fonts.title(1), ink));
+                let bag = if carried.is_empty() { T::CarryNothing.text(*lang).to_string() } else { format!("{} {carried}", T::Carried.text(*lang)) };
+                sheet.spawn((Text::new(bag), fonts.body(), TextColor(color(WAX_DARK))));
+                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(3), ..default() }, 150.0)).with_children(|rows| {
+                    if lines.is_empty() {
+                        rows.spawn((Text::default(), T::JournalEmpty, fonts.body(), faded));
+                    }
+                    for (speaker, text) in lines {
+                        let (prefix, tone) = if *speaker == Speaker::Player { ("» ", WAX_DARK) } else { ("", INK) };
+                        rows.spawn((Text::new(format!("{prefix}{text}")), fonts.body(), TextColor(color(tone))));
+                    }
+                });
+                sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Leave, true, PlayAction::Close));
+            }
             Sheet::None => {}
         });
     });
+}
+
+fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store, settings: &Settings, master: &Master) -> Phase {
+    let said = said.trim().to_string();
+    if said.is_empty() {
+        return Phase::Writing { near };
+    }
+    master.ask(gm, store, settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near: near.clone() });
+    Phase::Asking { said, near }
+}
+
+/// Enter in the field sends what was typed.
+#[allow(clippy::too_many_arguments)]
+fn submit(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    focus: Res<InputFocus>,
+    input: Query<(Entity, &EditableText), With<SayInput>>,
+    mut phase: ResMut<Phase>,
+    game: Res<Game>,
+    gm: Res<Gm>,
+    store: Res<Store>,
+    settings: Res<Settings>,
+    master: Res<Master>,
+) {
+    if !keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+        return;
+    }
+    let (Phase::Writing { near }, Ok((entity, input))) = (&*phase, input.single()) else { return };
+    if focus.get() == Some(entity) {
+        *phase = send(input.value().to_string(), near.clone(), &game, &gm, &store, &settings, &master);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn on_activate(
     used: On<Activate>,
     buttons: Query<&PlayAction>,
+    input: Query<&EditableText, With<SayInput>>,
     mut phase: ResMut<Phase>,
     game: Option<ResMut<Game>>,
     mut toast: ResMut<Toast>,
     mut redraw: ResMut<Redraw>,
     mut arrival: ResMut<Arrival>,
+    mut background: ResMut<Background>,
     mut return_to: ResMut<ReturnTo>,
     mut next: ResMut<NextState<Screen>>,
     store: Res<Store>,
@@ -520,8 +837,9 @@ fn on_activate(
 ) {
     // This observer hears every button in the game; outside a game there is nothing to act on.
     let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
+    let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
     match (*action, phase.clone()) {
-        (PlayAction::Resume, _) => *phase = Phase::Walking,
+        (PlayAction::Resume | PlayAction::Close, _) => *phase = Phase::Walking,
         (PlayAction::Save, _) => {
             match store.save_game(&game.world_id, &game.world, true) {
                 Ok(_) => *toast = Toast { text: Some(T::Saved), left: 3.0 },
@@ -540,7 +858,7 @@ fn on_activate(
             next.set(Screen::Main);
         }
         (PlayAction::Retry, Phase::Stuck { to, .. }) => {
-            master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id: to.clone(), from: game.world.current.clone() });
+            master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id: to.clone(), from: game.world.current.clone(), ahead: false });
             *phase = Phase::Drawing { to };
         }
         (PlayAction::Sketch, Phase::Stuck { to, .. }) => {
@@ -554,6 +872,25 @@ fn on_activate(
             game.world.step_back();
             *phase = Phase::Arriving { t: 0.0 };
         }
+        (PlayAction::Do(index), Phase::Looking { thing }) => {
+            if let Some(outcome) = game.world.perform(&thing, index) {
+                *phase = told(outcome_of(outcome), Vec::new(), &game, &store, &mut redraw, &mut background);
+            }
+        }
+        (PlayAction::Own, Phase::Looking { thing }) => *phase = Phase::Writing { near: Some(thing) },
+        (PlayAction::Own, _) => *phase = Phase::Writing { near: None },
+        (PlayAction::Send, Phase::Writing { near }) => {
+            if let Ok(input) = input.single() {
+                *phase = send(input.value().to_string(), near, &game, &gm, &store, &settings, &master);
+            }
+        }
+        (PlayAction::Choose(index), Phase::Reading { turn }) => {
+            if let Some(option) = turn.options.get(index) {
+                let outcome = game.world.choose(option);
+                *phase = told(outcome_of(outcome), Vec::new(), &game, &store, &mut redraw, &mut background);
+            }
+        }
+        (PlayAction::AskAgain, Phase::Refused { said, near, .. }) => *phase = send(said, near, &game, &gm, &store, &settings, &master),
         _ => {}
     }
 }
@@ -567,9 +904,13 @@ impl Plugin for PlayPlugin {
             .init_resource::<Arrival>()
             .init_resource::<Toast>()
             .init_resource::<HeroPose>()
+            .init_resource::<Background>()
             .add_systems(OnEnter(Screen::Play), enter)
             .add_systems(OnExit(Screen::Play), leave)
-            .add_systems(Update, (toggle_pause, walk, advance, receive, draw, place_hero, idle, hud, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(
+                Update,
+                (submit, keys, walk, advance, receive, background_work, draw, place_hero, idle, hud, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+            )
             .add_observer(on_activate);
     }
 }
@@ -577,6 +918,11 @@ impl Plugin for PlayPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn world() -> World {
+        let draft: world::WorldDraft = serde_json::from_str(&fake::world("play")).unwrap();
+        world::build_world(&draft, "play", "English").unwrap().0
+    }
 
     #[test]
     fn the_locations_corner_is_the_screens_corner_and_y_is_flipped() {
@@ -588,5 +934,35 @@ mod tests {
     fn lower_things_are_drawn_in_front_and_all_stand_above_the_ground() {
         assert!(depth(200.0) > depth(100.0));
         assert!(depth(0.0) > 0.0);
+    }
+
+    #[test]
+    fn looking_at_a_thing_shows_its_name_and_what_can_be_done_with_it() {
+        let w = world();
+        let sheet = sheet_for(&Phase::Looking { thing: "cat".into() }, &w, 0, Lang::En);
+        let Sheet::Looking { name, actions, .. } = sheet else { panic!("expected the looking sheet") };
+        assert_eq!(name, "Grey cat");
+        assert_eq!(actions, ["Pet the cat", "Shoo it away"]);
+    }
+
+    #[test]
+    fn looking_at_something_that_is_gone_shows_nothing() {
+        assert!(sheet_for(&Phase::Looking { thing: "ghost".into() }, &world(), 0, Lang::En) == Sheet::None);
+    }
+
+    #[test]
+    fn the_journal_lists_what_is_carried_and_what_was_said() {
+        let mut w = world();
+        w.perform("cat", 1);
+        let Sheet::Journal { carried, lines } = sheet_for(&Phase::Journal, &w, 0, Lang::En) else { panic!("expected the journal") };
+        assert_eq!(carried, "Cat hair");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], (Speaker::Player, "Shoo it away".to_string()));
+    }
+
+    #[test]
+    fn the_master_speaks_unprompted_only_when_the_host_allows_it() {
+        assert_eq!(event_after(Initiative::Off), None);
+        assert!(event_after(Initiative::Often) < event_after(Initiative::Rare));
     }
 }

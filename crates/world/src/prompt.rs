@@ -1,9 +1,25 @@
-//! The words sent to the game master when it is asked to draw: the rules of the drawing
-//! format, and the two requests built on them — a new world, and one more place in a world.
+//! The words sent to the game master: the rules of the drawing format with the requests
+//! built on them (a new world, one more place), and the rules of telling the story with
+//! theirs (what the party does, an unprompted event, writing up a chapter).
 
 use crate::base::SLOTS;
-use crate::model::{MAP_H, MAP_W, World, char_of};
+use crate::model::{Attitude, MAP_H, MAP_W, World, char_of};
+use crate::story::{KEPT_LINES, Speaker};
 use std::fmt::Write;
+
+/// How the master changes the world. Shared by drawing (prepared actions) and by play.
+const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
+  {"op": "remove", "id": "…"} — a prop or creature leaves the scene
+  {"op": "give", "name": "…", "description": "…"} — the party gains an item
+  {"op": "take", "name": "…"} — the party loses an item
+  {"op": "describe", "id": "…", "description": "…"} — a thing looks different from now on
+  {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
+  {"op": "move", "id": "…", "x": 0, "y": 0}
+  {"op": "tile", "x": 0, "y": 0, "tile": "tile_id"} — one cell of ground changes (a door opens, a bridge falls)
+  {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral"}
+  {"op": "exit", "x": 0, "y": 0, "to": "place_id", "label": "…"} — a way out appears
+  {"op": "fact", "text": "…"} — something that must be remembered for the rest of the campaign
+Use only ids that exist. Inside an action that belongs to a thing, the id "self" means that thing."##;
 
 /// The rules that never change. The answer format is plain JSON so that every model in the
 /// fallback chain can produce it.
@@ -33,7 +49,11 @@ Draw "new_tiles" when a place needs something these do not cover. A place should
 
 EXITS. An exit is a walkable cell, usually on the edge of the map or in a doorway, that leads to another place named by "to". Every place an exit leads to is listed in "neighbors" unless it already exists. Give a place two to four exits. Everything must be reachable on foot from "spawn".
 
-PROPS are things worth a look (a well, a wreck, a shrine); CREATURES are beings (people, animals, monsters). Each names a sprite by id; draw the sprite in "sprites" unless one with that id already exists. "attitude" is friendly, neutral or hostile."##,
+PROPS are things worth a look (a well, a wreck, a shrine); CREATURES are beings (people, animals, monsters). Each names a sprite by id; draw the sprite in "sprites" unless one with that id already exists. "attitude" is friendly, neutral or hostile.
+
+ACTIONS. Give every prop and creature two or three "actions": things the players are likely to do with it. The players pick one from a list and read its outcome at once, without asking you, so write the outcome now: one to three sentences, told to the players as their game master ("you"), with the effects it has. Make them matter: a clue, an item, a changed attitude, a new way out. A creature that can talk has an action in which it says something worth hearing.
+
+{EFFECTS}"##,
         w = MAP_W,
         h = MAP_H,
         mx = MAP_W - 1,
@@ -49,8 +69,8 @@ const LOCATION_SHAPE: &str = r##"{
   "spawn": [x, y],
   "new_tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
   "sprites": [{"id": "…", "rows": ["16 or 32 characters", "… as many rows"]}],
-  "props": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "blocking": true, "sprite": "…"}],
-  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral"}],
+  "props": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "blocking": true, "sprite": "…", "actions": [{"label": "what the players choose", "outcome": "what happens", "effects": []}]}],
+  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
   "exits": [{"x": 0, "y": 0, "to": "neighbor_id", "label": "what the way out looks like"}],
   "neighbors": [{"id": "neighbor_id", "name": "…", "description": "one sentence: what is there"}]
 }"##;
@@ -76,6 +96,127 @@ Answer with this JSON object:
   "tiles": [tiles of this world that every place may use, same shape as new_tiles],
   "location": {LOCATION_SHAPE}
 }}"##
+    )
+}
+
+/// The rules of telling the story, sent with every request made during play.
+pub fn play_prompt(world: &World) -> String {
+    let violence = if world.violence { "Violence may be described as graphically as the scene calls for." } else { "Keep violence off the page: say that it happened, not how it looked." };
+    let sex = if world.sex { "Sexual content between adults may be explicit when the players lead there." } else { "Keep sex off the page: fade to black." };
+    format!(
+        r##"You are the game master of a tabletop role-playing game for adults, played on a top-down pixel map. You tell the players what happens and you change the world to match.
+
+You answer with ONE JSON object and nothing else: no prose, no code fence.
+
+LANGUAGE. Everything the players read is written in {language}. Every "id" is short English snake_case.
+
+THE TABLE. All players and all characters are adults. {violence} {sex}
+
+TELLING. Speak to the players as "you". Two to five sentences: concrete, sensory, no summary of what they already know. Never decide what the players' characters do, say or feel. The world reacts: people remember, things break, time passes, actions have consequences. What the party attempts can fail or cost something. Do not hand out items, allies or secrets for nothing. Keep to what is established in the facts, the chapters and the story so far.
+
+{EFFECTS}
+
+A picture, when you need a new sprite, is a list of rows of palette index characters (0 transparent, 1-9, a-v), 16x16 or 32x32, outlined in colour 1."##,
+        language = world.language,
+    )
+}
+
+fn attitude_word(attitude: Attitude) -> &'static str {
+    match attitude {
+        Attitude::Friendly => "friendly",
+        Attitude::Neutral => "neutral",
+        Attitude::Hostile => "hostile",
+    }
+}
+
+/// Everything the master has to know to tell the next part: the world, what must be
+/// remembered, the place and what is in it, and the story so far. The newest
+/// `recent` lines of the story are given word for word.
+fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
+    let mut text = String::new();
+    let _ = writeln!(text, "WORLD: {}. {}\nTone: {}.", world.title, world.summary, world.tone);
+    if !world.story.facts.is_empty() {
+        let _ = writeln!(text, "\nFACTS:");
+        for fact in &world.story.facts {
+            let _ = writeln!(text, "- {fact}");
+        }
+    }
+    for (n, chapter) in world.story.chapters.iter().enumerate() {
+        let _ = writeln!(text, "\nCHAPTER {}: {chapter}", n + 1);
+    }
+    let here = world.here();
+    let _ = writeln!(text, "\nPLACE \"{}\": {}. {}", world.current, here.name, here.description);
+    for prop in &here.props {
+        let _ = writeln!(text, "- prop {} at ({}, {}): {} — {}", prop.id, prop.x, prop.y, prop.name, prop.description);
+    }
+    for creature in &here.creatures {
+        let _ = writeln!(text, "- creature {} at ({}, {}), {}: {} — {}", creature.id, creature.x, creature.y, attitude_word(creature.attitude), creature.name, creature.description);
+    }
+    for exit in &here.exits {
+        let _ = writeln!(text, "- exit at ({}, {}) to {}: {}", exit.x, exit.y, exit.to, world.place_name(&exit.to));
+    }
+    let (x, y) = world.player.cell();
+    let _ = writeln!(text, "The party stands at ({x}, {y}).");
+    let _ = write!(text, "\nSPRITES THAT EXIST:");
+    for sprite_id in world.sprites.keys() {
+        let _ = write!(text, " {sprite_id}");
+    }
+    let _ = write!(text, "\nTILES THAT EXIST:");
+    for tile_id in world.tiles.keys() {
+        let _ = write!(text, " {tile_id}");
+    }
+    let _ = write!(text, "\n\nTHE PARTY CARRIES:");
+    if world.story.inventory.is_empty() {
+        let _ = write!(text, " nothing of note");
+    }
+    for item in &world.story.inventory {
+        let _ = write!(text, " {}{};", item.name, if item.count > 1 { format!(" x{}", item.count) } else { String::new() });
+    }
+    let lines = world.story.log.get(recent).unwrap_or(&[]);
+    if !lines.is_empty() {
+        let _ = writeln!(text, "\n\nTHE STORY SO FAR:");
+        for line in lines {
+            let who = if line.speaker == Speaker::Master { "GM" } else { "PARTY" };
+            let _ = writeln!(text, "{who}: {}", line.text);
+        }
+    }
+    text
+}
+
+const TURN_SHAPE: &str = r##"{
+  "narration": "what happens, told to the players",
+  "effects": [],
+  "sprites": [{"id": "…", "rows": ["…"]}],
+  "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": []}]
+}"##;
+
+/// The party does something the master has not prepared an outcome for. `near` is the thing
+/// they stand next to, if any.
+pub fn turn(world: &World, said: &str, near: Option<&str>) -> String {
+    let beside = near.map(|id| format!(" They are standing next to \"{id}\".")).unwrap_or_default();
+    format!(
+        "{}\nThe party now does this: «{}»{beside}\n\nTell what happens. Offer two to four \"options\" for what the party might do next, each with its outcome already written, so that picking one needs no further question to you. Leave \"sprites\" empty unless an effect needs a sprite that does not exist.\n\nAnswer with this JSON object:\n{TURN_SHAPE}",
+        situation(world, 0..),
+        said.trim()
+    )
+}
+
+/// The players have been idle. The master may make something happen, or not.
+pub fn event(world: &World) -> String {
+    format!(
+        "{}\nThe party has done nothing for a while. If this place and this story call for it, make something happen now of its own accord: someone arrives, something breaks, a sound, a change in the weather that matters. If nothing should happen, answer with an empty \"narration\".\n\nAnswer with this JSON object:\n{TURN_SHAPE}",
+        situation(world, 0..)
+    )
+}
+
+/// The story has grown long: the master writes the older part up as a chapter.
+pub fn chapter(world: &World) -> String {
+    let mut older = world.clone();
+    let keep_from = older.story.log.len().saturating_sub(KEPT_LINES);
+    older.story.log.truncate(keep_from);
+    format!(
+        "{}\nThe story above has grown long. Write it up as one chapter so that nothing which matters later is lost: who was met and what they want, what was learned, what was gained and lost, what was promised, what was left unfinished, in the order it happened. Be detailed; this chapter replaces the story above. Then list as \"facts\" anything that must hold true for the rest of the campaign and is not yet among the facts.\n\nAnswer with this JSON object:\n{{\"chapter\": \"…\", \"facts\": [\"…\"]}}",
+        situation(&older, 0..)
     )
 }
 
@@ -127,6 +268,55 @@ mod tests {
         for (job, _) in SLOTS {
             assert!(p.contains(job), "{job}");
         }
+    }
+
+    fn test_world() -> World {
+        let draft: WorldDraft = serde_json::from_str(&fake::world("test")).unwrap();
+        build_world(&draft, "test", "Russian").unwrap().0
+    }
+
+    #[test]
+    fn drawing_rules_ask_for_prepared_actions_and_explain_effects() {
+        let p = system_prompt("English");
+        assert!(p.contains("ACTIONS.") && p.contains("\"op\": \"give\"") && p.contains("\"self\""));
+    }
+
+    #[test]
+    fn telling_rules_follow_the_tables_language_and_content_switches() {
+        let mut w = test_world();
+        let open = play_prompt(&w);
+        assert!(open.contains("written in Russian") && open.contains("graphically") && open.contains("explicit"));
+        w.violence = false;
+        w.sex = false;
+        let closed = play_prompt(&w);
+        assert!(closed.contains("off the page") && closed.contains("fade to black") && !closed.contains("explicit"));
+    }
+
+    #[test]
+    fn a_turn_request_shows_the_place_the_things_the_bag_and_the_story() {
+        let mut w = test_world();
+        w.perform("cat", 1);
+        w.story.remember("The well is dry.");
+        w.story.chapters.push("They arrived at dusk.".into());
+        let text = turn(&w, "  I look under the roots ", Some("fire"));
+        assert!(text.contains("- prop fire at (") && text.contains("Campfire"));
+        assert!(!text.contains("creature cat"), "the cat left");
+        assert!(text.contains("- The well is dry.") && text.contains("CHAPTER 1: They arrived at dusk."));
+        assert!(text.contains("Cat hair;"));
+        assert!(text.contains("PARTY: Shoo it away") && text.contains("GM: The cat slips away"));
+        assert!(text.contains("«I look under the roots»") && text.contains("next to \"fire\""));
+        assert!(text.contains("- exit at (") && text.contains("The East Road"));
+    }
+
+    #[test]
+    fn a_chapter_request_leaves_out_the_lines_that_stay_word_for_word() {
+        let mut w = test_world();
+        for n in 0..10 {
+            w.story.say(Speaker::Master, &format!("line number {n}"));
+        }
+        let text = chapter(&w);
+        assert!(text.contains("line number 3") && !text.contains("line number 4"));
+        assert!(text.contains("\"chapter\""));
     }
 
     #[test]

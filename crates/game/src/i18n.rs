@@ -77,7 +77,31 @@ texts! {
     CreatingHint: "Это один большой запрос: обычно от полуминуты до двух минут.", "This is one large request: usually half a minute to two minutes.";
     Elapsed: "Прошло", "Elapsed:";
     CreateFailed: "Мир создать не удалось.", "The world could not be created.";
-    HudMenuHint: "Esc — меню", "Esc for the menu";
+    HudHint: "E — действие · J — журнал · Esc — меню", "E to act · J for the journal · Esc for the menu";
+    OwnAction: "Своё действие", "Something else";
+    Leave: "Отойти", "Leave";
+    WhatDoYouDo: "Что вы делаете?", "What do you do?";
+    Say: "Отправить", "Send";
+    WritingHint: "Enter — отправить мастеру. Это тратит один ход.", "Enter sends it to the game master. This spends one turn.";
+    Onward: "Дальше", "Go on";
+    RefusedTitle: "Мастер не ответил", "The master did not answer";
+    Journal: "Журнал", "Journal";
+    Carried: "С собой:", "Carrying:";
+    CarryNothing: "С собой ничего нет.", "Carrying nothing.";
+    JournalEmpty: "История ещё не началась.", "The story has not begun yet.";
+    SetPredraw: "Соседние места заранее", "Draw neighbours ahead";
+    Yes: "Да", "Yes";
+    No: "Нет", "No";
+    PredrawHint: "Вход без ожидания, но каждое место тратит ход заранее.", "No wait at the door, but each place spends a turn in advance.";
+    SetInitiative: "Мастер действует сам", "The master acts unprompted";
+    InitiativeOff: "Никогда", "Never";
+    InitiativeRare: "Редко", "Rarely";
+    InitiativeOften: "Часто", "Often";
+    InitiativeHint: "После долгой тишины мастер устраивает событие. Тратит ход.", "After a long silence the master makes something happen. Spends a turn.";
+    ViolenceOn: "Насилие: подробно", "Violence: graphic";
+    ViolenceOff: "Насилие: за кадром", "Violence: off the page";
+    SexOn: "Секс: откровенно", "Sex: explicit";
+    SexOff: "Секс: за кадром", "Sex: off the page";
     Drawing: "Мастер рисует место:", "The game master is drawing:";
     DrawingHint: "Обычно это занимает до пары минут.", "This usually takes up to a couple of minutes.";
     StuckTitle: "Место не нарисовано", "The place was not drawn";
@@ -101,12 +125,12 @@ texts! {
     ThinkingLow: "Короткие", "Short";
     ThinkingMedium: "Средние", "Medium";
     ThinkingHigh: "Долгие", "Long";
-    ThinkingHint: "Чем дольше мастер думает, тем умнее ответ и тем дольше ожидание.", "The longer the game master thinks, the smarter the answer and the longer the wait.";
+    ThinkingHint: "Дольше думает — умнее ответ и дольше ожидание.", "Longer thinking: smarter answers, longer waits.";
     SetFallback: "Запасные модели", "Fallback models";
     FallbackFlash: "Только flash", "Flash only";
     FallbackLite: "До flash-lite", "Down to flash-lite";
     FallbackGemma: "До Gemma", "Down to Gemma";
-    FallbackHint: "Когда лучшие модели исчерпаны, мастер переходит на более слабые — не ниже выбранной ступени.", "When the best models are spent the game master falls back to weaker ones, no lower than the chosen tier.";
+    FallbackHint: "Когда лучшие модели исчерпаны, мастер берёт слабее — не ниже этой.", "When the best models are spent the master uses weaker ones, no lower than this.";
 }
 
 /// A wait rounded up, in the two largest units that matter.

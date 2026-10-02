@@ -20,6 +20,8 @@ enum Action {
     Create,
     Retry,
     Keys,
+    Violence,
+    Sex,
 }
 
 #[derive(Component)]
@@ -37,6 +39,17 @@ struct Making {
     request: String,
     seconds: f32,
     trouble: Option<Trouble>,
+    /// The table's content switches; both are on unless the host turns them off here.
+    no_violence: bool,
+    no_sex: bool,
+}
+
+fn violence_label(making: &Making) -> T {
+    if making.no_violence { T::ViolenceOff } else { T::ViolenceOn }
+}
+
+fn sex_label(making: &Making) -> T {
+    if making.no_sex { T::SexOff } else { T::SexOn }
 }
 
 const FIELD_BORDER: f32 = 4.0;
@@ -45,7 +58,7 @@ fn spawn_form(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, book: Re
     let ink = TextColor(color(INK));
     let can_ask = master.fake || book.entries.iter().any(|e| e.health == Health::Working || e.health == Health::Checking);
     commands.spawn(screen_root(Screen::NewGame)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(40)), width: px(340), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
+        let sheet = Node { margin: UiRect::top(px(30)), width: px(400), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
         spawn_panel(root, &art, sheet, |sheet| {
             sheet.spawn((Text::default(), T::NewWorldTitle, fonts.title(1), ink));
             sheet.spawn((Text::default(), T::NewWorldAsk, fonts.body(), ink));
@@ -63,6 +76,10 @@ fn spawn_form(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, book: Re
                     ink,
                     TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
                 ));
+            });
+            sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                button(line, &art, &fonts, violence_label(&making), true, Action::Violence);
+                button(line, &art, &fonts, sex_label(&making), true, Action::Sex);
             });
             if !can_ask {
                 sheet.spawn((Text::default(), T::NeedKey, fonts.body(), TextColor(color(WAX))));
@@ -94,7 +111,7 @@ fn spawn_waiting(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
 }
 
 fn start_making(making: &mut Making, request: String, gm: &Gm, store: &Store, settings: &Settings, master: &Master) {
-    *making = Making { request: request.clone(), seconds: 0.0, trouble: None };
+    *making = Making { request: request.clone(), seconds: 0.0, trouble: None, no_violence: making.no_violence, no_sex: making.no_sex };
     master.ask(gm, store, settings, Ask::NewWorld { request });
 }
 
@@ -123,6 +140,8 @@ fn on_activate(
             let request = making.request.clone();
             start_making(&mut making, request, &gm, &store, &settings, &master);
         }
+        Action::Violence => making.no_violence = !making.no_violence,
+        Action::Sex => making.no_sex = !making.no_sex,
         Action::Keys => {
             // Keep what was typed, and come back to this form afterwards.
             if let Ok(input) = input.single() {
@@ -130,6 +149,27 @@ fn on_activate(
             }
             return_to.0 = Some(if *screen.get() == Screen::Creating { Screen::NewGame } else { *screen.get() });
             next.set(Screen::Keys);
+        }
+    }
+}
+
+/// The switch buttons say what they are set to.
+fn show_switches(making: Res<Making>, buttons: Query<(&Action, &Children)>, mut labels: Query<&mut T>) {
+    if !making.is_changed() {
+        return;
+    }
+    for (action, children) in &buttons {
+        let wanted = match action {
+            Action::Violence => violence_label(&making),
+            Action::Sex => sex_label(&making),
+            _ => continue,
+        };
+        for child in children {
+            if let Ok(mut label) = labels.get_mut(*child)
+                && *label != wanted
+            {
+                *label = wanted;
+            }
         }
     }
 }
@@ -154,10 +194,12 @@ fn wait_for_world(
     for answer in master.take() {
         let Answer::World(result) = answer else { continue };
         match result {
-            Ok((world, notes)) => {
+            Ok((mut world, notes)) => {
                 for note in notes {
                     info!("world repaired: {note}");
                 }
+                world.violence = !making.no_violence;
+                world.sex = !making.no_sex;
                 let world_id = format!("{:x}", crate::store::unix_now());
                 play::begin(&mut commands, &mut next, *world, world_id);
                 return;
@@ -193,7 +235,7 @@ impl Plugin for NewGamePlugin {
         app.init_resource::<Making>()
             .add_systems(OnEnter(Screen::NewGame), spawn_form)
             .add_systems(OnEnter(Screen::Creating), spawn_waiting)
-            .add_systems(Update, wait_for_world.run_if(in_state(Screen::Creating)))
+            .add_systems(Update, (wait_for_world.run_if(in_state(Screen::Creating)), show_switches.run_if(in_state(Screen::NewGame))))
             .add_observer(on_activate);
     }
 }

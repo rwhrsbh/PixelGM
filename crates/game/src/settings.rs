@@ -3,7 +3,7 @@
 use crate::art::Art;
 use crate::i18n::{Lang, T};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
-use crate::store::{Settings, Store};
+use crate::store::{Initiative, Settings, Store};
 use crate::theme::*;
 use crate::widgets::{Activate, button};
 use bevy::prelude::*;
@@ -17,6 +17,8 @@ enum Choice {
     Window,
     Thinking,
     Fallback,
+    Predraw,
+    Initiative,
 }
 
 impl Choice {
@@ -26,6 +28,8 @@ impl Choice {
             Choice::Window => T::SetWindow,
             Choice::Thinking => T::SetThinking,
             Choice::Fallback => T::SetFallback,
+            Choice::Predraw => T::SetPredraw,
+            Choice::Initiative => T::SetInitiative,
         }
     }
 
@@ -33,6 +37,8 @@ impl Choice {
         match self {
             Choice::Thinking => Some(T::ThinkingHint),
             Choice::Fallback => Some(T::FallbackHint),
+            Choice::Predraw => Some(T::PredrawHint),
+            Choice::Initiative => Some(T::InitiativeHint),
             _ => None,
         }
     }
@@ -57,6 +63,18 @@ impl Choice {
                 Tier::Flash => T::FallbackFlash,
                 Tier::FlashLite => T::FallbackLite,
                 Tier::Gemma => T::FallbackGemma,
+            },
+            Choice::Predraw => {
+                if s.predraw {
+                    T::Yes
+                } else {
+                    T::No
+                }
+            }
+            Choice::Initiative => match s.initiative {
+                Initiative::Off => T::InitiativeOff,
+                Initiative::Rare => T::InitiativeRare,
+                Initiative::Often => T::InitiativeOften,
             },
         }
     }
@@ -85,22 +103,30 @@ impl Choice {
                     Tier::Gemma => Tier::Flash,
                 }
             }
+            Choice::Predraw => s.predraw = !s.predraw,
+            Choice::Initiative => {
+                s.initiative = match s.initiative {
+                    Initiative::Off => Initiative::Rare,
+                    Initiative::Rare => Initiative::Often,
+                    Initiative::Often => Initiative::Off,
+                }
+            }
         }
     }
 }
 
-const CHOICES: [Choice; 4] = [Choice::Language, Choice::Window, Choice::Thinking, Choice::Fallback];
+const CHOICES: [Choice; 6] = [Choice::Language, Choice::Window, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
 
 fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
     commands.spawn(screen_root(Screen::Settings)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(30)), width: px(300), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
+        let sheet = Node { margin: UiRect::top(px(8)), width: px(440), flex_direction: FlexDirection::Column, row_gap: px(5), ..default() };
         spawn_panel(root, &art, sheet, |sheet| {
             sheet.spawn((Text::default(), T::Settings, fonts.title(1), TextColor(color(INK))));
             for choice in CHOICES {
                 sheet.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|block| {
                     block.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|line| {
                         line.spawn((Text::default(), choice.label(), fonts.body(), TextColor(color(INK))));
-                        line.spawn(Node { width: px(110), flex_direction: FlexDirection::Column, ..default() })
+                        line.spawn(Node { width: px(150), flex_direction: FlexDirection::Column, ..default() })
                             .with_children(|slot| button(slot, &art, &fonts, choice.value(&settings), true, choice));
                     });
                     if let Some(hint) = choice.hint() {
@@ -198,10 +224,9 @@ mod tests {
     fn advancing_a_choice_changes_only_what_it_shows() {
         for choice in CHOICES {
             let mut s = Settings::default();
-            let before = (s.lang, s.fullscreen, s.thinking, s.lowest_tier);
+            let before = s.clone();
             choice.advance(&mut s);
-            let after = (s.lang, s.fullscreen, s.thinking, s.lowest_tier);
-            let changed = [before.0 != after.0, before.1 != after.1, before.2 != after.2, before.3 != after.3];
+            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative];
             assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{choice:?}");
         }
     }
