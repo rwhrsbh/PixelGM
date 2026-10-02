@@ -179,7 +179,8 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     }
     if !world.party.is_empty() {
         let _ = writeln!(text, "\n\nTHE PARTY:");
-        for hero in world.party.iter().enumerate().filter(|(i, _)| !world.is_away(*i)).map(|(_, h)| h) {
+        // Those who are here: a party that has split up is told about scene by scene.
+        for hero in world.party.iter().enumerate().filter(|(i, _)| !world.is_away(*i) && world.hero_place(*i) == world.current).map(|(_, h)| h) {
             let state = if hero.dead { " (dead)".to_string() } else { format!(", {} of {} hit points", hero.hp, hero.max_hp) };
             let _ = writeln!(text, "- {}, {} {} of level {}{state}. Trained in: {}. {}", hero.name, hero.race, hero.class, hero.level, hero.skills.join(", "), hero.description);
         }

@@ -328,6 +328,7 @@ impl World {
                     };
                     let skill = skill.as_ref().map(|s| s.trim().to_lowercase().replace([' ', '_'], "-")).filter(|s| !s.is_empty());
                     // Everything after a check waits for the die.
+                    self.pending_place = self.current.clone();
                     self.pending = Some(PendingCheck { ability, skill, difficulty: (*dc).clamp(1, 40) as i32, success: success.clone(), failure: failure.clone(), me: me.map(str::to_string), rest: effects[n + 1..].to_vec() });
                     break;
                 }

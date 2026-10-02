@@ -303,6 +303,32 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
     }
 }
 
+/// A fight in a place the host is not in still has to be moved on by the host: its
+/// monsters take their turns and it ends, and the guests who are in it are told.
+fn drive_elsewhere(time: Res<Time>, mut game: ResMut<Game>, session: Res<Session>, mut since: Local<f32>) {
+    if !session.is_host() || game.world.fight.is_none() || game.world.fight_here() {
+        return;
+    }
+    // At the pace the guests watch it played back.
+    *since += time.delta_secs();
+    if *since < EVENT_SECONDS * 2.0 {
+        return;
+    }
+    *since = 0.0;
+    let world = &mut game.world;
+    if world.fight.as_ref().is_some_and(|f| f.outcome() != Outcome::Ongoing) {
+        if let Some(summary) = world.end_fight() {
+            session.broadcast(&Down::FightOver(summary));
+        }
+        return;
+    }
+    let abandoned = world.acting_owner().is_some_and(|owner| !world.present.is_empty() && !world.present.iter().any(|p| p == owner));
+    let events = if abandoned { world.fight_act(&FightIntent::EndTurn) } else { world.fight_monster_turn() };
+    if !events.is_empty() {
+        session.broadcast(&Down::FightEvents(events));
+    }
+}
+
 /// The hero's part: keys and the mouse while moving or aiming.
 #[allow(clippy::too_many_arguments)]
 fn input(
@@ -712,7 +738,7 @@ pub struct FightPlugin;
 impl Plugin for FightPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FightView>()
-            .add_systems(Update, (reset, submit_stunt, input, drive, markers, sheet).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (reset, submit_stunt, input, drive, drive_elsewhere, markers, sheet).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate);
     }
 }

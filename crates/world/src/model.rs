@@ -199,6 +199,9 @@ pub struct Token {
     pub name: String,
     pub x: f32,
     pub y: f32,
+    /// The place the token is in. Empty means wherever the host is.
+    #[serde(default)]
+    pub place: String,
 }
 
 pub const SAVE_VERSION: u32 = 1;
@@ -250,6 +253,19 @@ pub struct World {
     /// The player in the game master's seat. Nobody means the model runs the game alone.
     #[serde(default)]
     pub gm: Option<String>,
+    /// Where each guest is, by player name, when the party has split up. The host is
+    /// always in `current`; a guest not listed is with the host.
+    #[serde(default)]
+    pub places: std::collections::BTreeMap<String, String>,
+    /// While the world is looked at from another place: where the host really is.
+    #[serde(skip)]
+    pub host_place: Option<String>,
+    /// The place the fight in progress is in.
+    #[serde(default)]
+    pub fight_place: String,
+    /// The place the check that is waiting was called in.
+    #[serde(default)]
+    pub pending_place: String,
     /// How this table plays, chosen by the host when the world was made.
     #[serde(default)]
     pub table: TableRules,
@@ -294,6 +310,56 @@ pub struct FeatOffer {
 }
 
 impl World {
+    /// The place a player is in.
+    pub fn place_of(&self, player: &str) -> &str {
+        self.places.get(player).filter(|place| self.locations.contains_key(*place)).map_or(self.host_place(), String::as_str)
+    }
+
+    /// Where the host is, whichever place the world is being looked at from.
+    pub fn host_place(&self) -> &str {
+        self.host_place.as_deref().unwrap_or(self.current.as_str())
+    }
+
+    /// The place a hero is in: where its player is, or with the host when nobody plays it.
+    pub fn hero_place(&self, hero: usize) -> &str {
+        match self.owners.get(hero) {
+            Some(owner) if !owner.is_empty() => self.place_of(owner),
+            _ => self.host_place(),
+        }
+    }
+
+    /// The other players' tokens in the place being looked at.
+    pub fn tokens_here(&self) -> impl Iterator<Item = &Token> {
+        self.others.iter().filter(|t| t.place.is_empty() || t.place == self.current)
+    }
+
+    /// Looks at the world from another place, as a player standing at `at` there: what is
+    /// done until `leave` happens in that place. A place that does not exist is not entered.
+    pub fn enter(&mut self, place: &str, at: Player) -> (String, Player) {
+        let home = (self.current.clone(), self.player);
+        if self.locations.contains_key(place) && self.host_place.is_none() {
+            self.host_place = Some(self.current.clone());
+            self.current = place.to_string();
+            self.player = at;
+        }
+        home
+    }
+
+    pub fn leave(&mut self, home: (String, Player)) {
+        (self.current, self.player) = home;
+        self.host_place = None;
+    }
+
+    /// Whether the fight in progress is in the place being looked at.
+    pub fn fight_here(&self) -> bool {
+        self.fight.is_some() && (self.fight_place.is_empty() || self.fight_place == self.current)
+    }
+
+    /// Whether the check that is waiting was called in the place being looked at.
+    pub fn pending_here(&self) -> bool {
+        self.pending.is_some() && (self.pending_place.is_empty() || self.pending_place == self.current)
+    }
+
     pub fn here(&self) -> &Location {
         &self.locations[&self.current]
     }

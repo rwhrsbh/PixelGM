@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -86,6 +86,8 @@ pub struct Held {
     pub said: String,
     pub near: Option<String>,
     pub draft: TurnDraft,
+    /// The guest it answers, when it happens where that guest is.
+    pub scene: Option<String>,
 }
 
 impl Held {
@@ -136,6 +138,8 @@ pub enum Down {
     FightOver(FightSummary),
     /// A line for the fight's log that is not an event of the rules: how a stunt went.
     FightNote(String),
+    /// The place this guest walked into is being drawn; the world follows when it is.
+    Drawing(String),
     /// The host's keys are spent; this guest's keys are asked to serve a request.
     Ask(Relayed),
     Chat { from: String, text: String },
@@ -153,8 +157,9 @@ pub struct Hosting {
     net: Host<Up, Down>,
     names: HashMap<PeerId, String>,
     tokens: HashMap<PeerId, (f32, f32)>,
-    /// The world as last sent, to tell when it has changed.
-    sent: String,
+    /// The world as last sent to each guest, to tell when it has changed. Each guest is
+    /// sent the world as seen from the place that guest is in.
+    sent: HashMap<PeerId, String>,
     since_world: f32,
     since_positions: f32,
     /// Requests handed to guests, with the guests already tried; the last one is working on it.
@@ -244,7 +249,15 @@ impl Session {
 pub struct Table {
     /// What the master was last asked on a guest's behalf and has not answered yet.
     pub busy: Option<String>,
-    pub options: Vec<Action>,
+    /// The guest that question was asked for: the answer happens where that guest is.
+    pub busy_for: Option<String>,
+    /// The choices last offered in each place.
+    pub options: HashMap<String, Vec<Action>>,
+    /// The host is handling something in a place it is not in: what is told is not for
+    /// the host's own screen.
+    pub elsewhere: bool,
+    /// Guests waiting for a place to be drawn: who, and where they are going.
+    pub travellers: Vec<(String, String)>,
     /// Tellings that arrived while this player was reading something else.
     pub unread: VecDeque<Turn>,
     /// Intents from guests, with the name of who sent each: the play screen carries them out.
@@ -336,7 +349,7 @@ pub struct SteamLink {
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 
 fn fresh_hosting(net: Host<Up, Down>) -> Session {
-    Session::Host(Mutex::new(Hosting { net, names: HashMap::new(), tokens: HashMap::new(), sent: String::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
+    Session::Host(Mutex::new(Hosting { net, names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
 }
 
 /// Hosts in a Steam lobby that the player's friends can see.
@@ -400,6 +413,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
             HostEvent::Left(peer) => {
                 hosting.names.remove(&peer);
                 hosting.tokens.remove(&peer);
+                hosting.sent.remove(&peer);
                 // What the guest who left was working on goes to the next one.
                 let orphaned: Vec<u64> = hosting.relayed.iter().filter(|(_, (_, tried))| tried.last() == Some(&peer)).map(|(id, _)| *id).collect();
                 for id in orphaned {
@@ -422,9 +436,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                 }
                 hosting.net.send(peer, &Down::Welcome { name: unique.clone() });
                 hosting.names.insert(peer, unique);
-                if let Some(game) = &game {
-                    hosting.net.send(peer, &Down::World { id: game.world_id.clone(), world: Box::new(snapshot(&game.world)) });
-                }
+                // The world itself follows from the pump below, as seen from this guest's place.
             }
             HostEvent::Message(peer, Up::Position { x, y }) => {
                 hosting.tokens.insert(peer, (x, y));
@@ -486,7 +498,19 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
     }
     let Some(game) = &mut game else { return };
     // Guests' tokens, for the host's own picture and for telling the other guests.
-    let mut tokens: Vec<Token> = hosting.tokens.iter().filter_map(|(peer, (x, y))| Some(Token { name: hosting.names.get(peer)?.clone(), x: *x, y: *y })).collect();
+    // A guest is where it was last, or with the host when it has only just sat down: it
+    // does not follow when the host walks on.
+    for name in hosting.names.values() {
+        if !game.world.places.get(name).is_some_and(|place| game.world.locations.contains_key(place)) {
+            let here = game.world.current.clone();
+            game.world.places.insert(name.clone(), here);
+        }
+    }
+    let mut tokens: Vec<Token> = hosting.tokens.iter().filter_map(|(peer, (x, y))| {
+        let name = hosting.names.get(peer)?.clone();
+        let place = game.world.place_of(&name).to_string();
+        Some(Token { name, x: *x, y: *y, place })
+    }).collect();
     tokens.sort_by(|a, b| a.name.cmp(&b.name));
     if game.world.others != tokens {
         game.world.others = tokens.clone();
@@ -500,22 +524,29 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
     hosting.since_positions += time.delta_secs();
     if playing && hosting.since_positions >= 0.1 {
         hosting.since_positions = 0.0;
-        tokens.push(Token { name: player_name(&settings), x: game.world.player.x, y: game.world.player.y });
+        tokens.push(Token { name: player_name(&settings), x: game.world.player.x, y: game.world.player.y, place: game.world.current.clone() });
         hosting.net.broadcast(&Down::Positions(tokens));
     }
     hosting.since_world += time.delta_secs();
     if hosting.since_world >= 0.25 {
         hosting.since_world = 0.0;
-        // Compared without the host's own token, which moves every frame and travels in
-        // the positions message instead.
+        // Each guest sees the world from the place it is in. Compared without a token,
+        // which moves every frame and travels in the positions message instead.
+        let guests: Vec<(PeerId, String)> = hosting.names.iter().map(|(peer, name)| (*peer, name.clone())).collect();
         let mut copy = snapshot(&game.world);
+        let host_place = copy.current.clone();
         let host_token = copy.player;
-        copy.player = world::Player { x: 0.0, y: 0.0 };
-        let encoded = serde_json::to_string(&copy).unwrap_or_default();
-        if encoded != hosting.sent {
-            hosting.sent = encoded;
-            copy.player = host_token;
-            hosting.net.broadcast(&Down::World { id: game.world_id.clone(), world: Box::new(copy) });
+        for (peer, name) in guests {
+            copy.current = game.world.place_of(&name).to_string();
+            copy.player = world::Player { x: 0.0, y: 0.0 };
+            let encoded = serde_json::to_string(&copy).unwrap_or_default();
+            if hosting.sent.get(&peer) != Some(&encoded) {
+                hosting.sent.insert(peer, encoded);
+                // Where a guest new to its place first stands: by the host, or where the
+                // place lets people in.
+                copy.player = if copy.current == host_place { host_token } else { copy.locations.get(&copy.current).map_or(host_token, |l| world::Player::in_cell(l.spawn.0, l.spawn.1)) };
+                hosting.net.send(peer, &Down::World { id: game.world_id.clone(), world: Box::new(copy.clone()) });
+            }
         }
     }
 }
@@ -556,7 +587,11 @@ fn adopt(id: String, world: World, game: &mut Option<ResMut<Game>>, commands: &m
     match game {
         Some(game) => {
             let moved = game.world.current != world.current;
-            if !moved {
+            if moved {
+                // Through the way out the guest took, to where it lets out on the other side.
+                let (x, y) = world.arrival_cell(&world.current, &game.world.current);
+                world.player = world::Player::in_cell(x, y);
+            } else {
                 world.player = game.world.player;
                 // After a fight the guest walks on from where its hero ended it.
                 if world.fight.is_none()
@@ -640,14 +675,18 @@ fn client_pump(
                 }
             }
             ClientEvent::Message(Down::Told(turn)) => {
-                table.options = turn.options.clone();
                 play::show(turn, &mut phase, &mut table);
                 redraw.0 = true;
             }
             ClientEvent::Message(Down::Thinking(_)) => {}
             ClientEvent::Message(Down::Trouble(_)) => {
-                if matches!(*phase, Phase::Asking { .. }) {
+                if matches!(*phase, Phase::Asking { .. } | Phase::Drawing { .. }) {
                     *phase = Phase::Walking;
+                }
+            }
+            ClientEvent::Message(Down::Drawing(to)) => {
+                if *phase == Phase::Walking {
+                    *phase = Phase::Drawing { to };
                 }
             }
             ClientEvent::Message(Down::FightEvents(events)) => view.extend(events),
@@ -968,7 +1007,7 @@ mod tests {
     #[test]
     fn a_snapshot_leaves_out_what_is_only_the_hosts() {
         let mut w = world_with(&[]);
-        w.others.push(Token { name: "Bob".into(), x: 1.0, y: 2.0 });
+        w.others.push(Token { name: "Bob".into(), x: 1.0, y: 2.0, place: String::new() });
         assert!(snapshot(&w).others.is_empty());
     }
 

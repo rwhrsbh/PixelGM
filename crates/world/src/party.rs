@@ -129,9 +129,29 @@ impl World {
         !self.present.is_empty() && self.owners.get(hero).is_some_and(|o| !o.is_empty() && !self.present.contains(o))
     }
 
-    /// Whether the hero takes part in what happens: alive, and its player at the table.
+    /// Whether the hero takes part in what happens here: alive, its player at the table,
+    /// and in the place being looked at.
     pub fn takes_part(&self, hero: usize) -> bool {
-        self.party.get(hero).is_some_and(|h| !h.dead) && !self.is_away(hero)
+        self.party.get(hero).is_some_and(|h| !h.dead) && !self.is_away(hero) && self.hero_place(hero) == self.current
+    }
+
+    /// Runs something in the place the fight is in, wherever the host happens to be.
+    fn in_fight_place<R>(&mut self, act: impl FnOnce(&mut Self) -> R) -> R {
+        if self.fight_place.is_empty() || self.fight_place == self.current || !self.locations.contains_key(&self.fight_place) {
+            return act(self);
+        }
+        // Already looking from elsewhere (a guest's action): the host's place is known.
+        let nested = self.host_place.is_some();
+        let home = std::mem::replace(&mut self.current, self.fight_place.clone());
+        if !nested {
+            self.host_place = Some(home.clone());
+        }
+        let result = act(self);
+        self.current = home;
+        if !nested {
+            self.host_place = None;
+        }
+        result
     }
 
     /// Gives an away hero to a player who has none. `false` when the hero is somebody's who
@@ -202,7 +222,7 @@ impl World {
         if let Some(hero) = self.secrets_due.first() {
             return Some((*hero, true));
         }
-        (0..self.party.len()).find(|i| self.party[*i].feat_due && self.takes_part(*i) && !self.offers.iter().any(|o| o.hero == *i)).map(|i| (i, false))
+        (0..self.party.len()).find(|i| self.party[*i].feat_due && !self.party[*i].dead && !self.is_away(*i) && !self.offers.iter().any(|o| o.hero == *i)).map(|i| (i, false))
     }
 
     /// Takes what the master wrote for a hero. A secret skill is the hero's at once, and
@@ -267,6 +287,10 @@ impl World {
     /// it: the hero rolls the check, and a success does what the master allowed. Either
     /// way the action is spent. `None` when it is not a hero's turn to act.
     pub fn fight_stunt(&mut self, draft: &StuntDraft, name: &str, rng: &mut Rng) -> Option<Stunt> {
+        self.in_fight_place(|world| world.fight_stunt_here(draft, name, rng))
+    }
+
+    fn fight_stunt_here(&mut self, draft: &StuntDraft, name: &str, rng: &mut Rng) -> Option<Stunt> {
         let mut fight = self.fight.clone()?;
         let actor = fight.actor();
         if actor.side != Side::Party || !actor.action_left || !actor.standing() {
@@ -438,7 +462,7 @@ impl World {
         for (i, hero) in self.party.iter().enumerate().filter(|(i, _)| self.takes_part(*i)) {
             // A hero whose player walks a token of their own starts where that token stands;
             // the rest stand with the leader. Each takes the nearest free cell.
-            let start = self.owners.get(i).and_then(|owner| self.others.iter().find(|t| t.name == *owner)).map_or(leader, |t| inside(Player { x: t.x, y: t.y }.cell()));
+            let start = self.owners.get(i).and_then(|owner| self.tokens_here().find(|t| t.name == *owner)).map_or(leader, |t| inside(Player { x: t.x, y: t.y }.cell()));
             let free = |c: (usize, usize)| !here.blocked(c.0 as i32, c.1 as i32, &self.tiles) && !taken.contains(&c);
             let cell = nearest(start, free).unwrap_or(start);
             taken.push(cell);
@@ -446,12 +470,21 @@ impl World {
         }
         combatants.extend(enemies);
         self.fight = Some(Encounter::start(combatants, rng).0);
+        self.fight_place = self.current.clone();
         true
     }
 
     /// Ends the fight: heroes keep the wounds they took, the dead leave the map, the
     /// survivors share the experience.
     pub fn end_fight(&mut self) -> Option<FightSummary> {
+        // The host's token moves only when the host was in the fight's place.
+        let host_there = self.fight_place.is_empty() || self.fight_place == self.host_place();
+        let summary = self.in_fight_place(|world| world.end_fight_here(host_there));
+        self.fight_place.clear();
+        summary
+    }
+
+    fn end_fight_here(&mut self, host_there: bool) -> Option<FightSummary> {
         let fight = self.fight.take()?;
         let won = fight.outcome() == Outcome::Victory;
         for (i, hero) in self.party.iter_mut().enumerate() {
@@ -480,10 +513,10 @@ impl World {
         // no token of their own, or failing that anyone still alive.
         let walks_alone = |c: &&Combatant| {
             let owner = c.id.strip_prefix("hero_").and_then(|i| i.parse::<usize>().ok()).and_then(|i| self.owners.get(i));
-            owner.is_some_and(|o| self.others.iter().any(|t| t.name == *o))
+            owner.is_some_and(|o| self.tokens_here().any(|t| t.name == *o))
         };
         let alive = || fight.combatants.iter().filter(|c| c.side == Side::Party && !c.dead);
-        if let Some(leader) = alive().find(|c| !walks_alone(c)).or_else(|| alive().next()) {
+        if let Some(leader) = alive().find(|c| !walks_alone(c)).or_else(|| alive().next()).filter(|_| host_there) {
             self.player = Player::in_cell(leader.x.max(0) as usize, leader.y.max(0) as usize);
         }
         let survivors = (0..self.party.len()).filter(|i| self.takes_part(*i)).count().max(1) as u32;
@@ -540,6 +573,10 @@ impl World {
     /// Carries out what the acting hero's player asked for. Nothing happens, and no events
     /// come back, when it is not a hero's turn or the rules do not allow it.
     pub fn fight_act(&mut self, intent: &FightIntent) -> Vec<Event> {
+        self.in_fight_place(|world| world.fight_act_here(intent))
+    }
+
+    fn fight_act_here(&mut self, intent: &FightIntent) -> Vec<Event> {
         let Some(mut fight) = self.fight.clone() else { return Vec::new() };
         if fight.actor().side != Side::Party {
             return Vec::new();
@@ -580,6 +617,10 @@ impl World {
 
     /// A monster's whole turn, when it is one's turn.
     pub fn fight_monster_turn(&mut self) -> Vec<Event> {
+        self.in_fight_place(|world| world.fight_monster_turn_here())
+    }
+
+    fn fight_monster_turn_here(&mut self) -> Vec<Event> {
         let Some(mut fight) = self.fight.clone() else { return Vec::new() };
         if fight.actor().side != Side::Enemy {
             return Vec::new();
@@ -921,6 +962,57 @@ mod tests {
         assert_eq!(w.combatant_for(&creature).max_hp, 77);
         w.table.book_only = true;
         assert_eq!(w.combatant_for(&creature).max_hp, 11, "the plain opponent");
+    }
+
+
+    #[test]
+    fn a_party_that_split_up_fights_and_rolls_where_each_hero_is() {
+        let mut w = world();
+        w.party.clear();
+        let skills = vec!["acrobatics".to_string(), "athletics".to_string()];
+        for name in ["Ann's", "Bob's"] {
+            w.party.push(Character::create(name, "", "human", "fighter", [15, 12, 14, 8, 10, 13], &skills, &[]).unwrap());
+        }
+        w.owners = vec!["Ann".into(), "Bob".into()];
+        w.present = vec!["Ann".into(), "Bob".into()];
+        // Bob walked on to the east road; Ann, the host, stayed in the camp.
+        let draft: crate::LocationDraft = serde_json::from_str(&fake::location("east_road", "The East Road", "camp")).unwrap();
+        w.add_location(&draft, "east_road", Some("camp")).unwrap();
+        w.places.insert("Bob".into(), "east_road".into());
+        assert_eq!((w.hero_place(0), w.hero_place(1)), ("camp", "east_road"));
+        assert!(w.takes_part(0) && !w.takes_part(1), "seen from the camp only Ann's hero is here");
+
+        // The wolf of the east road notices Bob: the fight is there, and only Bob's hero is in it.
+        let home = w.enter("east_road", Player::in_cell(19, 8));
+        assert!(w.takes_part(1) && !w.takes_part(0));
+        assert!(w.start_fight(Rng::seeded(5)));
+        w.leave(home);
+        assert_eq!((w.current.as_str(), w.fight_place.as_str()), ("camp", "east_road"));
+        assert!(!w.fight_here(), "the host is not in the fight");
+        let fight = w.fight.as_ref().unwrap();
+        assert!(fight.index_of("hero_1").is_some() && fight.index_of("hero_0").is_none());
+
+        // The fight goes on from the host's machine without the host being there.
+        let before = w.player;
+        let fight = w.fight.as_mut().unwrap();
+        for c in fight.combatants.iter_mut().filter(|c| c.side == Side::Enemy) {
+            c.hp = 0;
+            c.dead = true;
+        }
+        let summary = w.end_fight().expect("the fight ends");
+        assert!(summary.won);
+        assert_eq!((w.player, w.current.as_str(), w.fight_place.as_str()), (before, "camp", ""));
+        assert_eq!((w.party[0].xp, w.party[1].xp > 0), (0, true), "only the one who fought learns from it");
+        assert!(w.locations["east_road"].creatures.iter().all(|c| c.id != "wolf"), "the dead wolf is gone from its own place");
+    }
+
+    #[test]
+    fn a_place_that_does_not_exist_is_not_entered() {
+        let mut w = world();
+        let home = w.enter("nowhere", Player::in_cell(1, 1));
+        assert_eq!(w.current, home.0);
+        w.places.insert("Bob".into(), "nowhere".into());
+        assert_eq!(w.place_of("Bob"), w.current, "a guest whose place is gone is with the host");
     }
 
 }

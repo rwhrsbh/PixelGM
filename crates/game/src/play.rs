@@ -411,7 +411,7 @@ fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut
     }
     for (n, creature) in here.creatures.iter().enumerate() {
         // In a fight a creature is where the encounter says it is, and the dead are gone.
-        let fighter = world.fight.as_ref().and_then(|f| f.combatants.iter().find(|c| c.id == creature.id));
+        let fighter = world.fight.as_ref().filter(|_| world.fight_here()).and_then(|f| f.combatants.iter().find(|c| c.id == creature.id));
         if fighter.is_some_and(|c| c.dead) {
             continue;
         }
@@ -422,7 +422,7 @@ fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut
             commands.spawn((InLocation, Idler { phase: n as f32 * 0.37, rest_y: at.y }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::from_translation(at.extend(depth(y)))));
         }
     }
-    match &world.fight {
+    match world.fight.as_ref().filter(|_| world.fight_here()) {
         // In a fight every hero stands in a cell of its own; the fallen are darkened.
         Some(fight) => {
             for c in fight.combatants.iter().filter(|c| c.side == Side::Party && !c.dead) {
@@ -435,7 +435,7 @@ fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut
             }
         }
         None => {
-            for other in &world.others {
+            for other in world.tokens_here() {
                 if let Some(image) = picture(&world.hero_sprite(world.owners.iter().position(|o| *o == other.name))) {
                     commands.spawn((InLocation, Fellow(other.name.clone()), Sprite { color: Color::srgb(0.8, 0.85, 1.0), ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::default()));
                 }
@@ -465,13 +465,14 @@ fn place_hero(time: Res<Time>, game: Res<Game>, pose: Res<HeroPose>, mut hero: Q
 /// Other players' tokens follow where their players last said they were. When somebody
 /// joins or leaves, the picture is drawn again so that there is a token for each.
 fn place_fellows(game: Res<Game>, mut redraw: ResMut<Redraw>, mut fellows: Query<(&Fellow, &mut Transform)>, mut was_fighting: Local<bool>) {
-    let others = &game.world.others;
+    let others: Vec<&world::Token> = game.world.tokens_here().collect();
     // A fight beginning or ending changes who is drawn where.
-    let fighting = game.world.fight.is_some();
+    let fighting = game.world.fight_here();
     if std::mem::replace(&mut *was_fighting, fighting) != fighting {
         redraw.0 = true;
     }
-    if game.world.fight.is_none() && fellows.iter().count() != others.len() {
+    // So does somebody walking in or out of this place.
+    if !fighting && fellows.iter().count() != others.len() {
         redraw.0 = true;
     }
     for (fellow, mut transform) in &mut fellows {
@@ -552,7 +553,7 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
     }
     // Something hostile close by does not wait to be spoken to. With guests at the table
     // any of their tokens can be the one that is noticed.
-    let noticed = game.world.hostile_near(NOTICE_CELLS) || game.world.others.iter().any(|t| hostile_near_token(&game.world, t.x, t.y));
+    let noticed = game.world.fight.is_none() && (game.world.hostile_near(NOTICE_CELLS) || game.world.tokens_here().any(|t| hostile_near_token(&game.world, t.x, t.y)));
     if !session.is_client() && noticed && game.world.start_fight(Rng::from_clock()) {
         *phase = Phase::Fighting;
         return;
@@ -635,6 +636,10 @@ fn hostile_near_token(world: &World, x: f32, y: f32) -> bool {
 /// Puts a telling in front of this player: at once when they are free to read, otherwise
 /// after what they are reading now.
 pub fn show(turn: Turn, phase: &mut Phase, table: &mut Table) {
+    // What happens in a place the host is not in is not for the host's screen.
+    if table.elsewhere {
+        return;
+    }
     if matches!(*phase, Phase::Walking | Phase::Asking { .. } | Phase::Looking { .. } | Phase::Rolling) {
         *phase = Phase::Reading { turn };
     } else {
@@ -645,9 +650,9 @@ pub fn show(turn: Turn, phase: &mut Phase, table: &mut Table) {
 /// What the screen should be doing once a sheet is closed: a fight that broke out, a check
 /// that is waiting, or simply walking on.
 fn settled(world: &World) -> Phase {
-    if world.fight.is_some() {
+    if world.fight_here() {
         Phase::Fighting
-    } else if world.pending.is_some() {
+    } else if world.pending_here() {
         Phase::Rolling
     } else {
         Phase::Walking
@@ -724,9 +729,15 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     redraw.0 = true;
     background.quiet = 0.0;
     autosave(store, game);
-    // The whole table reads what the master tells, and may take up the choices it offers.
-    table.options = turn.options.clone();
-    session.broadcast(&Down::Told(turn.clone()));
+    // Everyone in the place reads what the master tells, and may take up the choices it
+    // offers. A party that has split up is told scene by scene.
+    let place = game.world.current.clone();
+    for player in session.players() {
+        if game.world.place_of(&player) == place {
+            session.send_to(&player, &Down::Told(turn.clone()));
+        }
+    }
+    table.options.insert(place, turn.options.clone());
     Phase::Reading { turn }
 }
 
@@ -814,17 +825,40 @@ fn receive(
                 if waited_for && ahead && draft.is_err() {
                     // Drawn ahead with the best models only, and they refused. Now that the
                     // party is at the door the request is made in earnest.
-                    master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id, from, ahead: false });
+                    master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id: id.clone(), from, ahead: false });
                 } else if waited_for {
                     *phase = settle(draft, &id, &from, &mut game, &store, &mut redraw, &mut arrival);
                 } else if game.world.stubs.contains_key(&id) {
+                    let wanted = table.travellers.iter().any(|(_, to)| *to == id);
                     match draft.and_then(|d| game.world.add_location(&d, &id, Some(&from)).map_err(Trouble::Unreadable)) {
                         Ok(_) => autosave(&store, &game),
+                        // Drawn ahead with the best models only, and a guest is at the door:
+                        // now it is asked for in earnest.
+                        Err(_) if wanted && ahead => {
+                            let mut seen = game.world.clone();
+                            if seen.locations.contains_key(&from) {
+                                seen.current = from.clone();
+                            }
+                            master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(seen), id: id.clone(), from, ahead: false });
+                        }
                         Err(trouble) => {
-                            info!("place '{id}' was not drawn ahead: {trouble:?}");
+                            info!("place '{id}' was not drawn: {trouble:?}");
                             background.ahead_rest = BACKGROUND_REST;
+                            // Guests who were waiting for it stay where they are.
+                            let why = trouble_text(&trouble, gm.dispatcher.now(), settings.lang);
+                            for (player, _) in table.travellers.iter().filter(|(_, to)| *to == id) {
+                                session.send_to(player, &Down::Trouble(why.clone()));
+                            }
+                            table.travellers.retain(|(_, to)| *to != id);
                         }
                     }
+                }
+                // Guests who were waiting for the place walk in.
+                if game.world.locations.contains_key(&id) {
+                    for (player, _) in table.travellers.iter().filter(|(_, to)| *to == id) {
+                        game.world.places.insert(player.clone(), id.clone());
+                    }
+                    table.travellers.retain(|(_, to)| *to != id);
                 }
             }
             Answer::Turn { said, near, draft } => {
@@ -834,16 +868,22 @@ fn receive(
                     continue;
                 }
                 table.busy = None;
+                // What a guest did happens where that guest is.
+                let scene = table.busy_for.take().filter(|_| for_a_guest && !mine);
                 let mut desk = Desk { game: &mut game, table: &mut table, phase: &mut phase, redraw: &mut redraw, background: &mut background, session: &session, settings: &settings, store: &store, gm: &gm, master: &master };
                 match draft {
                     // A human master reads the model's answer before the players do.
                     Ok(draft) if seated(&desk.game.world).is_some() => {
-                        desk.table.drafts.push_back(Held { said, near, draft: *draft });
+                        desk.table.drafts.push_back(Held { said, near, draft: *draft, scene });
                         if desk.table.drafts.len() == 1 {
                             offer(&mut desk);
                         }
                     }
-                    Ok(draft) => finish(&mut desk, &said, &draft),
+                    Ok(draft) => {
+                        let home = scene.as_deref().map(|player| enter_scene(desk.game, desk.table, player));
+                        finish(&mut desk, &said, &draft);
+                        leave_scene(desk.game, desk.table, home);
+                    }
                     Err(trouble) if mine => *desk.phase = Phase::Refused { said, near, trouble },
                     Err(trouble) => {
                         let why = trouble_text(&trouble, gm.dispatcher.now(), settings.lang);
@@ -1725,9 +1765,12 @@ fn guests(
 ) {
     let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
     for (player, intent) in std::mem::take(&mut table.inbox) {
+        // What a guest does to the world happens where that guest stands.
+        let home = matches!(intent, Intent::Do { .. } | Intent::Choose(_) | Intent::Roll | Intent::Say { .. } | Intent::Gm(_)).then(|| enter_scene(&mut game, &mut table, &player));
         let shown = match intent {
             Intent::Do { thing, index } => game.world.perform(&thing, index).map(outcome_of),
-            Intent::Choose(index) => table.options.get(index).cloned().map(|option| outcome_of(game.world.choose(&option))),
+            Intent::Choose(index) => table.options.get(&game.world.current).and_then(|options| options.get(index)).cloned().map(|option| outcome_of(game.world.choose(&option))),
+            Intent::Roll if !game.world.pending_here() => None,
             Intent::Roll => game.world.roll_check(&mut Rng::from_clock()).map(|done| {
                 let verdict = if done.success { T::CheckSuccess } else { T::CheckFailure };
                 outcome_of(format!("{}: d20 {}{:+} = {} / {} — {}\n{}", done.hero, done.roll.die, done.roll.bonus, done.roll.total(), done.difficulty, verdict.text(settings.lang), done.narration))
@@ -1744,13 +1787,25 @@ fn guests(
                     master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None });
                     session.broadcast(&Down::Thinking(said.clone()));
                     table.busy = Some(said);
+                    table.busy_for = Some(player.clone());
                 }
                 None
             }
             Intent::Exit { to } => {
-                // The party travels together: one of them at a way out takes everyone.
-                if *phase == Phase::Walking && game.world.here().exits.iter().any(|e| e.to == to) {
-                    *phase = Phase::Leaving { to, t: 0.0 };
+                // A guest walks on alone: the party may split up. A place that is only a
+                // name is drawn first, and the guest waits at the door.
+                let from = game.world.place_of(&player).to_string();
+                let leads_there = game.world.locations.get(&from).is_some_and(|place| place.exits.iter().any(|e| e.to == to));
+                if leads_there && game.world.locations.contains_key(&to) {
+                    game.world.places.insert(player.clone(), to);
+                } else if leads_there && !table.travellers.iter().any(|(who, _)| *who == player) {
+                    if !master.is_drawing(&to) {
+                        let mut seen = game.world.clone();
+                        seen.current = from.clone();
+                        master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(seen), id: to.clone(), from, ahead: false });
+                    }
+                    session.send_to(&player, &Down::Drawing(to.clone()));
+                    table.travellers.push((player.clone(), to));
                 }
                 None
             }
@@ -1760,8 +1815,11 @@ fn guests(
                     let events = game.world.fight_act(&act);
                     if !events.is_empty() {
                         session.broadcast(&Down::FightEvents(events.clone()));
-                        view.extend(events);
-                        redraw.0 = true;
+                        // The host watches only a fight it is in.
+                        if game.world.fight_here() {
+                            view.extend(events);
+                            redraw.0 = true;
+                        }
                     }
                 }
                 None
@@ -1798,6 +1856,20 @@ fn guests(
             told(turn.clone(), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
             show(turn, &mut phase, &mut table);
         }
+        leave_scene(&mut game, &mut table, home);
+    }
+    // A hostile creature that notices a guest in a place the host is not in starts a fight
+    // there. One fight at a time: the others wait their turn.
+    if session.is_host() && game.world.fight.is_none() {
+        let elsewhere: Vec<world::Token> = game.world.others.iter().filter(|t| !t.place.is_empty() && t.place != game.world.current).cloned().collect();
+        for token in elsewhere {
+            let home = game.world.enter(&token.place, world::Player { x: token.x, y: token.y });
+            let started = game.world.hostile_near(NOTICE_CELLS) && game.world.start_fight(Rng::from_clock());
+            game.world.leave(home);
+            if started {
+                break;
+            }
+        }
     }
     // A master who left the table leaves no draft waiting: the model's word stands.
     if !session.is_client() && !table.drafts.is_empty() && seated(&game.world).is_none() {
@@ -1819,6 +1891,22 @@ struct Desk<'a> {
     store: &'a Store,
     gm: &'a Gm,
     master: &'a Master,
+}
+
+/// Looks at the world from where a guest stands, for as long as what that guest did is
+/// being carried out. While the place is not the host's own, nothing is shown to the host.
+fn enter_scene(game: &mut Game, table: &mut Table, player: &str) -> (String, world::Player) {
+    let place = game.world.place_of(player).to_string();
+    let at = game.world.others.iter().find(|t| t.name == player).map_or(game.world.player, |t| world::Player { x: t.x, y: t.y });
+    table.elsewhere = place != game.world.current;
+    game.world.enter(&place, at)
+}
+
+fn leave_scene(game: &mut Game, table: &mut Table, home: Option<(String, world::Player)>) {
+    if let Some(home) = home {
+        game.world.leave(home);
+        table.elsewhere = false;
+    }
 }
 
 /// The player in the master's seat, if they are at the table now.
@@ -1850,6 +1938,11 @@ fn carry_out(desk: &mut Desk, said: &str, draft: &TurnDraft) -> Option<Turn> {
 /// Carries a turn out and puts its telling in front of the host's own player: at once in
 /// place of the sheet they were waiting on, otherwise when they are free to read.
 fn finish(desk: &mut Desk, said: &str, draft: &TurnDraft) {
+    // In a place the host is not in, the host's own screen stays as it is.
+    if desk.table.elsewhere {
+        carry_out(desk, said, draft);
+        return;
+    }
     let waiting = matches!(*desk.phase, Phase::Asking { .. } | Phase::Judging);
     match carry_out(desk, said, draft) {
         Some(turn) if waiting => *desk.phase = Phase::Reading { turn },
@@ -1913,7 +2006,9 @@ fn conclude(desk: &mut Desk, master: &str, accept: bool, narration: &str) {
         if !narration.trim().is_empty() {
             draft.narration = narration.trim().to_string();
         }
+        let home = held.scene.as_deref().map(|player| enter_scene(desk.game, desk.table, player));
         finish(desk, &held.said, &draft);
+        leave_scene(desk.game, desk.table, home);
     } else {
         desk.session.broadcast(&Down::Trouble(T::MasterDeclined.text(desk.settings.lang).to_string()));
         if matches!(*desk.phase, Phase::Asking { .. } | Phase::Judging) {
@@ -1966,9 +2061,14 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             let (said, near) = match desk.table.drafts.pop_front() {
                 Some(held) => {
                     clear_judging(desk, player);
+                    desk.table.busy_for = held.scene;
                     (held.said, held.near)
                 }
-                None => (String::new(), None),
+                None => {
+                    // A direction of the master's own happens where the master is.
+                    desk.table.busy_for = Some(player.to_string()).filter(|_| player != player_name(desk.settings));
+                    (String::new(), None)
+                }
             };
             if *desk.phase == Phase::Judging {
                 *desk.phase = Phase::Walking;
