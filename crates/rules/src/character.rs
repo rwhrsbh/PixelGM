@@ -114,6 +114,24 @@ pub enum DeathRoll {
     Dead,
 }
 
+/// What a character looks like. Each number picks one of the choices the game offers; what
+/// the character wears and carries is drawn from its gear, not from here.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct Look {
+    pub build: u8,
+    pub skin: u8,
+    pub hair: u8,
+    pub hair_color: u8,
+    pub beard: u8,
+    pub eyes: u8,
+    /// The colour of the clothes, and of their trim.
+    pub cloth: u8,
+    pub trim: u8,
+    /// Whether a helmet is worn when the armour has one.
+    pub helmet: bool,
+}
+
 /// Levels taken in a class beside the one the character began in.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct ClassLevels {
@@ -260,6 +278,8 @@ pub struct Character {
     /// The class the next levels go to; the first class when not set.
     #[serde(default)]
     pub advancing: Option<String>,
+    #[serde(default)]
+    pub look: Look,
 }
 
 impl Character {
@@ -306,6 +326,7 @@ impl Character {
             feat_due: false,
             extra: Vec::new(),
             advancing: None,
+            look: Look::default(),
         };
         character.max_hp = (class_data.hit_die as i32 + character.modifier(Ability::Con)).max(1);
         character.hp = character.max_hp;

@@ -151,6 +151,9 @@ pub struct Location {
     pub props: Vec<Prop>,
     pub creatures: Vec<Creature>,
     pub exits: Vec<Exit>,
+    /// The hour and the light of the place: day, dusk, night or dark. Empty is day.
+    #[serde(default)]
+    pub light: String,
 }
 
 impl Location {

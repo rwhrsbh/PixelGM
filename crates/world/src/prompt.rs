@@ -75,6 +75,7 @@ ACTIONS. Give every prop and creature two or three "actions": things the players
 /// The shape of a location in an answer, shown by example.
 const LOCATION_SHAPE: &str = r##"{
   "id": "snake_case", "name": "…", "description": "two or three sentences the players read on arrival",
+  "light": "day, dusk, night or dark (a cave, a cellar): the hour and the light of the place",
   "legend": {".": "grass", "#": "stone_wall", "+": "door"},
   "map": ["30 characters", "… 16 rows in all"],
   "spawn": [x, y],

@@ -207,9 +207,10 @@ pub fn ritual_words(world: &World, index: &str) -> Option<String> {
 fn cell_under_cursor(window: &Window) -> Option<Cell> {
     let physical = window.physical_cursor_position()?;
     let (scale, origin, _) = fit(window.physical_size());
-    let canvas = (physical - origin.as_vec2()) / scale as f32;
-    let cell = ((canvas.x / TILE as f32).floor() as i32, (canvas.y / TILE as f32).floor() as i32);
-    ((0..MAP_W as i32).contains(&cell.0) && (0..MAP_H as i32).contains(&cell.1) && canvas.y < CANVAS.y as f32 - HUD_HEIGHT).then_some(cell)
+    let canvas = (physical - origin.as_vec2()) / scale;
+    let cell_px = TILE as f32 * crate::scene::PX as f32;
+    let cell = ((canvas.x / cell_px).floor() as i32, (canvas.y / cell_px).floor() as i32);
+    ((0..MAP_W as i32).contains(&cell.0) && (0..MAP_H as i32).contains(&cell.1) && canvas.y < CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL).then_some(cell)
 }
 
 impl FightView {
@@ -247,7 +248,7 @@ fn stage(event: &Event, fight: &Encounter, fx: &mut Fx, lang: Lang) {
     let wound = |fx: &mut Fx, id: &str, damage: i32| {
         if let Some(point) = at(id) {
             fx.flash(id, Color::srgb(1.0, 0.3, 0.25));
-            fx.float(point + Vec2::Y * 9.0, format!("-{damage}"), Color::srgb(1.0, 0.4, 0.35));
+            fx.float(point + Vec2::Y * 22.0, format!("-{damage}"), Color::srgb(1.0, 0.4, 0.35));
             fx.burst(point, Color::srgb(0.7, 0.1, 0.1), 7);
         }
         if hero(id) {
@@ -268,7 +269,7 @@ fn stage(event: &Event, fight: &Encounter, fx: &mut Fx, lang: Lang) {
                 fx.cues.push(if *critical { Sfx::Crit } else if hero(target) { Sfx::Hurt } else { Sfx::Hit });
             } else {
                 if let Some(point) = at(target) {
-                    fx.float(point + Vec2::Y * 9.0, T::FightMiss.text(lang), Color::srgb(0.85, 0.85, 0.8));
+                    fx.float(point + Vec2::Y * 22.0, T::FightMiss.text(lang), Color::srgb(0.85, 0.85, 0.8));
                 }
                 fx.cues.push(Sfx::Miss);
             }
@@ -289,7 +290,7 @@ fn stage(event: &Event, fight: &Encounter, fx: &mut Fx, lang: Lang) {
         Event::Healed { target, amount, .. } => {
             if let Some(point) = at(target) {
                 fx.flash(target, Color::srgb(0.5, 1.0, 0.55));
-                fx.float(point + Vec2::Y * 9.0, format!("+{amount}"), Color::srgb(0.5, 1.0, 0.55));
+                fx.float(point + Vec2::Y * 22.0, format!("+{amount}"), Color::srgb(0.5, 1.0, 0.55));
                 fx.burst(point, Color::srgb(0.45, 0.9, 0.5), 8);
             }
             fx.cues.push(Sfx::Heal);
@@ -486,7 +487,7 @@ fn markers(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res
     let tile = TILE as f32;
     let centre = |cell: Cell| on_screen((cell.0 as f32 + 0.5) * tile, (cell.1 as f32 + 0.5) * tile);
     let mut square = |cell: Cell, tint: Color, size: f32, z: f32| {
-        commands.spawn((Marker, Sprite { color: tint, custom_size: Some(Vec2::splat(size)), ..default() }, Transform::from_translation(centre(cell).extend(z))));
+        commands.spawn((Marker, Sprite { color: tint, custom_size: Some(Vec2::splat(size * crate::scene::PX as f32)), ..default() }, Transform::from_translation(centre(cell).extend(z))));
     };
     let heros_turn = fight.actor().side == Side::Party && view.queue.is_empty() && view.over.is_none();
     if heros_turn {
@@ -513,12 +514,13 @@ fn markers(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res
         _ => {}
     }
     for c in fight.combatants.iter().filter(|c| !c.dead) {
-        let at = on_screen(c.x as f32 * tile + 2.0, c.y as f32 * tile - 1.0);
+        // Over the head: a hero stands half a cell taller than the cell.
+        let at = on_screen(c.x as f32 * tile + 2.0, c.y as f32 * tile - if c.side == Side::Party { 9.0 } else { 1.0 });
         let share = (c.hp.max(0) as f32 / c.max_hp.max(1) as f32).clamp(0.0, 1.0);
         let tint = if c.side == Side::Party { color(MOSS) } else { color(WAX) };
-        commands.spawn((Marker, Sprite { color: color(INK), custom_size: Some(Vec2::new(12.0, 2.0)), ..default() }, Anchor::TOP_LEFT, Transform::from_translation(at.extend(depth(c.y as f32 * tile) + 0.3))));
+        commands.spawn((Marker, Sprite { color: color(INK), custom_size: Some(Vec2::new(24.0, 4.0)), ..default() }, Anchor::TOP_LEFT, Transform::from_translation(at.extend(depth(c.y as f32 * tile) + 0.3))));
         if share > 0.0 {
-            commands.spawn((Marker, Sprite { color: tint, custom_size: Some(Vec2::new((12.0 * share).ceil(), 2.0)), ..default() }, Anchor::TOP_LEFT, Transform::from_translation(at.extend(depth(c.y as f32 * tile) + 0.31))));
+            commands.spawn((Marker, Sprite { color: tint, custom_size: Some(Vec2::new((24.0 * share).ceil(), 4.0)), ..default() }, Anchor::TOP_LEFT, Transform::from_translation(at.extend(depth(c.y as f32 * tile) + 0.31))));
         }
     }
 }

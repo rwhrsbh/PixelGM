@@ -14,6 +14,8 @@ mod nav;
 mod newgame;
 mod play;
 mod saves;
+mod scene;
+mod doll;
 mod screen;
 mod secret;
 mod settings;
@@ -29,7 +31,8 @@ use bevy::window::WindowResolution;
 
 fn main() -> AppExit {
     let args = shot::Args::parse(std::env::args().skip(1));
-    let (width, height) = args.size.unwrap_or((1440, 810));
+    // A hidden test window is one canvas; a real one is sized to the screen once it opens.
+    let (width, height) = args.size.unwrap_or(if args.hidden { (960, 540) } else { (1920, 1080) });
     let store = store::Store::at(store::home());
     let settings = store.load_settings();
     let mut app = App::new();

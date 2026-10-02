@@ -55,12 +55,16 @@ pub struct Fx {
     typed: (String, f32),
     throw: Option<Throw>,
     seed: u32,
+    /// Where each actor was last shown, so that a move is walked rather than jumped.
+    shown: std::collections::HashMap<String, Vec3>,
     /// Sounds asked for by code that cannot write a message itself.
     pub cues: Vec<crate::audio::Sfx>,
 }
 
 const LUNGE_SECONDS: f32 = 0.22;
-const LUNGE_PIXELS: f32 = 5.0;
+const LUNGE_PIXELS: f32 = 10.0;
+/// How fast a creature or hero walks from one cell to the next in a fight, in canvas pixels a second.
+const GLIDE_SPEED: f32 = 190.0;
 const FLASH_SECONDS: f32 = 0.16;
 const FLOAT_SECONDS: f32 = 0.9;
 const WINCE_SECONDS: f32 = 0.3;
@@ -132,12 +136,25 @@ fn actors(time: Res<Time>, mut fx: ResMut<Fx>, mut actors: Query<(&Actor, &mut T
     }
     fx.lunges.retain(|l| l.age < LUNGE_SECONDS);
     fx.flashes.retain(|f| f.age < FLASH_SECONDS);
+    let mut seen = Vec::new();
     for (actor, mut transform, mut sprite) in &mut actors {
-        let mut at = actor.home;
+        // From where it was shown towards where it now stands; a far jump is not walked.
+        let before = fx.shown.get(&actor.id).copied().unwrap_or(actor.home);
+        let way = actor.home.truncate() - before.truncate();
+        let walked = if way.length() > 160.0 || way.length() < 0.5 { actor.home.truncate() } else { before.truncate() + way.clamp_length_max(GLIDE_SPEED * dt) };
+        let walking = (walked - actor.home.truncate()).length() > 0.5;
+        fx.shown.insert(actor.id.clone(), walked.extend(actor.home.z));
+        seen.push(actor.id.clone());
+        let mut at = walked.round().extend(actor.home.z);
+        // A walker bounces with its steps.
+        if walking && (time.elapsed_secs() * 10.0) as i32 % 2 == 0 {
+            at.y += 2.0;
+        }
         if let Some(phase) = actor.bob
+            && !walking
             && (time.elapsed_secs() + phase) % 1.4 >= 0.7
         {
-            at.y += 1.0;
+            at.y += 2.0;
         }
         if let Some(lunge) = fx.lunges.iter().find(|l| l.who == actor.id) {
             let by = (lunge.by * there_and_back(lunge.age / LUNGE_SECONDS)).round();
@@ -152,6 +169,10 @@ fn actors(time: Res<Time>, mut fx: ResMut<Fx>, mut actors: Query<(&Actor, &mut T
         if sprite.color != tint {
             sprite.color = tint;
         }
+    }
+    // Those no longer drawn are forgotten, so that coming back is not a walk across the map.
+    if !seen.is_empty() {
+        fx.shown.retain(|id, _| seen.contains(id));
     }
 }
 
@@ -171,19 +192,19 @@ struct Speck {
 
 fn spawn(mut commands: Commands, mut fx: ResMut<Fx>, fonts: Res<Fonts>) {
     for (at, text, tint) in std::mem::take(&mut fx.floats) {
-        commands.spawn((DespawnOnExit(Screen::Play), Float { age: 0.0, from: at }, Text2d::new(text), fonts.body(), TextColor(tint), Transform::from_translation(at.extend(60.0))));
+        commands.spawn((DespawnOnExit(Screen::Play), Float { age: 0.0, from: at }, Text2d::new(text), fonts.body(), TextColor(tint), Transform::from_translation(at.extend(1.9)).with_scale(Vec3::splat(2.0))));
     }
     for (at, tint, count) in std::mem::take(&mut fx.bursts) {
         for _ in 0..count {
             let angle = fx.random() * std::f32::consts::TAU;
-            let speed = 14.0 + fx.random() * 30.0;
+            let speed = 28.0 + fx.random() * 60.0;
             let life = 0.25 + fx.random() * 0.35;
-            let size = if fx.random() < 0.3 { 2.0 } else { 1.0 };
+            let size = if fx.random() < 0.3 { 4.0 } else { 2.0 };
             commands.spawn((
                 DespawnOnExit(Screen::Play),
                 Speck { age: 0.0, life, velocity: Vec2::new(angle.cos(), angle.sin().abs() * 0.8 + 0.2) * speed, at },
                 Sprite { color: tint, custom_size: Some(Vec2::splat(size)), ..default() },
-                Transform::from_translation(at.extend(55.0)),
+                Transform::from_translation(at.extend(1.85)),
             ));
         }
     }
@@ -198,7 +219,7 @@ fn floats(mut commands: Commands, time: Res<Time>, mut floats: Query<(Entity, &m
             continue;
         }
         // Quick at first, then hanging: the number is read on the way up.
-        let rise = (1.0 - (1.0 - t) * (1.0 - t)) * 12.0;
+        let rise = (1.0 - (1.0 - t) * (1.0 - t)) * 24.0;
         transform.translation.x = float.from.x.round();
         transform.translation.y = (float.from.y + rise).round();
         let alpha = if t < 0.6 { 1.0 } else if t < 0.8 { 0.66 } else { 0.33 };
@@ -216,7 +237,7 @@ fn specks(mut commands: Commands, time: Res<Time>, mut specks: Query<(Entity, &m
             commands.entity(entity).despawn();
             continue;
         }
-        speck.velocity.y -= 70.0 * dt;
+        speck.velocity.y -= 140.0 * dt;
         let step = speck.velocity * dt;
         speck.at += step;
         transform.translation.x = speck.at.x.round();
@@ -227,7 +248,7 @@ fn specks(mut commands: Commands, time: Res<Time>, mut specks: Query<(Entity, &m
 fn shake(time: Res<Time>, mut fx: ResMut<Fx>, mut camera: Single<&mut Transform, With<MainCamera>>) {
     let offset = if fx.shake > 0.0 {
         fx.shake -= time.delta_secs();
-        Vec2::new((fx.random() * 3.0).floor() - 1.0, (fx.random() * 3.0).floor() - 1.0)
+        Vec2::new(((fx.random() * 3.0).floor() - 1.0) * 2.0, ((fx.random() * 3.0).floor() - 1.0) * 2.0)
     } else {
         Vec2::ZERO
     };

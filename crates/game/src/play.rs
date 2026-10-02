@@ -1,7 +1,7 @@
 //! Playing: the current location on screen, the party walking about it, the passage from one
 //! place to the next, and the conversation with the game master.
 
-use crate::art::{Art, ground_picture, sprite_picture};
+use crate::art::Art;
 use crate::audio::Sfx;
 use crate::coop::{Down, DraftView, GmAct, Held, Intent, Session, Table, player_name};
 use crate::fx::{Actor, Fx, PopIn, Typed};
@@ -91,8 +91,53 @@ struct Toast {
 #[derive(Resource, Default)]
 pub struct HeroPose {
     pub moving: bool,
-    pub facing_left: bool,
+    pub facing: crate::doll::Facing,
+    /// Seconds of walking, which pick the step of the walk.
+    pub clock: f32,
 }
+
+/// The pictures of the place being shown, kept while the place does not change.
+#[derive(Resource, Default)]
+struct SceneCache {
+    key: u64,
+    ground: Vec<Handle<Image>>,
+    standing: Vec<(Handle<Image>, (f32, f32))>,
+    hour: Option<crate::scene::Hour>,
+    lamps: Vec<crate::scene::Lamp>,
+    dark: Handle<Image>,
+    warm: Handle<Image>,
+    shadow: Handle<Image>,
+    vignette: Handle<Image>,
+}
+
+/// The frames of every hero drawn so far, by what shows on the hero.
+#[derive(Resource, Default)]
+struct Dolls(std::collections::HashMap<String, Vec<Handle<Image>>>);
+
+impl Dolls {
+    fn of(&mut self, hero: &rules::Character, images: &mut Assets<Image>) -> Vec<Handle<Image>> {
+        self.0.entry(crate::doll::key(hero)).or_insert_with(|| crate::doll::frames(hero).into_iter().map(|frame| images.add(frame.into_image())).collect()).clone()
+    }
+}
+
+/// A hero's frames, on the sprite that shows the hero.
+#[derive(Component)]
+struct Frames(Vec<Handle<Image>>);
+
+/// How another player's hero is walking: which way, which step, and where it was.
+#[derive(Component, Default)]
+struct Gait {
+    facing: crate::doll::Facing,
+    clock: f32,
+    last: Vec2,
+    still: f32,
+}
+
+#[derive(Component)]
+struct GroundLayer;
+
+#[derive(Component)]
+struct DarkLayer;
 
 /// Work the master does without being asked: drawing places ahead, events, chapters.
 #[derive(Resource, Default)]
@@ -274,7 +319,8 @@ const JOURNAL_LINES: usize = 80;
 
 /// A point of the location, in pixels from its top-left corner, as a point of the screen.
 pub fn on_screen(x: f32, y: f32) -> Vec2 {
-    Vec2::new(x - CANVAS.x as f32 / 2.0, CANVAS.y as f32 / 2.0 - y)
+    let px = crate::scene::PX as f32;
+    Vec2::new(x * px - CANVAS.x as f32 / 2.0, CANVAS.y as f32 / 2.0 - y * px)
 }
 
 /// Things lower on the screen are drawn over things higher up.
@@ -395,7 +441,42 @@ fn my_offer<'a>(world: &'a World, me: &str, solo: bool) -> Option<&'a world::Fea
     world.offers.iter().find(|offer| solo || world.owners.get(offer.hero).is_some_and(|o| o == me || o.is_empty()))
 }
 
-fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut images: ResMut<Assets<Image>>, old: Query<Entity, With<InLocation>>, session: Res<Session>, settings: Res<Settings>) {
+/// A key that changes when anything painted into the ground of a place changes.
+fn scene_key(world: &World) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let here = world.here();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    world.current.hash(&mut hasher);
+    here.map.hash(&mut hasher);
+    here.legend.hash(&mut hasher);
+    here.light.hash(&mut hasher);
+    for prop in &here.props {
+        (&prop.id, prop.x, prop.y, &prop.sprite, &prop.name).hash(&mut hasher);
+    }
+    world.palette.colors.hash(&mut hasher);
+    for (id, tile) in &world.tiles {
+        (id, &tile.sprite.rows).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// A soft shadow under anything that walks, as a child of its sprite.
+fn shadow_under(parent: &mut ChildSpawnerCommands, image: &Handle<Image>) {
+    parent.spawn((Sprite::from_image(image.clone()), Transform::from_xyz(0.0, 1.0, -0.0005)));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw(
+    mut commands: Commands,
+    mut redraw: ResMut<Redraw>,
+    game: Res<Game>,
+    mut images: ResMut<Assets<Image>>,
+    old: Query<Entity, With<InLocation>>,
+    session: Res<Session>,
+    settings: Res<Settings>,
+    mut cache: ResMut<SceneCache>,
+    mut dolls: ResMut<Dolls>,
+) {
     if !std::mem::take(&mut redraw.0) {
         return;
     }
@@ -406,10 +487,39 @@ fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut
     }
     let world = &game.world;
     let here = world.here();
-    let ground = images.add(ground_picture(here, world).into_image());
-    commands.spawn((InLocation, Sprite::from_image(ground), Anchor::TOP_LEFT, Transform::from_translation(on_screen(0.0, 0.0).extend(0.0))));
+    // The ground and what stands on it are painted once for a place and kept.
+    let key = scene_key(world);
+    if cache.key != key || cache.ground.is_empty() {
+        let scene = crate::scene::paint(here, world);
+        cache.ground = scene.ground.into_iter().map(|picture| images.add(picture.into_image())).collect();
+        cache.standing = scene.standing.into_iter().map(|s| (images.add(s.picture.into_image()), s.foot)).collect();
+        cache.hour = Some(scene.hour);
+        cache.lamps = scene.lamps;
+        cache.key = key;
+        if cache.shadow == Handle::default() {
+            cache.shadow = images.add(crate::scene::foot_shadow().into_image());
+            cache.warm = images.add(crate::scene::warm_pool(120).into_image());
+            cache.vignette = images.add(crate::scene::vignette(CANVAS.x as i32, (CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL) as i32).into_image());
+        }
+        cache.dark = images.add(crate::scene::darkness(scene.hour, &[], 0).into_image());
+    }
+    let corner = on_screen(0.0, 0.0);
+    commands.spawn((InLocation, GroundLayer, Sprite::from_image(cache.ground[0].clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(0.0))));
+    for (image, (x, y)) in &cache.standing {
+        commands.spawn((InLocation, Sprite::from_image(image.clone()), Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(*x, *y).extend(depth(*y)))));
+    }
+    let hour = cache.hour.unwrap_or(crate::scene::Hour { dark: 0.0, tint: [0, 0, 0] });
+    if hour.dark > 0.0 {
+        // The dark over the place, and the warmth around its lamps.
+        let map = Vec2::new(CANVAS.x as f32, CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL);
+        commands.spawn((InLocation, DarkLayer, Sprite { custom_size: Some(map), ..Sprite::from_image(cache.dark.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.6))));
+        for lamp in &cache.lamps {
+            commands.spawn((InLocation, Sprite::from_image(cache.warm.clone()), Transform::from_translation(on_screen(lamp.x, lamp.y).extend(1.62))));
+        }
+    }
+    commands.spawn((InLocation, Sprite::from_image(cache.vignette.clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.7))));
 
-    let mut picture = |id: &str| world.sprites.get(id).or_else(|| world.sprites.get(MARKER_SPRITE)).map(|s| images.add(sprite_picture(s, &world.palette).into_image()));
+    let mut picture = |id: &str| world.sprites.get(id).or_else(|| world.sprites.get(MARKER_SPRITE)).map(|s| images.add(crate::scene::sprite(s, &world.palette).into_image()));
     // Everything stands on the bottom edge of its cell, centred.
     let foot = |x: usize, y: usize| ((x as f32 + 0.5) * TILE as f32, (y as f32 + 1.0) * TILE as f32);
     for prop in &here.props {
@@ -427,55 +537,73 @@ fn draw(mut commands: Commands, mut redraw: ResMut<Redraw>, game: Res<Game>, mut
         let (cx, cy) = fighter.map_or((creature.x, creature.y), |c| (c.x.max(0) as usize, c.y.max(0) as usize));
         let (x, y) = foot(cx, cy);
         if let Some(image) = picture(&creature.sprite) {
-            let at = on_screen(x, y);
-            let home = at.extend(depth(y));
-            commands.spawn((InLocation, Actor { id: creature.id.clone(), home, tint: Color::WHITE, bob: Some(n as f32 * 0.37) }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::from_translation(home)));
+            let home = on_screen(x, y).extend(depth(y));
+            commands
+                .spawn((InLocation, Actor { id: creature.id.clone(), home, tint: Color::WHITE, bob: Some(n as f32 * 0.37) }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::from_translation(home)))
+                .with_children(|me| shadow_under(me, &cache.shadow));
         }
     }
+    let frames_of = |index: Option<usize>, dolls: &mut Dolls, images: &mut Assets<Image>| index.and_then(|i| world.party.get(i)).map(|hero| dolls.of(hero, images));
     match world.fight.as_ref().filter(|_| world.fight_here()) {
         // In a fight every hero stands in a cell of its own; the fallen are darkened.
         Some(fight) => {
             for c in fight.combatants.iter().filter(|c| c.side == Side::Party && !c.dead) {
                 let (x, y) = foot(c.x.max(0) as usize, c.y.max(0) as usize);
                 let hero = c.id.strip_prefix("hero_").and_then(|n| n.parse::<usize>().ok());
-                if let Some(image) = picture(&world.hero_sprite(hero)) {
-                    let tint = if c.hp > 0 { Color::WHITE } else { Color::srgb(0.35, 0.3, 0.3) };
-                    let home = on_screen(x, y).extend(depth(y));
-                    commands.spawn((InLocation, Actor { id: c.id.clone(), home, tint, bob: None }, Sprite { color: tint, flip_y: c.hp <= 0, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(home)));
-                }
+                let Some(frames) = frames_of(hero, &mut dolls, &mut images) else { continue };
+                let tint = if c.hp > 0 { Color::WHITE } else { Color::srgb(0.35, 0.3, 0.3) };
+                let home = on_screen(x, y).extend(depth(y));
+                // Facing the nearest enemy.
+                let enemy = fight.combatants.iter().filter(|e| e.side != Side::Party && !e.dead).min_by_key(|e| rules::combat::distance(e.at(), c.at()));
+                let facing = enemy.and_then(|e| crate::doll::Facing::of((e.x - c.x) as f32, (e.y - c.y) as f32)).unwrap_or_default();
+                let image = frames[crate::doll::frame_index(facing, 0)].clone();
+                commands
+                    .spawn((InLocation, Actor { id: c.id.clone(), home, tint, bob: None }, Sprite { color: tint, flip_y: c.hp <= 0, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(home)))
+                    .with_children(|me| shadow_under(me, &cache.shadow));
             }
         }
         None => {
             for other in world.tokens_here() {
-                if let Some(image) = picture(&world.hero_sprite(world.owners.iter().position(|o| *o == other.name))) {
-                    commands.spawn((InLocation, Fellow(other.name.clone()), Sprite { color: Color::srgb(0.8, 0.85, 1.0), ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::default()));
-                }
+                let owner = world.owners.iter().position(|o| *o == other.name);
+                let frames = frames_of(owner, &mut dolls, &mut images).unwrap_or_default();
+                let Some(first) = frames.first().cloned() else { continue };
+                commands
+                    .spawn((InLocation, Fellow(other.name.clone()), Frames(frames), Gait { last: Vec2::new(other.x, other.y), ..default() }, Sprite::from_image(first), Anchor::BOTTOM_CENTER, Transform::default()))
+                    .with_children(|me| shadow_under(me, &cache.shadow));
             }
-            if let Some(image) = picture(&world.hero_sprite(my_hero(world, &me, solo))) {
-                commands.spawn((InLocation, Hero, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::default()));
+            if let Some(frames) = frames_of(my_hero(world, &me, solo), &mut dolls, &mut images) {
+                let first = frames[0].clone();
+                commands.spawn((InLocation, Hero, Frames(frames), Sprite::from_image(first), Anchor::BOTTOM_CENTER, Transform::default())).with_children(|me| shadow_under(me, &cache.shadow));
             }
         }
     }
 }
 
-fn place_hero(time: Res<Time>, game: Res<Game>, pose: Res<HeroPose>, mut hero: Query<(&mut Transform, &mut Sprite), With<Hero>>) {
+/// Eight steps a second.
+const STEPS_PER_SECOND: f32 = 8.0;
+
+fn place_hero(game: Res<Game>, pose: Res<HeroPose>, mut hero: Query<(&mut Transform, &mut Sprite, &Frames), With<Hero>>) {
     let player = game.world.player;
     // The sprite's feet sit at the bottom of the patch of ground the party takes up.
     let feet_y = player.y + FEET.1;
-    // A walking figure rises a pixel on every other beat.
-    let lift = if pose.moving && (time.elapsed_secs() * 9.0) as i32 % 2 == 0 { 1.0 } else { 0.0 };
-    for (mut transform, mut sprite) in &mut hero {
-        let at = on_screen(player.x.round(), feet_y.round());
-        transform.translation = Vec3::new(at.x, at.y + lift, depth(feet_y));
-        if sprite.flip_x != pose.facing_left {
-            sprite.flip_x = pose.facing_left;
+    let step = if pose.moving { (pose.clock * STEPS_PER_SECOND) as usize % crate::doll::STEPS } else { 0 };
+    for (mut transform, mut sprite, frames) in &mut hero {
+        let at = on_screen(player.x, feet_y).round();
+        let wanted = Vec3::new(at.x, at.y, depth(feet_y));
+        if transform.translation != wanted {
+            transform.translation = wanted;
+        }
+        if let Some(image) = frames.0.get(crate::doll::frame_index(pose.facing, step))
+            && sprite.image != *image
+        {
+            sprite.image = image.clone();
         }
     }
 }
 
-/// Other players' tokens follow where their players last said they were. When somebody
-/// joins or leaves, the picture is drawn again so that there is a token for each.
-fn place_fellows(game: Res<Game>, mut redraw: ResMut<Redraw>, mut fellows: Query<(&Fellow, &mut Transform)>, mut was_fighting: Local<bool>) {
+/// Other players' tokens follow where their players last said they were, walking as they go.
+/// When somebody joins or leaves, the picture is drawn again so that there is a token for each.
+fn place_fellows(time: Res<Time>, game: Res<Game>, mut redraw: ResMut<Redraw>, mut fellows: Query<(&Fellow, &Frames, &mut Gait, &mut Transform, &mut Sprite)>, mut was_fighting: Local<bool>) {
     let others: Vec<&world::Token> = game.world.tokens_here().collect();
     // A fight beginning or ending changes who is drawn where.
     let fighting = game.world.fight_here();
@@ -486,12 +614,73 @@ fn place_fellows(game: Res<Game>, mut redraw: ResMut<Redraw>, mut fellows: Query
     if !fighting && fellows.iter().count() != others.len() {
         redraw.0 = true;
     }
-    for (fellow, mut transform) in &mut fellows {
-        if let Some(token) = others.iter().find(|t| t.name == fellow.0) {
-            let feet_y = token.y + FEET.1;
-            let at = on_screen(token.x.round(), feet_y.round());
-            transform.translation = Vec3::new(at.x, at.y, depth(feet_y));
+    for (fellow, frames, mut gait, mut transform, mut sprite) in &mut fellows {
+        let Some(token) = others.iter().find(|t| t.name == fellow.0) else { continue };
+        let now = Vec2::new(token.x, token.y);
+        let moved = now - gait.last;
+        if moved.length() > 0.05 {
+            if let Some(facing) = crate::doll::Facing::of(moved.x, moved.y) {
+                gait.facing = facing;
+            }
+            gait.clock += time.delta_secs();
+            gait.still = 0.0;
+        } else {
+            // Positions come ten times a second: a short pause between them is still walking.
+            gait.still += time.delta_secs();
         }
+        gait.last = now;
+        let step = if gait.still < 0.15 { (gait.clock * STEPS_PER_SECOND) as usize % crate::doll::STEPS } else { 0 };
+        let feet_y = token.y + FEET.1;
+        let at = on_screen(token.x, feet_y).round();
+        transform.translation = Vec3::new(at.x, at.y, depth(feet_y));
+        if let Some(image) = frames.0.get(crate::doll::frame_index(gait.facing, step))
+            && sprite.image != *image
+        {
+            sprite.image = image.clone();
+        }
+    }
+}
+
+/// The water moves, a few beats a second.
+fn water(time: Res<Time>, cache: Res<SceneCache>, mut layers: Query<&mut Sprite, With<GroundLayer>>, mut since: Local<f32>, mut beat: Local<usize>) {
+    if cache.ground.len() < 2 {
+        return;
+    }
+    *since += time.delta_secs();
+    if *since < 0.3 {
+        return;
+    }
+    *since = 0.0;
+    *beat = (*beat + 1) % cache.ground.len();
+    for mut layer in &mut layers {
+        layer.image = cache.ground[*beat].clone();
+    }
+}
+
+/// The dark is redrawn as the lamps waver and the heroes, who carry a light of their own, walk.
+fn lighting(time: Res<Time>, game: Res<Game>, cache: Res<SceneCache>, mut images: ResMut<Assets<Image>>, mut since: Local<f32>, mut beat: Local<u32>) {
+    let Some(hour) = cache.hour.filter(|h| h.dark > 0.0) else { return };
+    *since += time.delta_secs();
+    if *since < 0.1 {
+        return;
+    }
+    *since = 0.0;
+    *beat = beat.wrapping_add(1);
+    let mut lights = cache.lamps.clone();
+    let carried = if hour.dark >= 0.5 { 3.4 } else { 2.4 };
+    let world = &game.world;
+    lights.push(crate::scene::Lamp { x: world.player.x, y: world.player.y, reach: carried });
+    for token in world.tokens_here() {
+        lights.push(crate::scene::Lamp { x: token.x, y: token.y, reach: carried });
+    }
+    if let Some(fight) = world.fight.as_ref().filter(|_| world.fight_here()) {
+        let tile = TILE as f32;
+        for c in fight.combatants.iter().filter(|c| c.side == Side::Party && !c.dead) {
+            lights.push(crate::scene::Lamp { x: (c.x as f32 + 0.5) * tile, y: (c.y as f32 + 0.5) * tile, reach: carried });
+        }
+    }
+    if let Some(mut image) = images.get_mut(&cache.dark) {
+        *image = crate::scene::darkness(hour, &lights, *beat).into_image();
     }
 }
 
@@ -598,8 +787,11 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
     }
     let step = direction.clamp_length_max(1.0) * SPEED * time.delta_secs();
     pose.moving = game.world.walk(step.x, step.y);
-    if step.x != 0.0 {
-        pose.facing_left = step.x < 0.0;
+    if let Some(facing) = crate::doll::Facing::of(step.x, step.y) {
+        pose.facing = facing;
+    }
+    if pose.moving {
+        pose.clock += time.delta_secs();
     }
 }
 
@@ -992,8 +1184,8 @@ fn background_work(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, g
         background.feats_asked = true;
         master.ask(&gm, &store, &settings, Ask::Feats { world: Box::new(game.world.clone()), hero, secret });
     }
-    // Each hero is drawn once by the master, when the table lets the master draw unasked.
-    if settings.predraw {
+    // Heroes are drawn by the game itself from what they are and carry.
+    if false {
         let undrawn = (0..game.world.party.len()).find(|i| {
             let name = &game.world.party[*i].name;
             !game.world.sprites.contains_key(&world::portrait_id(name)) && !background.portraits_asked.contains(name)
@@ -2360,13 +2552,15 @@ impl Plugin for PlayPlugin {
             .init_resource::<Arrival>()
             .init_resource::<Toast>()
             .init_resource::<HeroPose>()
+            .init_resource::<SceneCache>()
+            .init_resource::<Dolls>()
             .init_resource::<Background>()
             .init_resource::<Panel>()
             .add_systems(OnEnter(Screen::Play), enter)
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_observer(on_activate)
             .add_observer(on_master_activate);
@@ -2384,8 +2578,8 @@ mod tests {
 
     #[test]
     fn the_locations_corner_is_the_screens_corner_and_y_is_flipped() {
-        assert_eq!(on_screen(0.0, 0.0), Vec2::new(-240.0, 135.0));
-        assert_eq!(on_screen(480.0, 256.0), Vec2::new(240.0, -121.0));
+        assert_eq!(on_screen(0.0, 0.0), Vec2::new(-480.0, 270.0));
+        assert_eq!(on_screen(480.0, 256.0), Vec2::new(480.0, -242.0));
     }
 
     #[test]

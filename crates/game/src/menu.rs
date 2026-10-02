@@ -84,7 +84,7 @@ fn spawn_backdrop(mut commands: Commands, art: Res<Art>) {
     commands
         .spawn((Backdrop, Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() }, GlobalZIndex(-10)))
         .with_children(|table| {
-            table.spawn((at(0.0, 0.0, crate::screen::CANVAS.x as f32, crate::screen::CANVAS.y as f32), ImageNode::new(art.table.clone())));
+            table.spawn((at(0.0, 0.0, crate::screen::UI.x as f32, crate::screen::UI.y as f32), ImageNode::new(art.table.clone())));
             for (x, y, phase) in [(96.0, 118.0, 0.0), (374.0, 118.0, 2.1), (60.0, 206.0, 4.4)] {
                 // The light is centred on the flame, not on the candle.
                 table.spawn((at(x + 4.5 - GLOW_SIZE / 2.0, y + 5.0 - GLOW_SIZE / 2.0, GLOW_SIZE, GLOW_SIZE), ImageNode::new(art.glow.clone()), Glow { phase }));

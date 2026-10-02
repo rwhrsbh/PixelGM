@@ -125,6 +125,13 @@ pub fn parse_script(script: &str) -> Vec<Step> {
                     steps.extend([Step::Key(code, key.clone(), ButtonState::Pressed), Step::Wait(seconds), Step::Key(code, key, ButtonState::Released), Step::Frames(1)]);
                 }
             }
+            // A key pressed and left down, and let go later: for pictures taken mid-walk.
+            "down" | "up" => {
+                if let Some((code, key)) = named_key(arg) {
+                    let state = if verb == "down" { ButtonState::Pressed } else { ButtonState::Released };
+                    steps.extend([Step::Key(code, key, state), Step::Frames(1)]);
+                }
+            }
             "key" => {
                 if let Some((code, key)) = named_key(arg) {
                     steps.extend([Step::Key(code, key.clone(), ButtonState::Pressed), Step::Frames(1), Step::Key(code, key, ButtonState::Released), Step::Frames(1)]);
@@ -256,8 +263,9 @@ fn play_script(
         Step::Wait(seconds) => progress.wait = seconds,
         Step::Frames(n) => progress.frames = n,
         Step::Move(at) => {
+            // Script coordinates are on the interface's grid.
             let (scale, origin, _) = fit(window.1.physical_size());
-            let physical = origin.as_vec2() + at * scale as f32;
+            let physical = origin.as_vec2() + at * scale * crate::screen::UI_PIXEL;
             window.1.set_physical_cursor_position(Some(physical.as_dvec2()));
             let message = CursorMoved { window: entity, position: physical / window.1.scale_factor(), delta: None };
             window_events.write(WindowEvent::CursorMoved(message.clone()));

@@ -123,7 +123,7 @@ pub fn world(request: &str) -> String {
         "location": {
             "id": "camp",
             "name": "The Camp",
-            "description": "A ring of old trees around a fire that someone keeps alive.",
+            "description": "A ring of old trees around a fire that someone keeps alive.", "light": "dusk",
             "legend": legend(),
             "map": clearing(seed, &[east, south]),
             "spawn": [8, 12],

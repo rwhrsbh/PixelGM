@@ -27,21 +27,21 @@ pub const SLOTS: [(&str, [u8; 3]); 15] = [
 ];
 
 // Slot indices, named for the drawing code below.
-const OUTLINE: u8 = 1;
-const SHADOW: u8 = 2;
-const LIGHT: u8 = 3;
-const GROUND_DARK: u8 = 4;
-const GROUND: u8 = 5;
-const PLANT_DARK: u8 = 6;
-const PLANT: u8 = 7;
-const STONE_DARK: u8 = 8;
-const STONE: u8 = 9;
-const WOOD_DARK: u8 = 10;
-const WOOD: u8 = 11;
-const WATER_DARK: u8 = 12;
-const WATER: u8 = 13;
-const ACCENT: u8 = 14;
-const SKIN: u8 = 15;
+pub const OUTLINE: u8 = 1;
+pub const SHADOW: u8 = 2;
+pub const LIGHT: u8 = 3;
+pub const GROUND_DARK: u8 = 4;
+pub const GROUND: u8 = 5;
+pub const PLANT_DARK: u8 = 6;
+pub const PLANT: u8 = 7;
+pub const STONE_DARK: u8 = 8;
+pub const STONE: u8 = 9;
+pub const WOOD_DARK: u8 = 10;
+pub const WOOD: u8 = 11;
+pub const WATER_DARK: u8 = 12;
+pub const WATER: u8 = 13;
+pub const ACCENT: u8 = 14;
+pub const SKIN: u8 = 15;
 
 pub fn default_palette() -> Palette {
     Palette { colors: SLOTS.iter().map(|(_, c)| *c).collect() }

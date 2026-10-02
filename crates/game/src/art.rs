@@ -33,9 +33,33 @@ impl Pixels {
         p
     }
 
-    #[cfg(test)]
     pub fn get(&self, x: i32, y: i32) -> Rgba {
-        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 { CLEAR } else { self.data[(y as u32 * self.w + x as u32) as usize] }
+        self.get_or(x, y, CLEAR)
+    }
+
+    /// The pixel, or `outside` past the edge.
+    pub fn get_or(&self, x: i32, y: i32, outside: Rgba) -> Rgba {
+        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 { outside } else { self.data[(y as u32 * self.w + x as u32) as usize] }
+    }
+
+    /// Lays another picture over this one at a point; clear pixels of the other let this show.
+    pub fn stamp(&mut self, other: &Pixels, at_x: i32, at_y: i32, flip: bool) {
+        for y in 0..other.h as i32 {
+            for x in 0..other.w as i32 {
+                let source = if flip { other.w as i32 - 1 - x } else { x };
+                let c = other.get(source, y);
+                if c[3] != 0 {
+                    self.set(at_x + x, at_y + y, c);
+                }
+            }
+        }
+    }
+
+    /// The same picture mirrored left to right.
+    pub fn flipped(&self) -> Pixels {
+        let mut out = Pixels::new(self.w, self.h, CLEAR);
+        out.stamp(self, 0, 0, true);
+        out
     }
 
     pub fn set(&mut self, x: i32, y: i32, c: Rgba) {
@@ -248,7 +272,7 @@ pub fn sliced(image: Handle<Image>, border: f32) -> ImageNode {
 
 impl FromWorld for Art {
     fn from_world(world: &mut World) -> Self {
-        let canvas = crate::screen::CANVAS;
+        let canvas = crate::screen::UI;
         let mut images = world.resource_mut::<Assets<Image>>();
         let mut add = |p: Pixels| images.add(p.into_image());
         Art {
@@ -300,66 +324,5 @@ mod tests {
         let a = table(64, 54);
         let b = table(64, 54);
         assert!((0..54).all(|y| (0..64).all(|x| a.get(x, y) == b.get(x, y))));
-    }
-}
-
-// ---- pictures of the world the game master drew ----
-
-/// A sprite in the world's colours.
-pub fn sprite_picture(sprite: &world::Sprite, palette: &world::Palette) -> Pixels {
-    let mut p = Pixels::new(sprite.width(), sprite.height(), CLEAR);
-    for y in 0..sprite.height() {
-        for x in 0..sprite.width() {
-            p.set(x as i32, y as i32, palette.rgba(sprite.index_at(x, y)));
-        }
-    }
-    p
-}
-
-/// The ground of a location as one picture: every cell's tile, side by side.
-pub fn ground_picture(location: &world::Location, world: &world::World) -> Pixels {
-    let tile = world::TILE;
-    let mut p = Pixels::new(world::MAP_W as u32 * tile, world::MAP_H as u32 * tile, INK);
-    for cy in 0..world::MAP_H {
-        for cx in 0..world::MAP_W {
-            let Some(def) = location.tile_id(cx, cy).and_then(|id| world.tiles.get(id)) else { continue };
-            for y in 0..tile {
-                for x in 0..tile {
-                    let color = world.palette.rgba(def.sprite.index_at(x, y));
-                    if color[3] != 0 {
-                        p.set((cx as u32 * tile + x) as i32, (cy as u32 * tile + y) as i32, color);
-                    }
-                }
-            }
-        }
-    }
-    p
-}
-
-#[cfg(test)]
-mod world_tests {
-    use super::*;
-
-    fn test_world() -> world::World {
-        let draft: world::WorldDraft = serde_json::from_str(&world::fake::world("art")).unwrap();
-        world::build_world(&draft, "art", "English").unwrap().0
-    }
-
-    #[test]
-    fn ground_covers_the_whole_location_with_opaque_pixels() {
-        let w = test_world();
-        let ground = ground_picture(w.here(), &w);
-        assert_eq!((ground.w, ground.h), (480, 256));
-        assert!((0..256).all(|y| (0..480).all(|x| ground.get(x, y)[3] == 255)));
-    }
-
-    #[test]
-    fn sprite_takes_the_worlds_colours_and_keeps_its_transparency() {
-        let w = test_world();
-        let hero = sprite_picture(&w.sprites["hero"], &w.palette);
-        assert_eq!((hero.w, hero.h), (16, 16));
-        assert_eq!(hero.get(0, 0), CLEAR);
-        // The tunic is the accent slot, which the fake master recolours.
-        assert_eq!(hero.get(7, 9), [0xe0, 0x70, 0x3a, 0xff]);
     }
 }
