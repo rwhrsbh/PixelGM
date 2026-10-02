@@ -1,0 +1,167 @@
+//! A stand-in game master that answers without a network: the same JSON a model would send,
+//! built by rule. Tests use it, and so does the game when run with the fake-master flag, so
+//! that everything after "the answer arrived" can be exercised without spending quota.
+
+use crate::model::{MAP_H, MAP_W};
+use serde_json::{Value, json};
+
+fn hash(x: u32, y: u32, seed: u32) -> u32 {
+    let mut h = x.wrapping_mul(0x9E37_79B1) ^ y.wrapping_mul(0x85EB_CA6B) ^ seed.wrapping_mul(0xC2B2_AE35);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^ (h >> 13)
+}
+
+fn seed_of(text: &str) -> u32 {
+    text.bytes().fold(2_166_136_261, |h, b| (h ^ b as u32).wrapping_mul(16_777_619))
+}
+
+const CAMPFIRE: [&str; 16] = [
+    "0000000000000000",
+    "0000000000000000",
+    "0000000e00000000",
+    "000000e3e0000000",
+    "000000e3ee000000",
+    "00000ee33e000000",
+    "00000e333ee00000",
+    "0000ee3e33e00000",
+    "0000e33ee3e00000",
+    "0001eee33ee10000",
+    "001a1eeeee1a1000",
+    "01aba11111aba100",
+    "01abbaaaaabba100",
+    "001aabbbbbaa1000",
+    "0001111111110000",
+    "0000000000000000",
+];
+
+const CAT: [&str; 16] = [
+    "0000000000000000",
+    "0000000000000000",
+    "0000000000000000",
+    "0000000000000000",
+    "0010000010000000",
+    "0181000181000000",
+    "0188111881000000",
+    "0188888881000010",
+    "0183888381000181",
+    "0188818881000181",
+    "0018888810001810",
+    "0001888881118100",
+    "0001888888888100",
+    "0001811811818100",
+    "0001811811818100",
+    "0000100100101000",
+];
+
+const MOSS: [&str; 16] = [
+    "9999989999999899",
+    "9899999977999999",
+    "9999997767799999",
+    "9999977677799989",
+    "9989976777999999",
+    "9999997799999999",
+    "9999999999989999",
+    "9799999999999999",
+    "7779999899997799",
+    "6779999999977679",
+    "9799999999976779",
+    "9999989999997799",
+    "9999999999999999",
+    "9989999977999989",
+    "9999999767799999",
+    "9999999977999999",
+];
+
+fn rows(picture: &[&str]) -> Value {
+    json!(picture)
+}
+
+/// A walled-in clearing with scattered rocks and a pond; `gaps` are the exit cells.
+fn clearing(seed: u32, gaps: &[(usize, usize)]) -> Vec<String> {
+    let pond = (4 + hash(1, 0, seed) as usize % 16, 3 + hash(2, 0, seed) as usize % 7);
+    (0..MAP_H)
+        .map(|y| {
+            (0..MAP_W)
+                .map(|x| {
+                    let edge = x == 0 || y == 0 || x == MAP_W - 1 || y == MAP_H - 1;
+                    let in_pond = (pond.0..pond.0 + 5).contains(&x) && (pond.1..pond.1 + 3).contains(&y);
+                    let roll = hash(x as u32, y as u32, seed);
+                    if gaps.contains(&(x, y)) {
+                        ','
+                    } else if edge {
+                        'T'
+                    } else if in_pond {
+                        '~'
+                    } else if roll % 19 == 0 {
+                        'r'
+                    } else if roll % 7 == 0 {
+                        'm'
+                    } else {
+                        '.'
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn legend() -> Value {
+    json!({ ".": "grass", ",": "dirt", "T": "tree", "~": "water", "r": "rock", "m": "moss" })
+}
+
+/// The answer to "create a new world".
+pub fn world(request: &str) -> String {
+    let seed = seed_of(request);
+    let (east, south) = ((MAP_W - 1, 8), (14, MAP_H - 1));
+    json!({
+        "title": "Test Hollow",
+        "summary": format!("A quiet hollow made by rule for testing. The host asked for: {request}"),
+        "tone": "calm",
+        "palette": { "7": "#6fa13a", "e": "#e0703a", "g": "#b040c0" },
+        "tiles": [{ "id": "moss", "name": "mossy stone", "walkable": true, "rows": rows(&MOSS) }],
+        "location": {
+            "id": "camp",
+            "name": "The Camp",
+            "description": "A ring of old trees around a fire that someone keeps alive.",
+            "legend": legend(),
+            "map": clearing(seed, &[east, south]),
+            "spawn": [8, 12],
+            "sprites": [{ "id": "campfire", "rows": rows(&CAMPFIRE) }, { "id": "cat", "rows": rows(&CAT) }],
+            "props": [{ "id": "fire", "name": "Campfire", "description": "It crackles.", "x": 10, "y": 12, "blocking": true, "sprite": "campfire" }],
+            "creatures": [{ "id": "cat", "name": "Grey cat", "description": "It watches you.", "x": 12, "y": 11, "sprite": "cat", "attitude": "friendly" }],
+            "exits": [
+                { "x": east.0, "y": east.1, "to": "east_road", "label": "A road east" },
+                { "x": south.0, "y": south.1, "to": "south_marsh", "label": "A path south" }
+            ],
+            "neighbors": [
+                { "id": "east_road", "name": "The East Road", "description": "A rutted road between hedges." },
+                { "id": "south_marsh", "name": "The South Marsh", "description": "Wet ground and reeds." }
+            ]
+        }
+    })
+    .to_string()
+}
+
+/// The answer to "draw the place `id`, the party walks in from `from`".
+pub fn location(id: &str, name: &str, from: &str) -> String {
+    let seed = seed_of(id);
+    let back = (0, 8);
+    let onward = (MAP_W - 1, 5);
+    let further = format!("{id}_beyond");
+    json!({
+        "id": id,
+        "name": name,
+        "description": format!("{name}, drawn by rule. The way back is to the west."),
+        "legend": legend(),
+        "map": clearing(seed, &[back, onward]),
+        "spawn": [2, 8],
+        "props": [{ "id": "fire", "name": "Cold fire", "description": "Ashes.", "x": 15, "y": 8, "blocking": true, "sprite": "campfire" }],
+        "exits": [
+            { "x": back.0, "y": back.1, "to": from, "label": "Back" },
+            { "x": onward.0, "y": onward.1, "to": further, "label": "Onward" }
+        ],
+        "neighbors": [{ "id": further, "name": format!("Beyond {name}"), "description": "Further on." }]
+    })
+    .to_string()
+}
