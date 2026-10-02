@@ -341,8 +341,13 @@ fn place_hero(time: Res<Time>, game: Res<Game>, pose: Res<HeroPose>, mut hero: Q
 
 /// Other players' tokens follow where their players last said they were. When somebody
 /// joins or leaves, the picture is drawn again so that there is a token for each.
-fn place_fellows(game: Res<Game>, mut redraw: ResMut<Redraw>, mut fellows: Query<(&Fellow, &mut Transform)>) {
+fn place_fellows(game: Res<Game>, mut redraw: ResMut<Redraw>, mut fellows: Query<(&Fellow, &mut Transform)>, mut was_fighting: Local<bool>) {
     let others = &game.world.others;
+    // A fight beginning or ending changes who is drawn where.
+    let fighting = game.world.fight.is_some();
+    if std::mem::replace(&mut *was_fighting, fighting) != fighting {
+        redraw.0 = true;
+    }
     if game.world.fight.is_none() && fellows.iter().count() != others.len() {
         redraw.0 = true;
     }

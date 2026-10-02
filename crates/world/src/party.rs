@@ -209,13 +209,15 @@ impl World {
             return false;
         }
         let enemies: Vec<Combatant> = self.hostiles().map(|c| self.combatant_for(c)).collect();
-        let (px, py) = self.player.cell();
-        let start = (px.clamp(0, MAP_W as i32 - 1) as usize, py.clamp(0, MAP_H as i32 - 1) as usize);
+        let inside = |(x, y): (i32, i32)| (x.clamp(0, MAP_W as i32 - 1) as usize, y.clamp(0, MAP_H as i32 - 1) as usize);
+        let leader = inside(self.player.cell());
         let mut taken: Vec<(usize, usize)> = Vec::new();
         let mut combatants = Vec::new();
         let here = self.here();
         for (i, hero) in self.party.iter().enumerate().filter(|(_, h)| !h.dead) {
-            // The party stands together: each hero on the free cell nearest the leader.
+            // A hero whose player walks a token of their own starts where that token stands;
+            // the rest stand with the leader. Each takes the nearest free cell.
+            let start = self.owners.get(i).and_then(|owner| self.others.iter().find(|t| t.name == *owner)).map_or(leader, |t| inside(Player { x: t.x, y: t.y }.cell()));
             let free = |c: (usize, usize)| !here.blocked(c.0 as i32, c.1 as i32, &self.tiles) && !taken.contains(&c);
             let cell = nearest(start, free).unwrap_or(start);
             taken.push(cell);
@@ -248,7 +250,14 @@ impl World {
                 }
             }
         }
-        if let Some(leader) = fight.combatants.iter().find(|c| c.side == Side::Party && !c.dead) {
+        // The host's own token ends where its hero stood: the first hero whose player has
+        // no token of their own, or failing that anyone still alive.
+        let walks_alone = |c: &&Combatant| {
+            let owner = c.id.strip_prefix("hero_").and_then(|i| i.parse::<usize>().ok()).and_then(|i| self.owners.get(i));
+            owner.is_some_and(|o| self.others.iter().any(|t| t.name == *o))
+        };
+        let alive = || fight.combatants.iter().filter(|c| c.side == Side::Party && !c.dead);
+        if let Some(leader) = alive().find(|c| !walks_alone(c)).or_else(|| alive().next()) {
             self.player = Player::in_cell(leader.x.max(0) as usize, leader.y.max(0) as usize);
         }
         let survivors = self.party.iter().filter(|h| !h.dead).count().max(1) as u32;
@@ -289,6 +298,13 @@ pub enum FightIntent {
 impl World {
     /// The name of whoever plays the hero acting in the fight; `None` when a monster is
     /// acting, there is no fight, or the hero has no owner (a solo game).
+    /// Where a player's hero stands in the fight going on, if there is one and it lives.
+    pub fn fight_cell_of(&self, owner: &str) -> Option<(usize, usize)> {
+        let index = self.owners.iter().position(|o| o == owner)?;
+        let fighter = self.fight.as_ref()?.combatants.iter().find(|c| c.id == hero_id(index) && !c.dead)?;
+        Some((fighter.x.max(0) as usize, fighter.y.max(0) as usize))
+    }
+
     pub fn acting_owner(&self) -> Option<&str> {
         let fight = self.fight.as_ref()?;
         let index: usize = fight.actor().id.strip_prefix("hero_")?.parse().ok()?;

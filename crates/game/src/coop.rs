@@ -287,6 +287,12 @@ fn adopt(world: World, game: &mut Option<ResMut<Game>>, commands: &mut Commands,
             let moved = game.world.current != world.current;
             if !moved {
                 world.player = game.world.player;
+                // After a fight the guest walks on from where its hero ended it.
+                if world.fight.is_none()
+                    && let Some((x, y)) = game.world.fight_cell_of(me)
+                {
+                    world.player = world::Player::in_cell(x, y);
+                }
             }
             world.others = std::mem::take(&mut game.world.others);
             let was_fighting = game.world.fight.is_some();
