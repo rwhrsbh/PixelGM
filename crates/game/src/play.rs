@@ -11,6 +11,7 @@ use crate::screen::CANVAS;
 use crate::shot::Warp;
 use crate::store::{Initiative, Settings, Store};
 use crate::theme::*;
+use crate::translate::{Translator, foreign};
 use crate::widgets::{Activate, BUTTON_HEIGHT, EnterPresses, backing, button, scroll_list, text_button};
 use bevy::input_focus::{AutoFocus, InputFocus};
 use bevy::prelude::*;
@@ -756,9 +757,22 @@ fn receive(
     mut table: ResMut<Table>,
     mut view: ResMut<crate::fight::FightView>,
     mut toast: ResMut<Toast>,
+    mut translator: ResMut<Translator>,
 ) {
     for answer in master.take() {
         match answer {
+            Answer::Translated { texts, translated } => match translated {
+                Ok(translated) => {
+                    translator.learn(&texts, translated);
+                    if let Err(e) = store.save_translations(settings.lang, translator.cache()) {
+                        error!("could not keep the translations: {e}");
+                    }
+                }
+                Err(trouble) => {
+                    info!("nothing was translated: {trouble:?}");
+                    translator.refused();
+                }
+            },
             Answer::Feats { hero, secret, feats } => {
                 background.feats_asked = false;
                 match feats {
@@ -1021,21 +1035,27 @@ fn hud(
     mut sheets: Query<&mut Node, With<ArrivalSheet>>,
     session: Res<Session>,
     settings: Res<Settings>,
+    mut translator: ResMut<Translator>,
 ) {
     let world = &game.world;
     let here = world.here();
+    // A player who reads another language than the world is told in reads translations.
+    let other_tongue = foreign(world, *lang);
+    let translator = translator.bypass_change_detection();
+    let mut read = |text: &str| translator.read(other_tongue, text);
+    let place = read(&here.name);
     for mut text in &mut names {
-        if text.0 != here.name {
-            text.0 = here.name.clone();
+        if text.0 != place {
+            text.0 = place.clone();
         }
     }
     toast.left = (toast.left - time.delta_secs()).max(0.0);
     let thing_name = world.thing_near(THING_REACH).and_then(|id| here.props.iter().map(|p| (&p.id, &p.name)).chain(here.creatures.iter().map(|c| (&c.id, &c.name))).find(|(i, _)| i.as_str() == id).map(|(_, name)| name.clone()));
     let hint = match (toast.text.filter(|_| toast.left > 0.0), thing_name, world.exit_near(EXIT_HINT_REACH)) {
         (Some(said), _, _) => said.text(*lang).to_string(),
-        (None, Some(name), _) => format!("E: {name}"),
-        (None, None, Some(exit)) if exit.label.is_empty() => format!("→ {}", world.place_name(&exit.to)),
-        (None, None, Some(exit)) => format!("{} → {}", exit.label, world.place_name(&exit.to)),
+        (None, Some(name), _) => format!("E: {}", read(&name)),
+        (None, None, Some(exit)) if exit.label.is_empty() => format!("→ {}", read(world.place_name(&exit.to))),
+        (None, None, Some(exit)) => format!("{} → {}", read(&exit.label), read(world.place_name(&exit.to))),
         (None, None, None) if my_offer(world, &player_name(&settings), matches!(*session, Session::Solo)).is_some() => T::FeatOffer.text(*lang).to_string(),
         (None, None, None) if seat_state(world, &session, &player_name(&settings)) == SeatState::Mine => format!("{}{}", T::HudHint.text(*lang), T::HudMaster.text(*lang)),
         (None, None, None) => T::HudHint.text(*lang).to_string(),
@@ -1046,8 +1066,9 @@ fn hud(
         }
     }
     arrival.age += time.delta_secs();
-    let letters = here.description.chars().count();
-    let shown: String = here.description.chars().take((arrival.age * LETTERS_PER_SECOND) as usize).collect();
+    let description = read(&here.description);
+    let letters = description.chars().count();
+    let shown: String = description.chars().take((arrival.age * LETTERS_PER_SECOND) as usize).collect();
     for mut text in &mut described {
         if text.0 != shown {
             text.0 = shown.clone();
@@ -1161,6 +1182,31 @@ fn others_at_table(world: &World, me: &str) -> Vec<String> {
     world.present.iter().filter(|p| p.as_str() != me).cloned().collect()
 }
 
+/// What the master wrote on a sheet, in the player's language where a translation is known.
+/// What is not known yet is shown as written and asked for.
+fn translated(sheet: Sheet, other_tongue: bool, translator: &mut Translator) -> Sheet {
+    if !other_tongue {
+        return sheet;
+    }
+    let mut read = |text: &str| translator.read(true, text);
+    match sheet {
+        Sheet::Looking { name, description, actions } => Sheet::Looking { name: read(&name), description: read(&description), actions: actions.iter().map(|a| read(a)).collect() },
+        Sheet::Reading(turn) => Sheet::Reading(Turn {
+            narration: read(&turn.narration),
+            options: turn
+                .options
+                .into_iter()
+                .map(|mut option| {
+                    option.label = read(&option.label);
+                    option
+                })
+                .collect(),
+        }),
+        Sheet::Journal { carried, lines } => Sheet::Journal { carried, lines: lines.into_iter().map(|(speaker, text)| (speaker, read(&text))).collect() },
+        other => other,
+    }
+}
+
 fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) -> Sheet {
     match phase {
         Phase::Drawing { to } => Sheet::Drawing(world.place_name(to).to_string()),
@@ -1224,6 +1270,7 @@ fn overlay(
     table: Res<Table>,
     panel: Res<Panel>,
     settings: Res<Settings>,
+    mut translator: ResMut<Translator>,
     mut shown: Local<Sheet>,
     old: Query<Entity, With<Overlay>>,
 ) {
@@ -1251,7 +1298,7 @@ fn overlay(
     // the time is fixed when the sheet first appears.
     let wanted = match (&*phase, &*shown) {
         (Phase::Stuck { .. }, Sheet::Stuck(_)) | (Phase::Refused { .. }, Sheet::Refused(_)) if !old.is_empty() => shown.clone(),
-        _ => sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang, &extra),
+        _ => translated(sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang, &extra), foreign(&game.world, *lang), translator.bypass_change_detection()),
     };
     if *shown == wanted && (wanted == Sheet::None || !old.is_empty()) {
         return;

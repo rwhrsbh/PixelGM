@@ -7,6 +7,7 @@ use llm::{SavedState, ThinkingSetting, Tier};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use world::{CreatureCard, World};
 
@@ -198,6 +199,22 @@ impl Store {
 
     pub fn save_quota(&self, state: &SavedState) -> io::Result<()> {
         write_whole(&self.dir.join("quota.json"), serde_json::to_string_pretty(state)?.as_bytes())
+    }
+
+    fn translations_file(&self, lang: Lang) -> PathBuf {
+        self.dir.join(match lang {
+            Lang::Ru => "translations.ru.json",
+            Lang::En => "translations.en.json",
+        })
+    }
+
+    /// What the master has already translated into the player's language.
+    pub fn load_translations(&self, lang: Lang) -> HashMap<String, String> {
+        fs::read_to_string(self.translations_file(lang)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    pub fn save_translations(&self, lang: Lang, known: &HashMap<String, String>) -> io::Result<()> {
+        write_whole(&self.translations_file(lang), serde_json::to_string(known)?.as_bytes())
     }
 
     fn library_dir(&self) -> PathBuf {

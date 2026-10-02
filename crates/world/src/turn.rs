@@ -62,6 +62,13 @@ fn lenient(mut value: Value) -> Value {
     value
 }
 
+/// Translations, in the order the texts were sent.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(default)]
+pub struct TranslationDraft {
+    pub texts: Vec<String>,
+}
+
 /// A hero's picture, as the master drew it.
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]

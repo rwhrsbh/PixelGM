@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use world::story::KEPT_LINES;
-use world::{ChapterDraft, CreatureCard, FeatsDraft, LocationDraft, PortraitDraft, StuntDraft, TurnDraft, World, WorldDraft, build_world, extract_json, fake, prompt};
+use world::{ChapterDraft, CreatureCard, FeatsDraft, LocationDraft, PortraitDraft, StuntDraft, TranslationDraft, TurnDraft, World, WorldDraft, build_world, extract_json, fake, prompt};
 
 pub enum Ask {
     NewWorld {
@@ -49,6 +49,11 @@ pub enum Ask {
         said: String,
         spell: Option<(String, u8)>,
     },
+    /// Put what the master wrote into this player's language.
+    Translate {
+        texts: Vec<String>,
+        language: String,
+    },
     /// Draw a hero as the player described it.
     Portrait {
         world: Box<World>,
@@ -81,6 +86,7 @@ pub enum Answer {
     Feats { hero: usize, secret: bool, feats: Result<Vec<rules::Feat>, Trouble> },
     Stunt { spell: Option<(String, u8)>, draft: Result<Box<StuntDraft>, Trouble> },
     Portrait { hero: usize, rows: Result<Vec<String>, Trouble> },
+    Translated { texts: Vec<String>, translated: Result<Vec<String>, Trouble> },
 }
 
 /// How many times an answer that cannot be read is asked for again before giving up. Each
@@ -283,6 +289,7 @@ impl Master {
                 Ask::Feats { hero, secret, .. } => format!("abilities for hero {hero}{}", if *secret { " (secret)" } else { "" }),
                 Ask::Stunt { .. } => "a stunt in a fight".to_string(),
                 Ask::Portrait { hero, .. } => format!("a portrait of hero {hero}"),
+                Ask::Translate { texts, language } => format!("{} texts into {language}", texts.len()),
                 Ask::Invent { .. } => "a creature for a library".to_string(),
             },
             if fake { " (fake master)" } else { "" }
@@ -320,6 +327,13 @@ impl Master {
                 Ask::Stunt { world, said, spell } => {
                     let draft: Result<StuntDraft, Trouble> = if fake { faked(fake::stunt(&said)) } else { call.read(prompt::play_prompt(&world), &prompt::stunt(&world, &said)) };
                     Answer::Stunt { spell, draft: draft.map(Box::new) }
+                }
+                Ask::Translate { texts, language } => {
+                    let draft: Result<TranslationDraft, Trouble> =
+                        if fake { faked(fake::translation(&texts, &language)) } else { call.read("You translate the text of a game, faithfully and naturally.".to_string(), &prompt::translate(&texts, &language)) };
+                    // A list of another length cannot be matched to what was sent.
+                    let translated = draft.and_then(|d| if d.texts.len() == texts.len() { Ok(d.texts) } else { Err(Trouble::Unreadable(format!("{} translations for {} texts", d.texts.len(), texts.len()))) });
+                    Answer::Translated { texts, translated }
                 }
                 Ask::Portrait { world, hero } => {
                     let draft: Result<PortraitDraft, Trouble> = if fake { faked(fake::portrait()) } else { call.read(prompt::system_prompt(&world.language), &prompt::portrait(&world, hero)) };

@@ -161,6 +161,11 @@ pub fn turn(said: &str) -> String {
     .to_string()
 }
 
+/// The answer to "translate these": each text marked with the language asked for.
+pub fn translation(texts: &[String], language: &str) -> String {
+    json!({ "texts": texts.iter().map(|t| format!("[{language}] {t}")).collect::<Vec<_>>() }).to_string()
+}
+
 /// The answer to "offer this hero abilities".
 pub fn feats(secret: bool) -> String {
     let all = json!([

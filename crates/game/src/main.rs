@@ -18,6 +18,7 @@ mod settings;
 mod shot;
 mod store;
 mod theme;
+mod translate;
 mod widgets;
 
 use bevy::prelude::*;
@@ -55,7 +56,7 @@ fn main() -> AppExit {
         play::PlayPlugin,
         hero::HeroPlugin,
         fight::FightPlugin,
-        shot::ShotPlugin(args),
-    ));
+    ))
+    .add_plugins((translate::TranslatePlugin, shot::ShotPlugin(args)));
     app.run()
 }

@@ -286,6 +286,14 @@ pub fn portrait(world: &World, hero: usize) -> String {
     )
 }
 
+/// A player who reads another language than the world is told in asks for a translation.
+pub fn translate(texts: &[String], language: &str) -> String {
+    let list = serde_json::to_string(texts).unwrap_or_default();
+    format!(
+        "Translate these pieces of a tabletop role-playing game into {language}: tellings by the game master, names of places, things and creatures, things the players may choose to do. Keep the tone and the person (\"you\" stays \"you\"), keep names recognisable, keep numbers, dice (2d6) and line breaks as they are. Translate every piece; a piece already in {language} comes back unchanged.\n\n{list}\n\nAnswer with this JSON object, the translations in the same order and of the same number:\n{{\"texts\": [\"…\"]}}"
+    )
+}
+
 /// A human game master asks for a creature to keep in their library.
 pub fn invent(world: &World, request: &str) -> String {
     format!(
