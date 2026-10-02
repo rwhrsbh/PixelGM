@@ -15,11 +15,14 @@ const FAILED_PATH = path.join(SRD, "i18n/ru.failed.json");
 const STATUS_PATH = path.join(HERE, "status.json");
 const API = "https://generativelanguage.googleapis.com/";
 
-const BATCH_CHARS = 12000;
-const BATCH_ITEMS = 200;
-const WORKERS = 3;
+// The free tier allows 20 requests a day per model, so each request carries as much as one answer can hold.
+const BATCH_CHARS = 30000;
+const BATCH_ITEMS = 400;
+const WORKERS = 2;
 const MAX_ATTEMPTS = 8;
-const REQUEST_TIMEOUT_MS = 300000;
+const REQUEST_TIMEOUT_MS = 600000;
+// A longer wait than this means the daily quota is spent: stop and let the next run resume.
+const GIVE_UP_WAIT_MS = 30 * 60 * 1000;
 const MODEL_LIST_TTL_MS = 30 * 60 * 1000;
 
 const TEXT_KEYS = new Set([
@@ -370,8 +373,11 @@ async function worker(id) {
     await pool.refresh(false);
     const pick = pool.pick();
     if (pick.waitMs) {
-      if (id === 0) log(`all models cooling down, waiting ${Math.round(pick.waitMs / 1000)}s`);
-      await sleep(Math.min(pick.waitMs, 5 * 60 * 1000));
+      if (pick.waitMs > GIVE_UP_WAIT_MS && inFlight === 0) {
+        log(`worker ${id}: every model is out of quota for ${Math.round(pick.waitMs / 60000)} min, stopping`);
+        return;
+      }
+      await sleep(Math.min(pick.waitMs, 60000));
       continue;
     }
     const batch = takeBatch();
@@ -440,5 +446,5 @@ async function worker(id) {
 
 await Promise.all(Array.from({ length: WORKERS }, (_, i) => worker(i)));
 fs.writeFileSync(FAILED_PATH, JSON.stringify([...failed].map(([src, why]) => ({ src, why })), null, 2));
-const done = status({ finished: true });
-log(`finished: ${done}/${sources.length} translated, ${failed.size} failed (see ${path.relative(process.cwd(), FAILED_PATH)})`);
+const done = status({ finished: queue.length === 0 });
+log(`stopped: ${done}/${sources.length} translated, ${queue.length} still queued, ${failed.size} failed (see ${path.relative(process.cwd(), FAILED_PATH)})`);
