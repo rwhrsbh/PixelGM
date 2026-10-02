@@ -7,10 +7,11 @@ use crate::gm::{Gm, Trouble};
 use crate::i18n::Lang;
 use crate::store::{Settings, Store};
 use bevy::prelude::*;
-use llm::{GenRequest, ThinkingSetting, Tier};
-use std::collections::BTreeSet;
+use llm::{GenError, GenRequest, ThinkingSetting, Tier};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use world::story::KEPT_LINES;
 use world::{ChapterDraft, LocationDraft, TurnDraft, World, WorldDraft, build_world, extract_json, fake, prompt};
 
@@ -57,10 +58,100 @@ const READ_ATTEMPTS: u32 = 2;
 /// How long the fake master pretends to think, so that waiting screens can be seen.
 const FAKE_THINKING: Duration = Duration::from_millis(600);
 
+/// A request the host's own keys could not serve, handed to a guest. The guest's key never
+/// leaves the guest's machine: the guest asks the model and sends back what it said.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Relayed {
+    pub id: u64,
+    pub system: String,
+    pub prompt: String,
+    pub thinking: ThinkingSetting,
+    pub lowest: Tier,
+}
+
+/// What a guest's keys brought back: the model that answered and its text.
+pub type Served = Result<(String, String), Trouble>;
+
+/// How long a relayed request waits for a guest before the host gives up on it.
+const RELAY_PATIENCE: Duration = Duration::from_secs(400);
+
+#[derive(Default)]
+struct RelayState {
+    next: u64,
+    /// Guests at the table who could be asked.
+    helpers: usize,
+    asked: Vec<Relayed>,
+    served: HashMap<u64, Served>,
+}
+
+/// The way from the threads that ask the master to the guests' keys and back.
+#[derive(Clone, Default)]
+pub struct Relay(Arc<Mutex<RelayState>>);
+
+impl Relay {
+    pub fn set_helpers(&self, helpers: usize) {
+        self.0.lock().unwrap().helpers = helpers;
+    }
+
+    /// Requests waiting to be handed to a guest.
+    pub fn take_asked(&self) -> Vec<Relayed> {
+        std::mem::take(&mut self.0.lock().unwrap().asked)
+    }
+
+    pub fn serve(&self, id: u64, result: Served) {
+        self.0.lock().unwrap().served.insert(id, result);
+    }
+
+    /// Waits for a guest to answer. `None` when there is no guest to ask, or none answered
+    /// in time.
+    fn ask(&self, system: &str, prompt: &str, thinking: ThinkingSetting, lowest: Tier) -> Option<Served> {
+        let id = {
+            let mut state = self.0.lock().unwrap();
+            if state.helpers == 0 {
+                return None;
+            }
+            state.next += 1;
+            let id = state.next;
+            state.asked.push(Relayed { id, system: system.to_string(), prompt: prompt.to_string(), thinking, lowest });
+            id
+        };
+        let started = Instant::now();
+        loop {
+            std::thread::sleep(Duration::from_millis(50));
+            let mut state = self.0.lock().unwrap();
+            if let Some(result) = state.served.remove(&id) {
+                return Some(result);
+            }
+            if state.helpers == 0 || started.elapsed() > RELAY_PATIENCE {
+                state.asked.retain(|a| a.id != id);
+                return None;
+            }
+        }
+    }
+}
+
+fn request_for(system: &str, prompt: &str, thinking: ThinkingSetting) -> GenRequest {
+    let mut request = GenRequest::prompt(prompt);
+    request.system = Some(system.to_string());
+    request.json = true;
+    request.thinking = thinking;
+    request
+}
+
+/// A guest's side of a relayed request: asks with the guest's own keys.
+pub fn serve_for_host(gm: &Gm, asked: &Relayed, fake: bool) -> Served {
+    if fake {
+        return Err(Trouble::NoKeys);
+    }
+    let (reply, model) = gm.dispatcher.generate(&request_for(&asked.system, &asked.prompt, asked.thinking), asked.lowest)?;
+    Ok((model.id, reply.text))
+}
+
 #[derive(Resource, Clone)]
 pub struct Master {
     /// Answer by rule instead of asking a model: for tests and for trying the game without keys.
     pub fake: bool,
+    pub relay: Relay,
     answers: Arc<Mutex<Vec<Answer>>>,
     /// Places being drawn right now, so that none is asked for twice.
     drawing: Arc<Mutex<BTreeSet<String>>>,
@@ -79,23 +170,31 @@ struct Call {
     thinking: ThinkingSetting,
     lowest: Tier,
     attempts: u32,
+    relay: Relay,
 }
 
 impl Call {
     /// Sends a request and reads the answer as `T`, asking again when it cannot be read.
     fn read<T: serde::de::DeserializeOwned>(&self, system: String, prompt: &str) -> Result<T, Trouble> {
-        let mut request = GenRequest::prompt(prompt);
-        request.system = Some(system);
-        request.json = true;
-        request.thinking = self.thinking;
+        let request = request_for(&system, prompt, self.thinking);
         let mut last = String::new();
         for _ in 0..self.attempts {
-            let (reply, model) = self.gm.dispatcher.generate(&request, self.lowest)?;
-            self.store.log_answer(&model.id, &reply.text);
-            match extract_json(&reply.text).map(serde_json::from_str::<T>) {
+            let (text, model) = match self.gm.dispatcher.generate(&request, self.lowest) {
+                Ok((reply, model)) => (reply.text, model.id),
+                // The host's own keys are missing or spent: the guests' keys are next.
+                Err(error @ (GenError::NoKeys | GenError::Exhausted { .. })) => match self.relay.ask(&system, prompt, self.thinking, self.lowest) {
+                    Some(Ok((model, text))) => (text, model),
+                    // What the guests' keys ran into says more than "the host has none".
+                    Some(Err(trouble)) => return Err(trouble),
+                    None => return Err(error.into()),
+                },
+                Err(error) => return Err(error.into()),
+            };
+            self.store.log_answer(&model, &text);
+            match extract_json(&text).map(serde_json::from_str::<T>) {
                 Some(Ok(value)) => return Ok(value),
-                Some(Err(e)) => last = format!("{}: {e}", model.id),
-                None => last = format!("{}: no JSON in the answer", model.id),
+                Some(Err(e)) => last = format!("{model}: {e}"),
+                None => last = format!("{model}: no JSON in the answer"),
             }
             warn!("the game master's answer could not be read ({last})");
         }
@@ -110,7 +209,7 @@ fn faked<T: serde::de::DeserializeOwned>(json: String) -> Result<T, Trouble> {
 
 impl Master {
     pub fn new(fake: bool) -> Self {
-        Self { fake, answers: Arc::default(), drawing: Arc::default() }
+        Self { fake, relay: Relay::default(), answers: Arc::default(), drawing: Arc::default() }
     }
 
     /// Whether the place `id` is being drawn right now.
@@ -131,6 +230,7 @@ impl Master {
             thinking: settings.thinking,
             lowest: if unhurried { Tier::Flash } else { settings.lowest_tier },
             attempts: if unhurried { 1 } else { READ_ATTEMPTS },
+            relay: self.relay.clone(),
         };
         let language = language_name(settings.lang);
         let (fake, answers, drawing) = (self.fake, self.answers.clone(), self.drawing.clone());
@@ -173,5 +273,43 @@ impl Master {
     /// The answers that arrived since the last call.
     pub fn take(&self) -> Vec<Answer> {
         std::mem::take(&mut *self.answers.lock().unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_no_guest_to_ask_a_relayed_request_fails_at_once() {
+        assert_eq!(Relay::default().ask("s", "p", ThinkingSetting::Off, Tier::Flash), None);
+    }
+
+    #[test]
+    fn a_guest_answer_reaches_the_thread_that_asked() {
+        let relay = Relay::default();
+        relay.set_helpers(1);
+        let asking = relay.clone();
+        let waiter = std::thread::spawn(move || asking.ask("system", "prompt", ThinkingSetting::Low, Tier::Gemma));
+        let asked = loop {
+            if let Some(asked) = relay.take_asked().pop() {
+                break asked;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!((asked.system.as_str(), asked.prompt.as_str(), asked.lowest), ("system", "prompt", Tier::Gemma));
+        relay.serve(asked.id, Ok(("model".into(), "{}".into())));
+        assert_eq!(waiter.join().unwrap(), Some(Ok(("model".to_string(), "{}".to_string()))));
+    }
+
+    #[test]
+    fn when_the_last_guest_leaves_the_waiting_request_gives_up() {
+        let relay = Relay::default();
+        relay.set_helpers(1);
+        let asking = relay.clone();
+        let waiter = std::thread::spawn(move || asking.ask("s", "p", ThinkingSetting::Off, Tier::Flash));
+        std::thread::sleep(Duration::from_millis(120));
+        relay.set_helpers(0);
+        assert_eq!(waiter.join().unwrap(), None);
     }
 }

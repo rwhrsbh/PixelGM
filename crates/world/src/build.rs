@@ -524,6 +524,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         pending: None,
         fight: None,
         owners: Vec::new(),
+        present: Vec::new(),
         others: Vec::new(),
         level_ups: Vec::new(),
     };

@@ -4,7 +4,9 @@
 
 use crate::art::Art;
 use crate::fight::FightView;
+use crate::gm::{Gm, Trouble};
 use crate::i18n::T;
+use crate::master::{Master, Relay, Relayed, Served, serve_for_host};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::play::{self, Game, Phase, Redraw};
 use crate::store::{Settings, Store};
@@ -18,11 +20,11 @@ use net::{Client, ClientEvent, Host, HostEvent, PeerId};
 use rules::{Ability, Character, Event};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use world::{Action, FightIntent, FightSummary, Token, Turn, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -50,12 +52,20 @@ pub enum Up {
     Position { x: f32, y: f32 },
     Intent(Intent),
     Hero(Box<Character>),
+    /// Take a hero whose player is away.
+    Claim(usize),
+    /// What this guest's keys answered to a request the host handed over.
+    Answer { id: u64, result: Served },
+    /// Table talk: for the players, not for the game master.
+    Chat(String),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Down {
-    /// The whole world, sent on joining and whenever it changes.
-    World(Box<World>),
+    /// The name the guest goes by at this table.
+    Welcome { name: String },
+    /// The whole world, sent on joining and whenever it changes. `id` names its saves.
+    World { id: String, world: Box<World> },
     /// Where everybody's token is.
     Positions(Vec<Token>),
     /// The game master told something; everyone reads it.
@@ -66,6 +76,9 @@ pub enum Down {
     Trouble(String),
     FightEvents(Vec<Event>),
     FightOver(FightSummary),
+    /// The host's keys are spent; this guest's keys are asked to serve a request.
+    Ask(Relayed),
+    Chat { from: String, text: String },
     /// The host runs another version of the game.
     WrongVersion,
 }
@@ -78,11 +91,15 @@ pub struct Hosting {
     sent: String,
     since_world: f32,
     since_positions: f32,
+    /// Requests handed to guests, with the guests already tried; the last one is working on it.
+    relayed: HashMap<u64, (Relayed, Vec<PeerId>)>,
 }
 
 pub struct Joined {
     net: Client<Up, Down>,
     since_position: f32,
+    /// Answers to the host's relayed requests, from the threads that fetched them.
+    served: Arc<Mutex<Vec<(u64, Served)>>>,
 }
 
 /// How this instance takes part: alone, hosting, or as a guest in somebody's game.
@@ -121,6 +138,20 @@ impl Session {
         }
     }
 
+    /// Says something to the other players only; the game master does not hear it.
+    pub fn chat(&self, table: &mut Table, me: &str, text: &str) {
+        match self {
+            Session::Solo => {}
+            Session::Host(hosting) => {
+                table.heard(me, text);
+                hosting.lock().unwrap().net.broadcast(&Down::Chat { from: me.to_string(), text: text.to_string() });
+            }
+            Session::Client(joined) => {
+                joined.lock().unwrap().net.send(&Up::Chat(text.to_string()));
+            }
+        }
+    }
+
     pub fn players(&self) -> Vec<String> {
         match self {
             Session::Host(hosting) => {
@@ -147,6 +178,25 @@ pub struct Table {
     pub inbox: Vec<(String, Intent)>,
     /// A line for the player about the connection, shown on the lobby screen.
     pub status: Option<T>,
+    /// Table talk, oldest first.
+    pub chat: Vec<ChatLine>,
+}
+
+pub struct ChatLine {
+    pub from: String,
+    pub text: String,
+    /// Seconds since it was said.
+    pub age: f32,
+}
+
+const CHAT_KEPT: usize = 50;
+
+impl Table {
+    pub fn heard(&mut self, from: &str, text: &str) {
+        self.chat.push(ChatLine { from: from.to_string(), text: text.to_string(), age: 0.0 });
+        let extra = self.chat.len().saturating_sub(CHAT_KEPT);
+        self.chat.drain(..extra);
+    }
 }
 
 /// The name this player goes by: what they typed, or the account name.
@@ -176,14 +226,14 @@ pub fn my_turn(world: &World, session: &Session, settings: &Settings) -> bool {
 
 pub fn host(port: u16) -> std::io::Result<Session> {
     let net = Host::listen(("0.0.0.0", port))?;
-    Ok(Session::Host(Mutex::new(Hosting { net, names: HashMap::new(), tokens: HashMap::new(), sent: String::new(), since_world: 0.0, since_positions: 0.0 })))
+    Ok(Session::Host(Mutex::new(Hosting { net, names: HashMap::new(), tokens: HashMap::new(), sent: String::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() })))
 }
 
 pub fn join(address: &str, name: &str) -> std::io::Result<Session> {
     let address = if address.contains(':') { address.to_string() } else { format!("{address}:{DEFAULT_PORT}") };
     let net = Client::connect(&address)?;
     net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL });
-    Ok(Session::Client(Mutex::new(Joined { net, since_position: 0.0 })))
+    Ok(Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default() })))
 }
 
 /// The world as a guest should receive it: no tokens of other players in it (they travel
@@ -195,9 +245,32 @@ fn snapshot(world: &World) -> World {
     copy
 }
 
+/// Hands a request the host's keys could not serve to the next guest not yet tried. With
+/// nobody left to try the request fails.
+fn pass_on(hosting: &mut Hosting, relay: &Relay, id: u64, last: Trouble) {
+    let Hosting { relayed, names, net, .. } = hosting;
+    let Some((asked, tried)) = relayed.get_mut(&id) else { return };
+    let mut untried: Vec<PeerId> = names.keys().copied().filter(|p| !tried.contains(p)).collect();
+    untried.sort();
+    match untried.first() {
+        Some(peer) => {
+            tried.push(*peer);
+            net.send(*peer, &Down::Ask(asked.clone()));
+        }
+        None => {
+            relayed.remove(&id);
+            relay.serve(id, Err(last));
+        }
+    }
+}
+
 /// The host's side of the wire: who joined, who left, what they sent.
-fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, mut table: ResMut<Table>, mut game: Option<ResMut<Game>>, screen: Res<State<Screen>>) {
-    let Session::Host(hosting) = &*session else { return };
+#[allow(clippy::too_many_arguments)]
+fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, master: Res<Master>, mut table: ResMut<Table>, mut game: Option<ResMut<Game>>, screen: Res<State<Screen>>) {
+    let Session::Host(hosting) = &*session else {
+        master.relay.set_helpers(0);
+        return;
+    };
     let mut hosting = hosting.lock().unwrap();
     for event in hosting.net.poll() {
         match event {
@@ -205,6 +278,11 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, mu
             HostEvent::Left(peer) => {
                 hosting.names.remove(&peer);
                 hosting.tokens.remove(&peer);
+                // What the guest who left was working on goes to the next one.
+                let orphaned: Vec<u64> = hosting.relayed.iter().filter(|(_, (_, tried))| tried.last() == Some(&peer)).map(|(id, _)| *id).collect();
+                for id in orphaned {
+                    pass_on(&mut hosting, &master.relay, id, Trouble::Network);
+                }
             }
             HostEvent::Message(peer, Up::Hello { name, version }) => {
                 if version != PROTOCOL {
@@ -220,9 +298,10 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, mu
                     unique = format!("{} {n}", name.trim());
                     n += 1;
                 }
+                hosting.net.send(peer, &Down::Welcome { name: unique.clone() });
                 hosting.names.insert(peer, unique);
                 if let Some(game) = &game {
-                    hosting.net.send(peer, &Down::World(Box::new(snapshot(&game.world))));
+                    hosting.net.send(peer, &Down::World { id: game.world_id.clone(), world: Box::new(snapshot(&game.world)) });
                 }
             }
             HostEvent::Message(peer, Up::Position { x, y }) => {
@@ -238,12 +317,44 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, mu
                     world.owners.push(name.clone());
                 }
             }
+            HostEvent::Message(peer, Up::Claim(hero)) => {
+                if let (Some(game), Some(name)) = (&mut game, hosting.names.get(&peer)) {
+                    game.world.claim(hero, name);
+                }
+            }
             HostEvent::Message(peer, Up::Intent(intent)) => {
                 if let Some(name) = hosting.names.get(&peer) {
                     table.inbox.push((name.clone(), intent));
                 }
             }
+            HostEvent::Message(peer, Up::Answer { id, result }) => {
+                // Only the guest the request is with may answer it.
+                if hosting.relayed.get(&id).is_some_and(|(_, tried)| tried.last() == Some(&peer)) {
+                    match result {
+                        Ok(answer) => {
+                            hosting.relayed.remove(&id);
+                            master.relay.serve(id, Ok(answer));
+                        }
+                        Err(trouble) => {
+                            info!("a guest's keys could not serve request {id}: {trouble:?}");
+                            pass_on(&mut hosting, &master.relay, id, trouble);
+                        }
+                    }
+                }
+            }
+            HostEvent::Message(peer, Up::Chat(text)) => {
+                if let Some(name) = hosting.names.get(&peer).cloned() {
+                    table.heard(&name, &text);
+                    hosting.net.broadcast(&Down::Chat { from: name, text });
+                }
+            }
         }
+    }
+    master.relay.set_helpers(hosting.names.len());
+    for asked in master.relay.take_asked() {
+        let id = asked.id;
+        hosting.relayed.insert(id, (asked, Vec::new()));
+        pass_on(&mut hosting, &master.relay, id, Trouble::NoKeys);
     }
     let Some(game) = &mut game else { return };
     // Guests' tokens, for the host's own picture and for telling the other guests.
@@ -252,11 +363,14 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, mu
     if game.world.others != tokens {
         game.world.others = tokens.clone();
     }
-    if *screen.get() != Screen::Play {
+    // While the host is still making a hero the guests already have the world and can make
+    // theirs; tokens are only sent once the host is walking.
+    let playing = *screen.get() == Screen::Play;
+    if !playing && *screen.get() != Screen::Hero {
         return;
     }
     hosting.since_positions += time.delta_secs();
-    if hosting.since_positions >= 0.1 {
+    if playing && hosting.since_positions >= 0.1 {
         hosting.since_positions = 0.0;
         tokens.push(Token { name: player_name(&settings), x: game.world.player.x, y: game.world.player.y });
         hosting.net.broadcast(&Down::Positions(tokens));
@@ -273,14 +387,43 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, mu
         if encoded != hosting.sent {
             hosting.sent = encoded;
             copy.player = host_token;
-            hosting.net.broadcast(&Down::World(Box::new(copy)));
+            hosting.net.broadcast(&Down::World { id: game.world_id.clone(), world: Box::new(copy) });
         }
+    }
+}
+
+/// Who is at the table, so the world knows whose heroes take part. The host decides; a
+/// guest is told with the world. Alone, a save from a shared table is played with one's own
+/// hero, and a save in which no hero is one's own with all of them.
+fn presence(session: Res<Session>, settings: Res<Settings>, mut game: Option<ResMut<Game>>, screen: Res<State<Screen>>, mut next: ResMut<NextState<Screen>>) {
+    let Some(game) = &mut game else { return };
+    let me = player_name(&settings);
+    let mine = game.world.owners.iter().any(|o| *o == me);
+    let mut present = match &*session {
+        Session::Client(_) => return,
+        Session::Host(_) => {
+            let mut names = session.players();
+            names.push(me.clone());
+            names
+        }
+        Session::Solo if mine => vec![me.clone()],
+        Session::Solo => Vec::new(),
+    };
+    present.sort();
+    if game.world.present != present {
+        game.world.present = present;
+    }
+    // A host who loads a table's save in which every hero is somebody else's needs one.
+    let world = &game.world;
+    if session.is_host() && *screen.get() == Screen::Play && !world.party.is_empty() && !mine && world.owners.len() == world.party.len() && world.owners.iter().all(|o| !o.is_empty()) {
+        next.set(Screen::Hero);
     }
 }
 
 /// Takes a world from the host. The guest keeps its own token where it stands unless the
 /// party has moved to another place.
-fn adopt(world: World, game: &mut Option<ResMut<Game>>, commands: &mut Commands, next: &mut NextState<Screen>, screen: Screen, me: &str, redraw: &mut Redraw, phase: &mut Phase) {
+#[allow(clippy::too_many_arguments)]
+fn adopt(id: String, world: World, game: &mut Option<ResMut<Game>>, commands: &mut Commands, next: &mut NextState<Screen>, screen: Screen, me: &str, redraw: &mut Redraw, phase: &mut Phase, store: &Store) {
     let mut world = world;
     match game {
         Some(game) => {
@@ -295,13 +438,15 @@ fn adopt(world: World, game: &mut Option<ResMut<Game>>, commands: &mut Commands,
                 }
             }
             world.others = std::mem::take(&mut game.world.others);
-            let was_fighting = game.world.fight.is_some();
             game.world = world;
+            game.world_id = id;
             redraw.0 = true;
             if moved {
                 *phase = Phase::Arriving { t: 0.0 };
-            } else if was_fighting && game.world.fight.is_none() && *phase == Phase::Fighting {
-                // The fight ended on the host; the summary sheet closes it here.
+                // Every player keeps a copy of the game and can go on alone from it.
+                if let Err(e) = store.save_game(&game.world_id, &game.world, false) {
+                    error!("could not save the game: {e}");
+                }
             }
             // A guest who has no hero in this world yet makes one.
             if screen == Screen::Play && !game.world.owners.iter().any(|o| o == me) && game.world.party.len() == game.world.owners.len() {
@@ -311,7 +456,7 @@ fn adopt(world: World, game: &mut Option<ResMut<Game>>, commands: &mut Commands,
         None => {
             let has_hero = world.owners.iter().any(|o| o == me);
             commands.insert_resource(Phase::Arriving { t: 0.0 });
-            commands.insert_resource(Game { world, world_id: "guest".to_string() });
+            commands.insert_resource(Game { world, world_id: id });
             next.set(if has_hero { Screen::Play } else { Screen::Hero });
         }
     }
@@ -323,8 +468,10 @@ fn client_pump(
     mut commands: Commands,
     time: Res<Time>,
     mut session: ResMut<Session>,
-    settings: Res<Settings>,
+    mut settings: ResMut<Settings>,
     store: Res<Store>,
+    gm: Res<Gm>,
+    master: Res<Master>,
     mut table: ResMut<Table>,
     mut game: Option<ResMut<Game>>,
     mut phase: ResMut<Phase>,
@@ -333,7 +480,7 @@ fn client_pump(
     screen: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let events = match &*session {
+    let (events, serving) = match &*session {
         Session::Client(joined) => {
             let mut joined = joined.lock().unwrap();
             joined.since_position += time.delta_secs();
@@ -341,14 +488,24 @@ fn client_pump(
                 joined.since_position = 0.0;
                 joined.net.send(&Up::Position { x: game.world.player.x, y: game.world.player.y });
             }
-            joined.net.poll()
+            for (id, result) in std::mem::take(&mut *joined.served.lock().unwrap()) {
+                joined.net.send(&Up::Answer { id, result });
+            }
+            (joined.net.poll(), joined.served.clone())
         }
         _ => return,
     };
-    let me = player_name(&settings);
     for event in events {
+        let me = player_name(&settings);
         match event {
-            ClientEvent::Message(Down::World(world)) => adopt(*world, &mut game, &mut commands, &mut next, *screen.get(), &me, &mut redraw, &mut phase),
+            ClientEvent::Message(Down::Welcome { name }) => {
+                // The host may have numbered the name; the hero is recorded under what the
+                // host calls this player.
+                if name != me {
+                    settings.player_name = name;
+                }
+            }
+            ClientEvent::Message(Down::World { id, world }) => adopt(id, *world, &mut game, &mut commands, &mut next, *screen.get(), &me, &mut redraw, &mut phase, &store),
             ClientEvent::Message(Down::Positions(tokens)) => {
                 if let Some(game) = &mut game {
                     game.world.others = tokens.into_iter().filter(|t| t.name != me).collect();
@@ -367,6 +524,15 @@ fn client_pump(
             }
             ClientEvent::Message(Down::FightEvents(events)) => view.extend(events),
             ClientEvent::Message(Down::FightOver(summary)) => view.finish(summary),
+            ClientEvent::Message(Down::Ask(asked)) => {
+                // The model may take minutes: the answer comes back from a thread of its own.
+                let (gm, fake, serving) = (gm.clone(), master.fake, serving.clone());
+                std::thread::spawn(move || {
+                    let result = serve_for_host(&gm, &asked, fake);
+                    serving.lock().unwrap().push((asked.id, result));
+                });
+            }
+            ClientEvent::Message(Down::Chat { from, text }) => table.heard(&from, &text),
             ClientEvent::Message(Down::WrongVersion) => {
                 table.status = Some(T::LobbyWrongVersion);
                 *session = Session::Solo;
@@ -375,11 +541,10 @@ fn client_pump(
             ClientEvent::Disconnected => {
                 // The host is gone. What this guest last saw is kept as a save of its own,
                 // so the game can go on alone from here.
-                if let Some(game) = &game {
-                    let id = format!("guest-{:x}", crate::store::unix_now());
-                    if let Err(e) = store.save_game(&id, &game.world, false) {
-                        error!("could not save the game: {e}");
-                    }
+                if let Some(game) = &game
+                    && let Err(e) = store.save_game(&game.world_id, &game.world, false)
+                {
+                    error!("could not save the game: {e}");
                 }
                 table.status = Some(T::LobbyLost);
                 *session = Session::Solo;
@@ -541,7 +706,7 @@ impl Plugin for CoopPlugin {
         app.init_resource::<Session>()
             .init_resource::<Table>()
             .add_systems(OnEnter(Screen::Lobby), spawn_lobby)
-            .add_systems(PreUpdate, (host_pump, client_pump))
+            .add_systems(PreUpdate, (host_pump, client_pump, presence).chain())
             .add_systems(Update, (lobby_status, refresh_lobby).run_if(in_state(Screen::Lobby)))
             .add_observer(on_activate);
     }
@@ -563,9 +728,12 @@ mod tests {
         let up = Up::Intent(Intent::Fight(FightIntent::Attack { target: 2, weapon: 0 }));
         let back: Up = serde_json::from_str(&serde_json::to_string(&up).unwrap()).unwrap();
         assert!(matches!(back, Up::Intent(Intent::Fight(FightIntent::Attack { target: 2, weapon: 0 }))));
-        let down = Down::World(Box::new(world_with(&["Ann"])));
-        let Down::World(world) = serde_json::from_str::<Down>(&serde_json::to_string(&down).unwrap()).unwrap() else { panic!("expected a world") };
-        assert_eq!(world.owners, ["Ann"]);
+        let down = Down::World { id: "w1".into(), world: Box::new(world_with(&["Ann"])) };
+        let Down::World { id, world } = serde_json::from_str::<Down>(&serde_json::to_string(&down).unwrap()).unwrap() else { panic!("expected a world") };
+        assert_eq!((id.as_str(), &world.owners), ("w1", &vec!["Ann".to_string()]));
+        let answer = Up::Answer { id: 7, result: Err(Trouble::Exhausted { retry_at: 5 }) };
+        let back: Up = serde_json::from_str(&serde_json::to_string(&answer).unwrap()).unwrap();
+        assert!(matches!(back, Up::Answer { id: 7, result: Err(Trouble::Exhausted { retry_at: 5 }) }));
     }
 
     #[test]

@@ -102,6 +102,8 @@ enum Action {
     Reroll,
     Skill(String),
     Create,
+    /// Take the hero of a player who is away instead of making a new one.
+    Take(usize),
 }
 
 #[derive(Component)]
@@ -142,7 +144,7 @@ fn field(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, width: Val
     });
 }
 
-fn spawn_screen(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<Res<Game>>, store: Res<Store>, mut next: ResMut<NextState<Screen>>) {
+fn spawn_screen(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<Res<Game>>, store: Res<Store>, mut next: ResMut<NextState<Screen>>, session: Res<Session>, lang: Res<Lang>) {
     let Some(game) = game else {
         next.set(Screen::Main);
         return;
@@ -157,6 +159,19 @@ fn spawn_screen(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: 
         let sheet = Node { margin: UiRect::top(px(6)), width: px(464), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
         spawn_panel(root, &art, sheet, |sheet| {
             sheet.spawn((Text::default(), T::HeroTitle, fonts.title(1), ink));
+            // At a shared table the heroes of players who are away can be taken over.
+            let free: Vec<usize> = if matches!(*session, Session::Solo) { Vec::new() } else { (0..game.world.party.len()).filter(|i| game.world.is_away(*i) && !game.world.party[*i].dead).collect() };
+            if !free.is_empty() {
+                let ru = *lang == Lang::Ru;
+                sheet.spawn(Node { column_gap: px(4), row_gap: px(2), flex_wrap: FlexWrap::Wrap, align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                    line.spawn((Text::default(), T::FreeHeroes, fonts.body(), TextColor(color(FADED))));
+                    for i in free {
+                        let hero = &game.world.party[i];
+                        let class = srd().class(&hero.class).map_or(hero.class.as_str(), |c| tr(ru, &c.name));
+                        text_button(line, &art, &fonts, format!("{} ({class} {})", hero.name, hero.level), Action::Take(i));
+                    }
+                });
+            }
             sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
                 line.spawn((Node { width: px(60), flex_shrink: 0.0, ..default() }, Text::default(), T::HeroName, fonts.body(), ink));
                 field(line, &art, &fonts, px(150), (NameInput, AutoFocus), 30);
@@ -292,6 +307,15 @@ fn on_activate(
         Action::Plus(i) => draft.nudge(*i, 1),
         Action::Pick(i) => draft.pick(*i),
         Action::Skill(skill) => draft.toggle_skill(skill),
+        Action::Take(hero) => {
+            if let Some(mut game) = game {
+                // The host decides; the local copy is changed too so the guest can walk on
+                // before the host's world comes back.
+                session.send(Up::Claim(*hero));
+                game.world.claim(*hero, &owner_name(&session, &settings));
+                next.set(Screen::Play);
+            }
+        }
         Action::Create => {
             let name = name.single().map(|n| n.value().to_string()).unwrap_or_default();
             let description = story.single().map(|s| s.value().to_string()).unwrap_or_default();

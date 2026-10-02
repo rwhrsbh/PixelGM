@@ -86,6 +86,30 @@ fn hero_id(index: usize) -> String {
 }
 
 impl World {
+    /// Whether the hero's player is not at the table. Heroes nobody owns are never away.
+    pub fn is_away(&self, hero: usize) -> bool {
+        !self.present.is_empty() && self.owners.get(hero).is_some_and(|o| !o.is_empty() && !self.present.contains(o))
+    }
+
+    /// Whether the hero takes part in what happens: alive, and its player at the table.
+    pub fn takes_part(&self, hero: usize) -> bool {
+        self.party.get(hero).is_some_and(|h| !h.dead) && !self.is_away(hero)
+    }
+
+    /// Gives an away hero to a player who has none. `false` when the hero is somebody's who
+    /// is here, or the player already has one.
+    pub fn claim(&mut self, hero: usize, player: &str) -> bool {
+        if hero >= self.party.len() || player.is_empty() || self.owners.iter().any(|o| o == player) {
+            return false;
+        }
+        self.owners.resize(self.party.len(), String::new());
+        if self.owners[hero].is_empty() || !self.is_away(hero) {
+            return false;
+        }
+        self.owners[hero] = player.to_string();
+        true
+    }
+
     /// The average level of the party; 1 when there is no party yet.
     pub fn party_level(&self) -> u32 {
         match self.party.len() as u32 {
@@ -129,7 +153,7 @@ impl World {
     pub fn roll_check(&mut self, rng: &mut Rng) -> Option<Checked> {
         let check = self.pending.take()?;
         let skill = check.skill.as_deref();
-        let best = self.party.iter().filter(|h| !h.is_down() && !h.dead).max_by_key(|h| h.check_bonus(check.ability, skill));
+        let best = self.party.iter().enumerate().filter(|(i, h)| !h.is_down() && self.takes_part(*i)).map(|(_, h)| h).max_by_key(|h| h.check_bonus(check.ability, skill));
         let (hero, roll) = match best {
             Some(hero) => (hero.name.clone(), hero.check(rng, check.ability, skill, Edge::Plain)),
             // No party yet: a plain d20.
@@ -147,7 +171,8 @@ impl World {
     /// Damage outside a fight falls on the first hero still standing.
     pub(crate) fn hurt_party(&mut self, dice: &str, rng: &mut Rng) -> i32 {
         let amount = Dice::parse(dice, 0).map_or(0, |d| d.roll(rng)).clamp(0, 500);
-        if let Some(hero) = self.party.iter_mut().find(|h| !h.is_down() && !h.dead) {
+        let target = (0..self.party.len()).find(|i| self.takes_part(*i) && !self.party[*i].is_down());
+        if let Some(hero) = target.and_then(|i| self.party.get_mut(i)) {
             hero.take_damage(amount);
         }
         amount
@@ -156,7 +181,8 @@ impl World {
     pub(crate) fn heal_party(&mut self, dice: &str, rng: &mut Rng) -> i32 {
         let amount = Dice::parse(dice, 0).map_or(0, |d| d.roll(rng)).clamp(0, 500);
         // The one who needs it most: the lowest share of hit points left.
-        if let Some(hero) = self.party.iter_mut().filter(|h| !h.dead).min_by_key(|h| h.hp * 1000 / h.max_hp.max(1)) {
+        let target = (0..self.party.len()).filter(|i| self.takes_part(*i)).min_by_key(|i| self.party[*i].hp * 1000 / self.party[*i].max_hp.max(1));
+        if let Some(hero) = target.and_then(|i| self.party.get_mut(i)) {
             hero.heal(amount);
         }
         amount
@@ -170,7 +196,8 @@ impl World {
 
     fn award_xp(&mut self, each: u32) -> Vec<(String, LevelUp)> {
         let mut ups = Vec::new();
-        for hero in self.party.iter_mut().filter(|h| !h.dead) {
+        let taking_part: Vec<bool> = (0..self.party.len()).map(|i| self.takes_part(i)).collect();
+        for hero in self.party.iter_mut().zip(taking_part).filter(|(_, part)| *part).map(|(h, _)| h) {
             for up in hero.gain_xp(each) {
                 ups.push((hero.name.clone(), up));
             }
@@ -205,7 +232,7 @@ impl World {
     /// Starts a fight with every hostile creature here. `false` when there is nobody to
     /// fight or nobody to do the fighting.
     pub fn start_fight(&mut self, rng: Rng) -> bool {
-        if self.fight.is_some() || self.party.iter().all(|h| h.dead) || self.hostiles().next().is_none() {
+        if self.fight.is_some() || !(0..self.party.len()).any(|i| self.takes_part(i)) || self.hostiles().next().is_none() {
             return false;
         }
         let enemies: Vec<Combatant> = self.hostiles().map(|c| self.combatant_for(c)).collect();
@@ -214,7 +241,7 @@ impl World {
         let mut taken: Vec<(usize, usize)> = Vec::new();
         let mut combatants = Vec::new();
         let here = self.here();
-        for (i, hero) in self.party.iter().enumerate().filter(|(_, h)| !h.dead) {
+        for (i, hero) in self.party.iter().enumerate().filter(|(i, _)| self.takes_part(*i)) {
             // A hero whose player walks a token of their own starts where that token stands;
             // the rest stand with the leader. Each takes the nearest free cell.
             let start = self.owners.get(i).and_then(|owner| self.others.iter().find(|t| t.name == *owner)).map_or(leader, |t| inside(Player { x: t.x, y: t.y }.cell()));
@@ -260,7 +287,7 @@ impl World {
         if let Some(leader) = alive().find(|c| !walks_alone(c)).or_else(|| alive().next()) {
             self.player = Player::in_cell(leader.x.max(0) as usize, leader.y.max(0) as usize);
         }
-        let survivors = self.party.iter().filter(|h| !h.dead).count().max(1) as u32;
+        let survivors = (0..self.party.len()).filter(|i| self.takes_part(*i)).count().max(1) as u32;
         let xp_each = if won { fight.xp_won() / survivors } else { 0 };
         let level_ups = self.award_xp(xp_each);
         Some(FightSummary { won, xp_each, level_ups })
@@ -568,4 +595,27 @@ mod tests {
         let fire = w.here().props[0].clone();
         assert!(w.fight_blocked((fire.x as i32, fire.y as i32)));
     }
+
+    #[test]
+    fn a_hero_whose_player_is_away_takes_no_part_and_can_be_claimed() {
+        let mut w = world();
+        w.party.clear();
+        let skills = vec!["acrobatics".to_string(), "athletics".to_string()];
+        w.party.push(Character::create("Ann's", "", "human", "fighter", [15, 12, 14, 8, 10, 13], &skills, &[]).unwrap());
+        w.party.push(Character::create("Bob's", "", "human", "fighter", [15, 12, 14, 8, 10, 13], &skills, &[]).unwrap());
+        w.owners = vec!["Ann".into(), "Bob".into()];
+        assert!(!w.is_away(1), "with nobody listed as present nobody is away");
+        w.present = vec!["Ann".into()];
+        assert!(w.is_away(1) && !w.is_away(0));
+        w.here_mut().creatures[0].attitude = Attitude::Hostile;
+        assert!(w.start_fight(Rng::seeded(3)));
+        let fight = w.fight.as_ref().unwrap();
+        assert!(fight.index_of("hero_0").is_some() && fight.index_of("hero_1").is_none());
+        w.fight = None;
+        assert!(!w.claim(0, "Carl"), "Ann is here");
+        assert!(!w.claim(1, "Ann"), "Ann has a hero already");
+        assert!(w.claim(1, "Carl"));
+        assert_eq!(w.owners, ["Ann", "Carl"]);
+    }
+
 }

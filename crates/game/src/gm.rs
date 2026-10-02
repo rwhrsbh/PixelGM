@@ -40,7 +40,7 @@ pub fn masked(secret: &str) -> String {
 }
 
 /// Why the game master did not answer, in the terms a player can act on.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Trouble {
     NoKeys,
     Exhausted { retry_at: u64 },

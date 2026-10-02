@@ -243,6 +243,10 @@ pub struct World {
     /// game played alone.
     #[serde(default)]
     pub owners: Vec<String>,
+    /// The players at the table right now. A hero whose player is not among them is away:
+    /// it follows the party but takes no part. Empty means nobody is away (a game alone).
+    #[serde(default)]
+    pub present: Vec<String>,
     /// The other players' tokens in the place the party is in. Not saved: they are where
     /// their players last said they were.
     #[serde(skip)]

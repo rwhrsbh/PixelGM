@@ -91,6 +91,9 @@ texts! {
     LobbyLost: "Связь с хостом потеряна. Игра сохранена — можно продолжить одному.", "The host is gone. The game was saved; you can go on alone.";
     LobbyHostFailed: "Не удалось создать игру: порт занят.", "Could not host: the port is in use.";
     LobbyJoinFailed: "Не удалось подключиться.", "Could not connect.";
+    TableTalk: "Столу", "To the table";
+    WritingHintTable: "Enter — мастеру, это тратит ход. «Столу» — только игрокам: мастер не слышит.", "Enter sends it to the game master and spends a turn. \"To the table\" is for the players only: the master does not hear it.";
+    FreeHeroes: "Герои без игрока — можно взять:", "Heroes without a player, free to take:";
     MasterBusy: "Мастер занят другим вопросом. Подожди ответа.", "The master is busy with another question. Wait for the answer.";
     HeroTitle: "Твой герой", "Your hero";
     HeroName: "Имя", "Name";

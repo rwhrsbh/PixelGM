@@ -136,6 +136,14 @@ struct Overlay;
 #[derive(Component)]
 struct SayInput;
 
+/// The last things said at the table, in a corner of the screen.
+#[derive(Component)]
+struct ChatLog;
+
+/// How long a line of table talk stays on screen, and how many are shown at once.
+const CHAT_SECONDS: f32 = 14.0;
+const CHAT_LINES: usize = 4;
+
 #[derive(Component, Clone, Copy)]
 enum PlayAction {
     Resume,
@@ -150,6 +158,8 @@ enum PlayAction {
     /// Open the field for the party's own words.
     Own,
     Send,
+    /// Say what was typed to the other players, not to the master.
+    Talk,
     /// One of the choices offered with the last telling.
     Choose(usize),
     /// Back to walking.
@@ -228,6 +238,16 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
 
     let full = Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), ..default() };
     commands.spawn((DespawnOnExit(Screen::Play), Veil, full.clone(), BackgroundColor(Color::BLACK), GlobalZIndex(5)));
+    commands.spawn((
+        DespawnOnExit(Screen::Play),
+        ChatLog,
+        Node { position_type: PositionType::Absolute, left: px(4), top: px(4), max_width: px(230), padding: UiRect::axes(px(3), px(1)), display: Display::None, ..default() },
+        BackgroundColor(Color::srgba(0.1, 0.07, 0.06, 0.82)),
+        GlobalZIndex(9),
+        Text::default(),
+        fonts.body(),
+        TextColor(color(PARCHMENT)),
+    ));
     commands.spawn((DespawnOnExit(Screen::Play), Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..full })).with_children(|root| {
         root.spawn((ArrivalSheet, Node { margin: UiRect::top(px(8)), ..default() })).with_children(|slot| {
             spawn_panel(slot, &art, Node { width: px(380), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }, |sheet| {
@@ -759,6 +779,28 @@ fn hud(
     }
 }
 
+/// Table talk fades from the corner of the screen a while after it was said.
+fn chat_log(time: Res<Time>, mut table: ResMut<Table>, mut logs: Query<(&mut Text, &mut Node), With<ChatLog>>) {
+    if table.chat.is_empty() {
+        return;
+    }
+    let table = table.bypass_change_detection();
+    for line in &mut table.chat {
+        line.age += time.delta_secs();
+    }
+    let fresh: Vec<String> = table.chat.iter().filter(|l| l.age < CHAT_SECONDS).map(|l| format!("{}: {}", l.from, l.text)).collect();
+    let shown = fresh[fresh.len().saturating_sub(CHAT_LINES)..].join("\n");
+    for (mut text, mut node) in &mut logs {
+        let display = if shown.is_empty() { Display::None } else { Display::Flex };
+        if node.display != display {
+            node.display = display;
+        }
+        if text.0 != shown {
+            text.0 = shown.clone();
+        }
+    }
+}
+
 /// Which sheet, if any, lies over the game, with everything it shows: when this value
 /// changes the sheet is rebuilt.
 #[derive(Clone, PartialEq, Default)]
@@ -769,7 +811,8 @@ enum Sheet {
     Stuck(String),
     Paused,
     Looking { name: String, description: String, actions: Vec<String> },
-    Writing,
+    /// Whether there are other players to talk to.
+    Writing { table: bool },
     Asking(String),
     Reading(Turn),
     Refused(String),
@@ -780,7 +823,7 @@ enum Sheet {
     Character { lines: Vec<String>, points: bool },
 }
 
-fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang) -> Sheet {
+fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, at_table: bool) -> Sheet {
     match phase {
         Phase::Drawing { to } => Sheet::Drawing(world.place_name(to).to_string()),
         Phase::Stuck { trouble, .. } => Sheet::Stuck(trouble_text(trouble, now, lang)),
@@ -798,7 +841,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang) -> Sheet {
                 None => Sheet::None,
             }
         }
-        Phase::Writing { .. } => Sheet::Writing,
+        Phase::Writing { .. } => Sheet::Writing { table: at_table },
         Phase::Asking { said, .. } => Sheet::Asking(said.clone()),
         Phase::Reading { turn } => Sheet::Reading(turn.clone()),
         Phase::Refused { trouble, .. } => Sheet::Refused(trouble_text(trouble, now, lang)),
@@ -829,12 +872,12 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang) -> Sheet {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<Gm>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, mut shown: Local<Sheet>, old: Query<Entity, With<Overlay>>) {
+fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<Gm>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, session: Res<Session>, mut shown: Local<Sheet>, old: Query<Entity, With<Overlay>>) {
     // A countdown in a refusal would rebuild the sheet every second and swallow clicks, so
     // the time is fixed when the sheet first appears.
     let wanted = match (&*phase, &*shown) {
         (Phase::Stuck { .. }, Sheet::Stuck(_)) | (Phase::Refused { .. }, Sheet::Refused(_)) if !old.is_empty() => shown.clone(),
-        _ => sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang),
+        _ => sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang, !matches!(*session, Session::Solo)),
     };
     if *shown == wanted && (wanted == Sheet::None || !old.is_empty()) {
         return;
@@ -850,7 +893,7 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
     let faded = TextColor(color(FADED));
     // Sheets about the story sit at the bottom, where the eye rests while walking; the rest
     // take the middle of the screen.
-    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Rolling(_));
+    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Rolling(_));
     let full = Node {
         position_type: PositionType::Absolute,
         left: px(0),
@@ -897,7 +940,7 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
                     button(line, &art, &fonts, T::Leave, true, PlayAction::Close);
                 });
             }
-            Sheet::Writing => {
+            Sheet::Writing { table } => {
                 sheet.spawn((Text::default(), T::WhatDoYouDo, fonts.body(), ink));
                 sheet.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|line| {
                     line.spawn(Node { flex_grow: 1.0, height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }).with_children(|field| {
@@ -915,8 +958,11 @@ fn overlay(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, gm: Res<G
                         ));
                     });
                     button(line, &art, &fonts, T::Say, true, PlayAction::Send);
+                    if *table {
+                        button(line, &art, &fonts, T::TableTalk, true, PlayAction::Talk);
+                    }
                 });
-                sheet.spawn((Text::default(), T::WritingHint, fonts.body(), faded));
+                sheet.spawn((Text::default(), if *table { T::WritingHintTable } else { T::WritingHint }, fonts.body(), faded));
             }
             Sheet::Asking(said) => {
                 sheet.spawn((Text::new(format!("«{said}»")), fonts.body(), faded));
@@ -1045,6 +1091,14 @@ fn on_activate(
     // This observer hears every button in the game; outside a game there is nothing to act on.
     let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
     let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
+    if let (PlayAction::Talk, Phase::Writing { .. }) = (*action, &*phase) {
+        let typed = input.single().map(|i| i.value().to_string()).unwrap_or_default();
+        if !typed.trim().is_empty() {
+            session.chat(&mut table, &player_name(&settings), typed.trim());
+        }
+        *phase = Phase::Walking;
+        return;
+    }
     // A guest does not change the world: it asks the host, and reads the answer with
     // everyone else when it comes.
     if session.is_client() {
@@ -1242,7 +1296,7 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, advance, receive, guests, background_work, draw, place_hero, place_fellows, idle, hud, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, advance, receive, guests, background_work, draw, place_hero, place_fellows, idle, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_observer(on_activate);
     }
@@ -1272,7 +1326,7 @@ mod tests {
     #[test]
     fn looking_at_a_thing_shows_its_name_and_what_can_be_done_with_it() {
         let w = world();
-        let sheet = sheet_for(&Phase::Looking { thing: "cat".into() }, &w, 0, Lang::En);
+        let sheet = sheet_for(&Phase::Looking { thing: "cat".into() }, &w, 0, Lang::En, false);
         let Sheet::Looking { name, actions, .. } = sheet else { panic!("expected the looking sheet") };
         assert_eq!(name, "Grey cat");
         assert_eq!(actions, ["Pet the cat", "Shoo it away"]);
@@ -1280,14 +1334,14 @@ mod tests {
 
     #[test]
     fn looking_at_something_that_is_gone_shows_nothing() {
-        assert!(sheet_for(&Phase::Looking { thing: "ghost".into() }, &world(), 0, Lang::En) == Sheet::None);
+        assert!(sheet_for(&Phase::Looking { thing: "ghost".into() }, &world(), 0, Lang::En, false) == Sheet::None);
     }
 
     #[test]
     fn the_journal_lists_what_is_carried_and_what_was_said() {
         let mut w = world();
         w.perform("cat", 1);
-        let Sheet::Journal { carried, lines } = sheet_for(&Phase::Journal, &w, 0, Lang::En) else { panic!("expected the journal") };
+        let Sheet::Journal { carried, lines } = sheet_for(&Phase::Journal, &w, 0, Lang::En, false) else { panic!("expected the journal") };
         assert_eq!(carried, "Cat hair");
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], (Speaker::Player, "Shoo it away".to_string()));

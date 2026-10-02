@@ -226,7 +226,9 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
         redraw.0 = true;
         return;
     }
-    let events = world.fight_monster_turn();
+    // A hero whose player has left the table does not hold the fight up.
+    let abandoned = world.acting_owner().is_some_and(|owner| !world.present.is_empty() && !world.present.iter().any(|p| p == owner));
+    let events = if abandoned { world.fight_act(&world::FightIntent::EndTurn) } else { world.fight_monster_turn() };
     if !events.is_empty() {
         session.broadcast(&Down::FightEvents(events.clone()));
         view.queue.extend(events);

@@ -2,6 +2,7 @@
 //! invents and draws it.
 
 use crate::art::Art;
+use crate::coop::Session;
 use crate::gm::{Gm, Health, KeyBook, Trouble, trouble_text};
 use crate::i18n::{Lang, T};
 use crate::master::{Answer, Ask, Master};
@@ -54,12 +55,52 @@ fn sex_label(making: &Making) -> T {
 
 const FIELD_BORDER: f32 = 4.0;
 
-fn spawn_form(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, book: Res<KeyBook>, master: Res<Master>, making: Res<Making>) {
+/// Whether there is anyone to draw a world: a key of the host's, or guests whose keys can
+/// be asked.
+fn can_ask(master: &Master, book: &KeyBook, session: &Session) -> bool {
+    master.fake || book.entries.iter().any(|e| e.health == Health::Working || e.health == Health::Checking) || !session.players().is_empty()
+}
+
+fn spawn_form(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, book: Res<KeyBook>, master: Res<Master>, making: Res<Making>, session: Res<Session>) {
+    build_form(&mut commands, &art, &fonts, &making, can_ask(&master, &book, &session));
+}
+
+/// A key may start working, or a guest sit down, while the form is open: the form is drawn
+/// again, keeping what was typed.
+#[allow(clippy::too_many_arguments)]
+fn refresh_form(
+    mut commands: Commands,
+    art: Res<Art>,
+    fonts: Res<Fonts>,
+    book: Res<KeyBook>,
+    master: Res<Master>,
+    mut making: ResMut<Making>,
+    session: Res<Session>,
+    roots: Query<Entity, With<DespawnOnExit<Screen>>>,
+    typed: Query<&EditableText, With<WishInput>>,
+    fresh: Query<(), Added<WishInput>>,
+    mut built: Local<Option<bool>>,
+) {
+    let now = can_ask(&master, &book, &session);
+    if !fresh.is_empty() || *built == Some(now) {
+        *built = Some(now);
+        return;
+    }
+    *built = Some(now);
+    if let Ok(typed) = typed.single() {
+        making.request = typed.value().to_string();
+    }
+    for root in &roots {
+        commands.entity(root).despawn();
+    }
+    build_form(&mut commands, &art, &fonts, &making, now);
+}
+
+fn build_form(commands: &mut Commands, art: &Art, fonts: &Fonts, making: &Making, can_ask: bool) {
     let ink = TextColor(color(INK));
-    let can_ask = master.fake || book.entries.iter().any(|e| e.health == Health::Working || e.health == Health::Checking);
     commands.spawn(screen_root(Screen::NewGame)).with_children(|root| {
         let sheet = Node { margin: UiRect::top(px(30)), width: px(400), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
-        spawn_panel(root, &art, sheet, |sheet| {
+        spawn_panel(root, art, sheet, |sheet| {
             sheet.spawn((Text::default(), T::NewWorldTitle, fonts.title(1), ink));
             sheet.spawn((Text::default(), T::NewWorldAsk, fonts.body(), ink));
             sheet.spawn(Node { height: px(48), padding: UiRect::all(px(5)), overflow: Overflow::clip(), ..default() }).with_children(|field| {
@@ -78,17 +119,17 @@ fn spawn_form(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, book: Re
                 ));
             });
             sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                button(line, &art, &fonts, violence_label(&making), true, Action::Violence);
-                button(line, &art, &fonts, sex_label(&making), true, Action::Sex);
+                button(line, art, fonts, violence_label(making), true, Action::Violence);
+                button(line, art, fonts, sex_label(making), true, Action::Sex);
             });
             if !can_ask {
                 sheet.spawn((Text::default(), T::NeedKey, fonts.body(), TextColor(color(WAX))));
             }
             sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                button(line, &art, &fonts, T::Back, true, Nav::Back);
-                button(line, &art, &fonts, T::CreateWorld, can_ask, Action::Create);
+                button(line, art, fonts, T::Back, true, Nav::Back);
+                button(line, art, fonts, T::CreateWorld, can_ask, Action::Create);
                 if !can_ask {
-                    button(line, &art, &fonts, T::Keys, true, Action::Keys);
+                    button(line, art, fonts, T::Keys, true, Action::Keys);
                 }
             });
         });
@@ -235,7 +276,7 @@ impl Plugin for NewGamePlugin {
         app.init_resource::<Making>()
             .add_systems(OnEnter(Screen::NewGame), spawn_form)
             .add_systems(OnEnter(Screen::Creating), spawn_waiting)
-            .add_systems(Update, (wait_for_world.run_if(in_state(Screen::Creating)), show_switches.run_if(in_state(Screen::NewGame))))
+            .add_systems(Update, (wait_for_world.run_if(in_state(Screen::Creating)), (show_switches, refresh_form).run_if(in_state(Screen::NewGame))))
             .add_observer(on_activate);
     }
 }
