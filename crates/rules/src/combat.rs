@@ -34,6 +34,12 @@ pub struct Strike {
     pub heals: bool,
     /// The strike cannot miss and cannot be resisted: no roll is made.
     pub sure: bool,
+    /// The hero's feat this strike comes from, by its place in the hero's list.
+    #[serde(default)]
+    pub feat: Option<usize>,
+    /// How many more times it can be used; `None` for no limit.
+    #[serde(default)]
+    pub uses_left: Option<u8>,
 }
 
 fn cells(feet: u32) -> u32 {
@@ -47,6 +53,20 @@ impl Strike {
             None => ("Unarmed strike".to_string(), (5, 5)),
         };
         Self { name, bonus: character.attack_bonus(index), damage: vec![character.damage(index)], range: cells(range.0), long_range: cells(range.1), ..Self::default() }
+    }
+
+    /// A feat that harms or heals, as a strike. `None` for feats that only change numbers.
+    pub fn feat(character: &Character, index: usize) -> Option<Self> {
+        let feat = character.feats.get(index)?;
+        let dice = Dice::parse(&feat.dice, 0).filter(|d| d.average() > 0.0)?;
+        let range = cells(feat.range.max(5));
+        let modifier = character.feat_modifier();
+        let base = Self { name: feat.name.clone(), damage: vec![dice], range, long_range: range, area: feat.area / 5, feat: Some(index), uses_left: feat.uses_left(), ..Self::default() };
+        Some(match (feat.heals, feat.save) {
+            (true, _) => Self { heals: true, ..base },
+            (false, Some(save)) => Self { save: Some((save, 8 + character.proficiency() + modifier, true)), ..base },
+            (false, None) => Self { bonus: character.proficiency() + modifier, ..base },
+        })
     }
 
     /// A spell the rules can carry out, cast with a slot of `slot` (0 for a cantrip).
@@ -130,7 +150,8 @@ impl Combatant {
     }
 
     pub fn hero(character: &Character, id: &str, at: Cell) -> Self {
-        let strikes: Vec<Strike> = if character.weapons.is_empty() { vec![Strike::weapon(character, "")] } else { character.weapons.iter().map(|w| Strike::weapon(character, w)).collect() };
+        let mut strikes: Vec<Strike> = if character.weapons.is_empty() { vec![Strike::weapon(character, "")] } else { character.weapons.iter().map(|w| Strike::weapon(character, w)).collect() };
+        strikes.extend((0..character.feats.len()).filter_map(|i| Strike::feat(character, i)));
         Self {
             hp: character.hp,
             max_hp: character.max_hp,
@@ -150,7 +171,7 @@ impl Combatant {
         let strikes: Vec<Strike> = monster
             .attacks
             .iter()
-            .map(|a| Strike { name: a.name.clone(), bonus: a.bonus, damage: a.damage.clone(), range: cells(a.range), long_range: cells(a.range), save: a.save, area: if a.save.is_some() { 2 } else { 0 }, heals: false, sure: false })
+            .map(|a| Strike { name: a.name.clone(), bonus: a.bonus, damage: a.damage.clone(), range: cells(a.range), long_range: cells(a.range), save: a.save, area: if a.save.is_some() { 2 } else { 0 }, heals: false, sure: false, feat: None, uses_left: None })
             .collect();
         let mut routine: Vec<usize> = monster.multiattack.iter().flat_map(|(wanted, count)| strikes.iter().position(|s| &s.name == wanted).into_iter().flat_map(move |i| std::iter::repeat_n(i, *count as usize))).collect();
         if routine.is_empty() && !strikes.is_empty() {
@@ -496,12 +517,16 @@ impl Encounter {
     pub fn attack(&mut self, target: usize, first: usize) -> Vec<Event> {
         let me = self.actor_index();
         let actor = &self.combatants[me];
-        if !actor.action_left || !actor.standing() || first >= actor.strikes.len() {
+        if !actor.action_left || !actor.standing() || first >= actor.strikes.len() || actor.strikes[first].uses_left == Some(0) {
             return Vec::new();
         }
-        // A hero swings the chosen weapon as many times as it has attacks; a monster's
-        // routine names its own strikes.
-        let routine: Vec<usize> = if actor.side == Side::Party { vec![first; actor.routine.len().max(1)] } else { actor.routine.clone() };
+        // A hero swings the chosen weapon as many times as it has attacks, and uses a feat
+        // once; a monster's routine names its own strikes.
+        let routine: Vec<usize> = match actor.side {
+            Side::Party if actor.strikes[first].feat.is_some() => vec![first],
+            Side::Party => vec![first; actor.routine.len().max(1)],
+            Side::Enemy => actor.routine.clone(),
+        };
         let mut events = Vec::new();
         let mut used = false;
         for strike in routine {
@@ -516,6 +541,37 @@ impl Encounter {
         }
         if used {
             self.combatants[me].action_left = false;
+            if let Some(left) = &mut self.combatants[me].strikes[first].uses_left {
+                *left = left.saturating_sub(1);
+            }
+        }
+        events
+    }
+
+    /// Something not in the rules that the game master has judged: the actor spends its
+    /// action, and what the master allowed happens without a further roll.
+    pub fn improvise(&mut self, name: &str, target: Option<usize>, damage: i32, heal: i32) -> Vec<Event> {
+        let me = self.actor_index();
+        if !self.combatants[me].action_left || !self.combatants[me].standing() {
+            return Vec::new();
+        }
+        self.combatants[me].action_left = false;
+        let who = self.combatants[me].id.clone();
+        let mut events = Vec::new();
+        if let Some(target) = target.filter(|t| *t < self.combatants.len() && damage > 0) {
+            events.push(Event::Struck { who: who.clone(), target: self.combatants[target].id.clone(), strike: name.to_string(), damage });
+            events.extend(self.combatants[target].hurt(damage));
+        }
+        if heal > 0 {
+            // Healing goes to the one named when it is a friend, otherwise to the actor.
+            let side = self.combatants[me].side;
+            let mended = target.filter(|t| *t < self.combatants.len() && self.combatants[*t].side == side && damage <= 0).unwrap_or(me);
+            let was_down = self.combatants[mended].hp <= 0;
+            self.combatants[mended].mend(heal);
+            events.push(Event::Healed { who, target: self.combatants[mended].id.clone(), amount: heal });
+            if was_down && self.combatants[mended].standing() {
+                events.push(Event::Revived { who: self.combatants[mended].id.clone() });
+            }
         }
         events
     }
@@ -841,4 +897,43 @@ mod tests {
         let back: Encounter = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
         assert_eq!(back, e);
     }
+
+    #[test]
+    fn a_feat_is_a_strike_used_once_per_action_and_only_as_often_as_it_has_uses() {
+        use crate::character::Feat;
+        let skills = vec!["athletics".to_string(), "perception".to_string()];
+        let mut hero = Character::create("Brak", "", "human", "fighter", [15, 12, 14, 8, 10, 13], &skills, &[]).unwrap();
+        hero.grant(Feat { name: "Thunder shout".into(), dice: "2d6".into(), range: 30, save: Some(Ability::Con), uses: 1, ..Feat::default() }, true);
+        hero.grant(Feat { name: "Tough".into(), hp: 2, ..Feat::default() }, true);
+        let brak = Combatant::hero(&hero, "hero_0", (2, 2));
+        let shout = brak.strikes.iter().position(|s| s.feat == Some(0)).expect("the shout is a strike");
+        assert_eq!(brak.strikes.iter().filter(|s| s.feat.is_some()).count(), 1, "a feat of plain numbers is no strike");
+        assert_eq!(brak.strikes[shout].uses_left, Some(1));
+        let goblin = Combatant::monster(&srd().monsters["goblin"], "goblin", "Goblin", (4, 2));
+        let mut fight = Encounter { combatants: vec![brak, goblin], order: vec![0, 1], turn: 0, round: 1, rng: Rng::seeded(4) };
+        fight.combatants[0].action_left = true;
+        let events = fight.attack(1, shout);
+        assert_eq!(events.iter().filter(|e| matches!(e, Event::Saved { .. })).count(), 1, "{events:?}");
+        assert_eq!(fight.combatants[0].strikes[shout].uses_left, Some(0));
+        fight.combatants[0].action_left = true;
+        assert!(fight.attack(1, shout).is_empty(), "no uses left");
+    }
+
+    #[test]
+    fn an_improvised_action_spends_the_action_and_does_what_the_master_allowed() {
+        let skills = vec!["athletics".to_string(), "perception".to_string()];
+        let hero = Character::create("Brak", "", "human", "fighter", [15, 12, 14, 8, 10, 13], &skills, &[]).unwrap();
+        let brak = Combatant::hero(&hero, "hero_0", (2, 2));
+        let goblin = Combatant::monster(&srd().monsters["goblin"], "goblin", "Goblin", (9, 2));
+        let mut fight = Encounter { combatants: vec![brak, goblin], order: vec![0, 1], turn: 0, round: 1, rng: Rng::seeded(4) };
+        fight.combatants[0].action_left = true;
+        fight.combatants[0].hp = 3;
+        let events = fight.improvise("Chandelier", Some(1), 4, 2);
+        assert!(matches!(&events[0], Event::Struck { target, damage: 4, .. } if target == "goblin"), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::Healed { target, amount: 2, .. } if target == "hero_0")));
+        assert_eq!(fight.combatants[0].hp, 5);
+        assert!(!fight.combatants[0].action_left);
+        assert!(fight.improvise("Again", Some(1), 4, 0).is_empty(), "the action is spent");
+    }
+
 }

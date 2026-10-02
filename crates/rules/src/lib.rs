@@ -7,7 +7,7 @@ pub mod combat;
 pub mod data;
 pub mod dice;
 
-pub use character::{Ability, AbilityMethod, Character, DeathSaves};
+pub use character::{Ability, AbilityMethod, Character, DeathSaves, Feat};
 pub use combat::{Combatant, Encounter, Event, Outcome, Side};
 pub use data::{Srd, srd, tr};
 pub use dice::{Dice, Rng, Roll};

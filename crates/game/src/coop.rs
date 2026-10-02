@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -46,6 +46,11 @@ pub enum Intent {
     Improve(Ability),
     /// Something only the player in the master's seat may do.
     Gm(GmAct),
+    /// One of the abilities offered to the player's hero.
+    Feat(usize),
+    /// Something tried in a fight that the rules have no button for; `spell` when it is a
+    /// spell the rules cannot carry out, with the slot it takes.
+    Stunt { said: String, spell: Option<(String, u8)> },
 }
 
 /// What the player in the master's seat does. A guest sends it and the host checks who it
@@ -129,6 +134,8 @@ pub enum Down {
     Trouble(String),
     FightEvents(Vec<Event>),
     FightOver(FightSummary),
+    /// A line for the fight's log that is not an event of the rules: how a stunt went.
+    FightNote(String),
     /// The host's keys are spent; this guest's keys are asked to serve a request.
     Ask(Relayed),
     Chat { from: String, text: String },
@@ -427,6 +434,12 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                 let world = &mut game.world;
                 let length = world.party.len();
                 world.owners.resize(length, String::new());
+                // A player whose hero died lets go of it and brings a new one.
+                if let Some(old) = world.owners.iter().position(|o| o == name)
+                    && world.party[old].dead
+                {
+                    world.owners[old] = String::new();
+                }
                 if !world.owners.contains(name) {
                     world.party.push(*hero);
                     world.owners.push(name.clone());
@@ -639,6 +652,7 @@ fn client_pump(
             }
             ClientEvent::Message(Down::FightEvents(events)) => view.extend(events),
             ClientEvent::Message(Down::FightOver(summary)) => view.finish(summary),
+            ClientEvent::Message(Down::FightNote(line)) => view.note(line),
             ClientEvent::Message(Down::Ask(asked)) => {
                 // The model may take minutes: the answer comes back from a thread of its own.
                 let (gm, fake, serving) = (gm.clone(), master.fake, serving.clone());

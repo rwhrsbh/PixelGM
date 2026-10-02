@@ -1,7 +1,7 @@
 //! Steering the interface without a mouse: arrow keys, a gamepad's D-pad or left stick move
 //! the focus between buttons, Enter, Space or the pad's bottom button press the focused one.
 
-use crate::widgets::{Activate, PixelButton};
+use crate::widgets::{Activate, EnterPresses, PixelButton};
 use bevy::input_focus::directional_navigation::DirectionalNavigationPlugin;
 use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::math::CompassOctant;
@@ -137,7 +137,7 @@ fn press_focused(
     nav: Res<NavMode>,
     focus: Res<InputFocus>,
     buttons: Query<&PixelButton>,
-    all: Query<(Entity, &PixelButton)>,
+    all: Query<(Entity, &PixelButton, Has<EnterPresses>)>,
     typing: Query<(), With<EditableText>>,
     mut commands: Commands,
 ) {
@@ -146,10 +146,10 @@ fn press_focused(
         return;
     }
     if !nav.active {
-        // With the mouse in charge nothing is focused, but a sheet with a single button
-        // (a telling to read on from) still closes on Enter.
-        let mut enabled = all.iter().filter(|(_, b)| b.enabled);
-        if let (Some((entity, _)), None) = (enabled.next(), enabled.next())
+        // With the mouse in charge nothing is focused, but a sheet whose single button is
+        // marked for it (a telling to read on from, a die to roll) still answers to Enter.
+        let mut enabled = all.iter().filter(|(_, b, _)| b.enabled);
+        if let (Some((entity, _, true)), None) = (enabled.next(), enabled.next())
             && !focus.get().is_some_and(|e| typing.contains(e))
         {
             commands.trigger(Activate { entity });

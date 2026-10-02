@@ -77,6 +77,44 @@ pub struct FightSummary {
     pub level_ups: Vec<(String, LevelUp)>,
 }
 
+/// What the master made of something a hero tried in a fight that the rules do not cover:
+/// a check, and what a success is worth.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(default)]
+pub struct StuntDraft {
+    /// What the attempt looks like, told whichever way it goes.
+    pub narration: String,
+    pub ability: String,
+    pub skill: Option<String>,
+    #[serde(deserialize_with = "crate::story::lenient_int")]
+    pub dc: i64,
+    /// The id of the creature it is aimed at, or the name of a hero; empty for nobody.
+    pub target: String,
+    /// Dice of harm on a success; empty for none.
+    #[serde(deserialize_with = "crate::story::lenient_text")]
+    pub damage: String,
+    /// Dice of healing on a success; empty for none.
+    #[serde(deserialize_with = "crate::story::lenient_text")]
+    pub heal: String,
+    pub success: String,
+    pub failure: String,
+}
+
+/// An improvised action after the die was rolled.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Stunt {
+    pub hero: String,
+    pub roll: Roll,
+    pub difficulty: i32,
+    pub success: bool,
+    /// What the players read: the attempt and how it went.
+    pub narration: String,
+    pub events: Vec<Event>,
+}
+
+/// One unusual deed in this many earns a secret skill.
+const DEEDS_PER_SECRET: u32 = 5;
+
 /// Story experience the master may hand out in one go, per character level: enough to
 /// matter, not enough to skip levels.
 const STORY_XP_PER_LEVEL: u32 = 100;
@@ -110,6 +148,150 @@ impl World {
         true
     }
 
+    /// Whether the caps that keep a generous master in check apply at this table.
+    pub fn limited(&self) -> bool {
+        !self.table.no_limits
+    }
+
+    /// The most harm or healing one effect outside a fight may do.
+    fn story_cap(&self) -> i32 {
+        if self.limited() { 10 + 10 * self.party_level() as i32 } else { 500 }
+    }
+
+    /// A hero by name, or the first who takes part when the name fits nobody.
+    fn hero_named(&self, name: &str) -> Option<usize> {
+        let wanted = name.trim().to_lowercase();
+        self.party.iter().position(|h| !wanted.is_empty() && h.name.to_lowercase() == wanted).or_else(|| (0..self.party.len()).find(|i| self.takes_part(*i)))
+    }
+
+    /// Counts an unusual deed. Now and then one earns a secret skill, which the master is
+    /// then asked to write; a hero holds only so many of them for its level.
+    pub(crate) fn deed(&mut self, hero: &str, rng: &mut Rng) {
+        if self.table.book_only {
+            return;
+        }
+        let Some(index) = self.hero_named(hero) else { return };
+        let held = self.party[index].feats.iter().filter(|f| f.secret).count() as u32;
+        let room = held < 1 + self.party[index].level / 4;
+        if room && !self.secrets_due.contains(&index) && rng.die(DEEDS_PER_SECRET) == 1 {
+            self.secrets_due.push(index);
+        }
+    }
+
+    /// The story brings a dead hero back, on one hit point.
+    pub(crate) fn revive(&mut self, hero: &str) -> bool {
+        let wanted = hero.trim().to_lowercase();
+        let found = self.party.iter_mut().find(|h| h.dead && (wanted.is_empty() || h.name.to_lowercase() == wanted));
+        match found {
+            Some(hero) => {
+                hero.dead = false;
+                hero.death = Default::default();
+                hero.hp = 1;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The hero the master should be asked about next: one owed a secret skill, or one at
+    /// a level that calls for abilities to choose from. `true` marks the secret.
+    pub fn feat_wanted(&self) -> Option<(usize, bool)> {
+        if self.table.book_only {
+            return None;
+        }
+        if let Some(hero) = self.secrets_due.first() {
+            return Some((*hero, true));
+        }
+        (0..self.party.len()).find(|i| self.party[*i].feat_due && self.takes_part(*i) && !self.offers.iter().any(|o| o.hero == *i)).map(|i| (i, false))
+    }
+
+    /// Takes what the master wrote for a hero. A secret skill is the hero's at once, and
+    /// its name comes back to be told; abilities for a level wait for the player's choice.
+    pub fn take_feats(&mut self, hero: usize, secret: bool, mut feats: Vec<rules::Feat>) -> Option<String> {
+        let limits = self.limited();
+        let level = self.party.get(hero)?.level;
+        for feat in &mut feats {
+            feat.fit(level, limits);
+            feat.secret = secret;
+        }
+        feats.retain(|f| !f.name.is_empty());
+        if secret {
+            self.secrets_due.retain(|h| *h != hero);
+            let feat = feats.into_iter().next()?;
+            let name = feat.name.clone();
+            self.party[hero].grant(feat, limits);
+            return Some(name);
+        }
+        feats.truncate(3);
+        if feats.is_empty() {
+            // Nothing usable came: the level passes without one rather than asking forever.
+            self.party[hero].feat_due = false;
+        } else {
+            self.offers.retain(|o| o.hero != hero);
+            self.offers.push(crate::model::FeatOffer { hero, feats });
+        }
+        None
+    }
+
+    /// The player picked one of the abilities offered to their hero.
+    pub fn choose_feat(&mut self, hero: usize, choice: usize) -> bool {
+        let Some(at) = self.offers.iter().position(|o| o.hero == hero) else { return false };
+        if choice >= self.offers[at].feats.len() || hero >= self.party.len() {
+            return false;
+        }
+        let offer = self.offers.remove(at);
+        let limits = self.limited();
+        self.party[hero].grant(offer.feats[choice].clone(), limits);
+        self.party[hero].feat_due = false;
+        true
+    }
+
+    /// A table that plays by the book has no abilities to offer: the levels pass.
+    pub fn settle_feats(&mut self) {
+        if self.table.book_only {
+            for hero in &mut self.party {
+                hero.feat_due = false;
+            }
+            self.secrets_due.clear();
+            self.offers.clear();
+        }
+    }
+
+    /// An hour's rest for everyone who takes part. Gives the hit points regained in all.
+    pub fn short_rest(&mut self, rng: &mut Rng) -> i32 {
+        let resting: Vec<bool> = (0..self.party.len()).map(|i| self.takes_part(i)).collect();
+        self.party.iter_mut().zip(resting).filter(|(_, rests)| *rests).map(|(hero, _)| hero.short_rest(rng)).sum()
+    }
+
+    /// Something the acting hero tried that the rules do not cover, as the master judged
+    /// it: the hero rolls the check, and a success does what the master allowed. Either
+    /// way the action is spent. `None` when it is not a hero's turn to act.
+    pub fn fight_stunt(&mut self, draft: &StuntDraft, name: &str, rng: &mut Rng) -> Option<Stunt> {
+        let mut fight = self.fight.clone()?;
+        let actor = fight.actor();
+        if actor.side != Side::Party || !actor.action_left || !actor.standing() {
+            return None;
+        }
+        let hero = actor.id.strip_prefix("hero_").and_then(|n| n.parse::<usize>().ok()).and_then(|i| self.party.get(i))?;
+        let ability = Ability::from_index(draft.ability.trim().to_lowercase().as_str()).unwrap_or(Ability::Dex);
+        let skill = draft.skill.as_ref().map(|s| s.trim().to_lowercase().replace([' ', '_'], "-")).filter(|s| !s.is_empty());
+        let difficulty = draft.dc.clamp(5, 30) as i32;
+        let roll = hero.check(rng, ability, skill.as_deref(), Edge::Plain);
+        let success = roll.total() >= difficulty;
+        let cap = if self.limited() { 6 + 6 * hero.level as i32 } else { 500 };
+        let rolled = |dice: &str, rng: &mut Rng| Dice::parse(dice, 0).map_or(0, |d| d.roll(rng)).clamp(0, cap);
+        let wanted = draft.target.trim().to_lowercase();
+        let target = fight.combatants.iter().position(|c| !wanted.is_empty() && (c.id == crate::build::slug(&wanted) || c.name.to_lowercase() == wanted));
+        let (damage, heal) = if success { (rolled(&draft.damage, rng), rolled(&draft.heal, rng)) } else { (0, 0) };
+        let hero_name = hero.name.clone();
+        let events = fight.improvise(name, target, damage, heal);
+        self.fight = Some(fight);
+        let outcome = if success { draft.success.trim() } else { draft.failure.trim() };
+        let narration = [draft.narration.trim(), outcome].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" ");
+        self.story.say(Speaker::Master, &narration);
+        Some(Stunt { hero: hero_name, roll, difficulty, success, narration, events })
+    }
+
     /// The average level of the party; 1 when there is no party yet.
     pub fn party_level(&self) -> u32 {
         match self.party.len() as u32 {
@@ -127,18 +309,29 @@ impl World {
         }
         let level = self.party_level() as i32;
         let fallback = Stats { ac: 12, hp: 6 + 5 * level, speed: 30, attacks: vec![StatAttack { name: "Attack".into(), bonus: 3 + level / 2, damage: format!("1d6+{}", 1 + level / 2), range: 5 }], xp: 50 * level as u32 };
-        let stats = creature.stats.as_ref().filter(|s| s.hp > 0).unwrap_or(&fallback);
+        // A table that plays by the book takes no numbers the master made up.
+        let stats = creature.stats.as_ref().filter(|s| s.hp > 0 && !self.table.book_only).unwrap_or(&fallback);
+        let (most_hp, most_bonus, most_damage) = if self.limited() { (30 + 40 * level, 4 + level, 6.0 + 6.0 * level as f32) } else { (999, 20, 500.0) };
+        let within = |text: &str| {
+            let mut dice = Dice::parse(text, 0)?;
+            let each = (dice.sides as f32 + 1.0) / 2.0;
+            if dice.sides > 0 && dice.average() > most_damage {
+                dice.bonus = dice.bonus.min((most_damage / 3.0) as i32);
+                dice.count = (((most_damage - dice.bonus as f32) / each).floor() as u32).max(1);
+            }
+            Some(dice)
+        };
         let monster = rules::data::Monster {
             index: creature.id.clone(),
             name: creature.name.clone(),
             ac: stats.ac.clamp(5, 30),
-            hp: stats.hp.clamp(1, 999),
+            hp: stats.hp.clamp(1, most_hp),
             speed: stats.speed.clamp(5, 120),
             abilities: [10; 6],
             attacks: stats
                 .attacks
                 .iter()
-                .filter_map(|a| Some(rules::data::MonsterAttack { name: a.name.clone(), bonus: a.bonus.clamp(-5, 20), damage: vec![Dice::parse(&a.damage, 0)?], range: a.range.max(5), save: None }))
+                .filter_map(|a| Some(rules::data::MonsterAttack { name: a.name.clone(), bonus: a.bonus.clamp(-5, most_bonus), damage: vec![within(&a.damage)?], range: a.range.max(5), save: None }))
                 .collect(),
             multiattack: Vec::new(),
             challenge: 0.0,
@@ -170,7 +363,7 @@ impl World {
 
     /// Damage outside a fight falls on the first hero still standing.
     pub(crate) fn hurt_party(&mut self, dice: &str, rng: &mut Rng) -> i32 {
-        let amount = Dice::parse(dice, 0).map_or(0, |d| d.roll(rng)).clamp(0, 500);
+        let amount = Dice::parse(dice, 0).map_or(0, |d| d.roll(rng)).clamp(0, self.story_cap());
         let target = (0..self.party.len()).find(|i| self.takes_part(*i) && !self.party[*i].is_down());
         if let Some(hero) = target.and_then(|i| self.party.get_mut(i)) {
             hero.take_damage(amount);
@@ -179,7 +372,7 @@ impl World {
     }
 
     pub(crate) fn heal_party(&mut self, dice: &str, rng: &mut Rng) -> i32 {
-        let amount = Dice::parse(dice, 0).map_or(0, |d| d.roll(rng)).clamp(0, 500);
+        let amount = Dice::parse(dice, 0).map_or(0, |d| d.roll(rng)).clamp(0, self.story_cap());
         // The one who needs it most: the lowest share of hit points left.
         let target = (0..self.party.len()).filter(|i| self.takes_part(*i)).min_by_key(|i| self.party[*i].hp * 1000 / self.party[*i].max_hp.max(1));
         if let Some(hero) = target.and_then(|i| self.party.get_mut(i)) {
@@ -190,7 +383,8 @@ impl World {
 
     /// Experience from the story, capped so a generous master cannot skip levels.
     pub(crate) fn award_story_xp(&mut self, amount: i64) -> Vec<(String, LevelUp)> {
-        let capped = amount.clamp(0, (STORY_XP_PER_LEVEL * self.party_level()) as i64) as u32;
+        let most = if self.limited() { (STORY_XP_PER_LEVEL * self.party_level()) as i64 } else { 100_000 };
+        let capped = amount.clamp(0, most) as u32;
         self.award_xp(capped)
     }
 
@@ -265,6 +459,11 @@ impl World {
                 hero.hp = c.hp;
                 hero.death = c.death;
                 hero.dead = c.dead;
+                for strike in &c.strikes {
+                    if let (Some(feat), Some(left)) = (strike.feat.and_then(|f| hero.feats.get_mut(f)), strike.uses_left) {
+                        feat.used = feat.uses.saturating_sub(left);
+                    }
+                }
             }
         }
         let here = self.current.clone();
@@ -616,6 +815,112 @@ mod tests {
         assert!(!w.claim(1, "Ann"), "Ann has a hero already");
         assert!(w.claim(1, "Carl"));
         assert_eq!(w.owners, ["Ann", "Carl"]);
+    }
+
+
+    #[test]
+    fn abilities_for_a_level_are_offered_cut_to_size_and_one_is_chosen() {
+        let mut w = world();
+        w.party[0].gain_xp(300);
+        assert_eq!(w.feat_wanted(), Some((0, false)));
+        let feats = vec![
+            rules::Feat { name: "Storm".into(), dice: "12d12".into(), uses: 1, ..rules::Feat::default() },
+            rules::Feat { name: "Thick skin".into(), ac: 9, ..rules::Feat::default() },
+        ];
+        assert_eq!(w.take_feats(0, false, feats), None);
+        assert_eq!(w.feat_wanted(), None, "an offer is out; the master is not asked again");
+        let offered = &w.offers[0].feats;
+        assert!(rules::Dice::parse(&offered[0].dice, 0).unwrap().average() <= 18.0, "{}", offered[0].dice);
+        assert_eq!(offered[1].ac, 1);
+        assert!(!w.choose_feat(0, 5) && !w.choose_feat(3, 0));
+        let ac = w.party[0].ac();
+        assert!(w.choose_feat(0, 1));
+        assert_eq!((w.party[0].ac(), w.party[0].feat_due, w.offers.len()), (ac + 1, false, 0));
+    }
+
+    #[test]
+    fn a_secret_skill_is_granted_at_once_and_a_book_table_has_none() {
+        let mut w = world();
+        w.secrets_due.push(0);
+        assert_eq!(w.feat_wanted(), Some((0, true)));
+        let name = w.take_feats(0, true, vec![rules::Feat { name: "Wolf's nose".into(), dice: "1d4".into(), ..rules::Feat::default() }]);
+        assert_eq!(name.as_deref(), Some("Wolf's nose"));
+        assert!(w.party[0].feats[0].secret && w.secrets_due.is_empty());
+        let mut book = world();
+        book.table.book_only = true;
+        book.party[0].gain_xp(300);
+        book.secrets_due.push(0);
+        assert_eq!(book.feat_wanted(), None);
+        book.settle_feats();
+        assert!(!book.party[0].feat_due && book.secrets_due.is_empty());
+        for _ in 0..200 {
+            book.deed("Brak", &mut Rng::seeded(1));
+        }
+        assert!(book.secrets_due.is_empty());
+    }
+
+    #[test]
+    fn deeds_earn_a_secret_now_and_then_and_only_so_many() {
+        let mut w = world();
+        let mut rng = Rng::seeded(11);
+        for _ in 0..100 {
+            w.deed("Brak", &mut rng);
+        }
+        assert_eq!(w.secrets_due, [0], "earned once, not a hundred times");
+        w.take_feats(0, true, vec![rules::Feat { name: "One".into(), ..rules::Feat::default() }]);
+        for _ in 0..100 {
+            w.deed("", &mut rng);
+        }
+        assert!(w.secrets_due.is_empty(), "a first-level hero holds one secret");
+    }
+
+    #[test]
+    fn the_dead_come_back_only_when_the_story_says_so() {
+        let mut w = world();
+        assert!(!w.revive("Brak"), "Brak is alive");
+        w.party[0].dead = true;
+        w.party[0].hp = 0;
+        let notes = w.apply(&read_effects(&[json!({ "op": "revive", "hero": "Brak" })], &mut Vec::new()), None);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!((w.party[0].dead, w.party[0].hp), (false, 1));
+    }
+
+    #[test]
+    fn story_harm_is_capped_by_level_unless_the_table_plays_without_limits() {
+        let mut w = world();
+        w.party[0].max_hp = 400;
+        w.party[0].hp = 400;
+        assert_eq!(w.hurt_party("300", &mut Rng::seeded(1)), 20);
+        w.table.no_limits = true;
+        assert_eq!(w.hurt_party("300", &mut Rng::seeded(1)), 300);
+    }
+
+    #[test]
+    fn a_stunt_rolls_the_check_and_a_success_does_what_the_master_allowed() {
+        let mut w = world();
+        w.here_mut().creatures[0].attitude = Attitude::Hostile;
+        assert!(w.start_fight(Rng::seeded(2)));
+        let fight = w.fight.as_mut().unwrap();
+        fight.turn = fight.order.iter().position(|i| *i == 0).unwrap();
+        fight.combatants[0].action_left = true;
+        let draft: StuntDraft = serde_json::from_value(json!({ "narration": "You kick the pot over.", "ability": "str", "skill": "athletics", "dc": "1", "target": "cat", "damage": "2d4", "success": "It scalds the cat.", "failure": "It rolls away." })).unwrap();
+        let stunt = w.fight_stunt(&draft, "Pot", &mut Rng::seeded(3)).expect("it is Brak's turn");
+        assert!(stunt.success && stunt.narration.ends_with("It scalds the cat."));
+        assert!(matches!(&stunt.events[0], Event::Struck { target, .. } if target == "cat"), "{:?}", stunt.events);
+        assert!(!w.fight.as_ref().unwrap().combatants[0].action_left);
+        assert!(w.fight_stunt(&draft, "Pot", &mut Rng::seeded(3)).is_none(), "the action is spent");
+    }
+
+    #[test]
+    fn a_book_table_ignores_numbers_the_master_made_up() {
+        let mut w = world();
+        let mut creature = w.here().creatures[0].clone();
+        creature.stats = Some(Stats { ac: 19, hp: 77, speed: 30, attacks: Vec::new(), xp: 10 });
+        assert_eq!(w.combatant_for(&creature).max_hp, 70, "capped for a first-level party");
+        w.table.no_limits = true;
+        assert_eq!(w.combatant_for(&creature).max_hp, 77);
+        w.table.book_only = true;
+        assert_eq!(w.combatant_for(&creature).max_hp, 11, "the plain opponent");
     }
 
 }

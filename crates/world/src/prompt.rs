@@ -26,6 +26,8 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "damage", "amount": "2d6"} / {"op": "heal", "amount": "1d8"} — to the party, outside a fight
   {"op": "xp", "amount": 50} — for something achieved; rarely, and modestly
   {"op": "fight"} — the hostile creatures here attack; the game runs the fight by the rules
+  {"op": "deed", "hero": "name"} — that character just did something out of the ordinary, clever or brave beyond what the moment asked; the game keeps count
+  {"op": "revive", "hero": "name"} — the story brings a dead character back; only when it has truly earned it
 Never roll dice yourself and never decide an uncertain outcome: that is what "check" is for. Nothing may follow a check in the same list except what should happen whichever way it goes.
 Use only ids that exist. Inside an action that belongs to a thing, the id "self" means that thing."##;
 
@@ -125,8 +127,9 @@ TELLING. Speak to the players as "you". Two to five sentences: concrete, sensory
 
 {EFFECTS}
 
-A picture, when you need a new sprite, is a list of rows of palette index characters (0 transparent, 1-9, a-v), 16x16 or 32x32, outlined in colour 1."##,
+A picture, when you need a new sprite, is a list of rows of palette index characters (0 transparent, 1-9, a-v), 16x16 or 32x32, outlined in colour 1.{book}"##,
         language = world.language,
+        book = book_note(world),
     )
 }
 
@@ -230,6 +233,55 @@ Answer with this JSON object:
         situation(world, 0..),
         text.trim(),
         whispers_note(world)
+    )
+}
+
+/// What a table that plays by the book adds to every request.
+fn book_note(world: &World) -> &'static str {
+    if world.table.book_only {
+        "\n\nBY THE BOOK. This table plays strictly by the D&D 5e SRD. Every creature that might fight must be an SRD monster: give \"monster\", never \"stats\". Do not invent abilities, spells or magic items the SRD does not have."
+    } else {
+        ""
+    }
+}
+
+/// The master is asked for abilities of a hero's own: three to choose from at a level, or
+/// one secret skill after an unusual deed.
+pub fn feats(world: &World, hero: usize, secret: bool) -> String {
+    let who = world.party.get(hero).map(|h| format!("{}, {} {} of level {}. {}", h.name, h.race, h.class, h.level, h.description)).unwrap_or_default();
+    let ask = if secret {
+        "This character has just done something out of the ordinary and earned a secret skill for it. Write ONE, born of that deed and of what the character has been through.".to_string()
+    } else {
+        "This character has reached a new level. Offer THREE abilities to choose from, each different in kind, each grown out of what this character has done and been through in the story — not generic ones.".to_string()
+    };
+    format!(
+        "{}\nTHE CHARACTER: {who}\n\n{ask}\n\nAn ability is put together only from what the game can carry out:\n- harm or healing: \"dice\" (like 2d6), \"heals\" true for healing, \"range\" in feet, \"area\" in feet around the target (0 for one target), \"save\" (str, dex, con, int, wis, cha) when the targets resist instead of the character rolling to hit, \"uses\" between long rests (0 for at will);\n- or plain numbers that always count: \"ac\" (at most 1), \"hp\", \"speed\" in feet.\nKeep it modest for the level; the game cuts down what is too strong. Give each a name and one or two sentences of description that say what it looks like in play.\n\nAnswer with this JSON object:\n{{\"feats\": [{{\"name\": \"…\", \"description\": \"…\", \"dice\": \"2d6\", \"heals\": false, \"range\": 30, \"area\": 0, \"save\": null, \"uses\": 2, \"ac\": 0, \"hp\": 0, \"speed\": 0}}]}}",
+        situation(world, 0..)
+    )
+}
+
+/// A hero tries something in a fight that the rules have no button for.
+pub fn stunt(world: &World, said: &str) -> String {
+    let mut text = situation(world, 0..);
+    if let Some(fight) = &world.fight {
+        let _ = writeln!(text, "\nA FIGHT IS ON. It is {}'s turn. Those fighting:", fight.actor().name);
+        for c in fight.combatants.iter().filter(|c| !c.dead) {
+            let side = if c.side == rules::Side::Party { "party" } else { "enemy" };
+            let _ = writeln!(text, "- {} \"{}\" ({side}) at ({}, {}), {} of {} hit points", c.id, c.name, c.x, c.y, c.hp.max(0), c.max_hp);
+        }
+    }
+    format!(
+        "{text}\nOn their turn the acting character tries this: «{}»\n\nThe rules have no button for it, so you judge it. Name the check it takes and how hard it is, and say what a success is worth: harm to one of those fighting (\"target\" is its id), or healing, in dice suited to the character's level — or nothing but an advantage in the story. Never roll yourself. Write what it looks like, then one sentence for success and one for failure.\n\nAnswer with this JSON object:\n{{\"narration\": \"the attempt\", \"ability\": \"str|dex|con|int|wis|cha\", \"skill\": \"athletics or null\", \"dc\": 13, \"target\": \"id or empty\", \"damage\": \"1d8 or empty\", \"heal\": \"\", \"success\": \"…\", \"failure\": \"…\"}}",
+        said.trim()
+    )
+}
+
+/// The master draws a hero as the player described it.
+pub fn portrait(world: &World, hero: usize) -> String {
+    let who = world.party.get(hero).map(|h| format!("{}, a {} {}. {}", h.name, h.race, h.class, h.description)).unwrap_or_default();
+    format!(
+        "Draw the player character {who}\nWorld: {}. {}\n\nOne sprite, 16 by 16, drawn the way you draw every creature of this world: rows of palette characters, '0' transparent, a one-pixel outline in colour 1, feet on the bottom row, facing the viewer. It must read as this very character at a glance: the build, the gear of the class, one telling detail from the description.\n\nAnswer with this JSON object:\n{{\"rows\": [\"16 characters\", \"… 16 rows\"]}}",
+        world.title, world.summary
     )
 }
 

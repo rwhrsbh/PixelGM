@@ -34,12 +34,13 @@ pub enum Step {
     Shot(String),
     /// Put the party in a cell of the current location, to test what lies beyond a walk.
     Warp(usize, usize),
+    Dev(String),
     Quit,
 }
 
 /// A cell the script asked the party to be moved to; the play screen carries it out.
 #[derive(Resource, Default)]
-pub struct Warp(pub Option<(usize, usize)>);
+pub struct Warp(pub Option<(usize, usize)>, pub Vec<String>);
 
 #[derive(Clone, Default)]
 pub struct Args {
@@ -129,6 +130,9 @@ pub fn parse_script(script: &str) -> Vec<Step> {
             }
             "shot" => steps.extend([Step::Shot(arg.to_string()), Step::Frames(SETTLE_FRAMES)]),
             "warp" => steps.extend(point(arg).map(|p| Step::Warp(p.x as usize, p.y as usize))),
+            // Orders for the play screen, to reach states a test would otherwise need an
+            // hour of play for: `dev:xp=300`, `dev:hurt=5`, `dev:kill`, `dev:deed`.
+            "dev" => steps.push(Step::Dev(arg.to_string())),
             "quit" => steps.push(Step::Quit),
             _ => {}
         }
@@ -274,6 +278,7 @@ fn play_script(
             commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
         }
         Step::Warp(x, y) => warp.0 = Some((x, y)),
+        Step::Dev(order) => warp.1.push(order),
         Step::Quit => {
             exit.write(AppExit::Success);
         }

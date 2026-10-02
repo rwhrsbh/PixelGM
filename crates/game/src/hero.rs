@@ -26,6 +26,8 @@ struct Draft {
     /// The six numbers last rolled, kept so that changing class re-deals the same roll.
     rolled: [i32; 6],
     skills: Vec<String>,
+    /// Cantrips and spells the player chose; the usual ones for the class until they do.
+    spells: Vec<String>,
     /// The ability picked first of two to swap, under methods that deal fixed numbers.
     picked: Option<usize>,
     problem: Option<String>,
@@ -34,7 +36,47 @@ struct Draft {
 impl Default for Draft {
     fn default() -> Self {
         let class = srd().classes.iter().position(|c| c.index == "fighter").unwrap_or(0);
-        Self { race: srd().races.iter().position(|r| r.index == "human").unwrap_or(0), class, method: AbilityMethod::PointBuy, base: suggested_scores("fighter", STANDARD_ARRAY), rolled: STANDARD_ARRAY, skills: Vec::new(), picked: None, problem: None }
+        Self { race: srd().races.iter().position(|r| r.index == "human").unwrap_or(0), class, method: AbilityMethod::PointBuy, base: suggested_scores("fighter", STANDARD_ARRAY), rolled: STANDARD_ARRAY, skills: Vec::new(), spells: Vec::new(), picked: None, problem: None }
+    }
+}
+
+impl Draft {
+    /// A draft under the method the host chose for the world.
+    fn with_method(method: AbilityMethod) -> Self {
+        let mut draft = Self { method, ..Self::default() };
+        if method == AbilityMethod::Roll {
+            draft.rolled = roll_scores(&mut Rng::from_clock());
+        }
+        draft.deal();
+        draft
+    }
+
+    /// The character as it would be with the class's first skills and no spells: enough to
+    /// know what it may cast.
+    fn caster(&self) -> Option<Character> {
+        let class = &srd().classes[self.class];
+        let skills: Vec<String> = class.skill_options.iter().take(class.skill_picks).cloned().collect();
+        Character::create("x", "", &srd().races[self.race].index, self.class_index(), self.base, &skills, &[]).ok()
+    }
+
+    /// The spells the class would usually start with.
+    fn usual_spells(&self) -> Vec<String> {
+        self.caster().map(|hero| suggested_spells(srd(), &hero)).unwrap_or_default()
+    }
+
+    /// Adds or drops a spell, within what the character may have of its kind.
+    fn toggle_spell(&mut self, index: &str) {
+        if let Some(at) = self.spells.iter().position(|s| s == index) {
+            self.spells.remove(at);
+            return;
+        }
+        let (Some(hero), Some(spell)) = (self.caster(), srd().spells.get(index)) else { return };
+        let cantrip = spell.level == 0;
+        let chosen = self.spells.iter().filter_map(|s| srd().spells.get(s)).filter(|s| (s.level == 0) == cantrip).count();
+        let allowed = if cantrip { hero.cantrips_allowed() } else { hero.spells_allowed() };
+        if chosen < allowed {
+            self.spells.push(index.to_string());
+        }
     }
 }
 
@@ -48,6 +90,7 @@ impl Draft {
         let values = if self.method == AbilityMethod::Roll { self.rolled } else { STANDARD_ARRAY };
         self.base = suggested_scores(self.class_index(), values);
         self.picked = None;
+        self.spells = self.usual_spells();
     }
 
     fn points_left(&self) -> i32 {
@@ -85,8 +128,12 @@ impl Draft {
     fn build(&self, name: &str, description: &str) -> Result<Character, String> {
         let data = srd();
         let mut hero = Character::create(name, description, &data.races[self.race].index, self.class_index(), self.base, &self.skills, &[])?;
-        let spells = suggested_spells(data, &hero);
-        hero.set_spells(&spells)?;
+        // A change of scores can leave fewer spells allowed than were chosen: then the
+        // usual ones are taken rather than refusing the character.
+        if hero.set_spells(&self.spells).is_err() {
+            let spells = suggested_spells(data, &hero);
+            hero.set_spells(&spells)?;
+        }
         Ok(hero)
     }
 }
@@ -95,12 +142,12 @@ impl Draft {
 enum Action {
     Race,
     Class,
-    Method,
     Minus(usize),
     Plus(usize),
     Pick(usize),
     Reroll,
     Skill(String),
+    Spell(String),
     Create,
     /// Take the hero of a player who is away instead of making a new one.
     Take(usize),
@@ -155,7 +202,7 @@ fn spawn_screen(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: 
     if let Err(e) = store.save_game(&game.world_id, &game.world, false) {
         error!("could not save the game: {e}");
     }
-    commands.insert_resource(Draft::default());
+    commands.insert_resource(Draft::with_method(game.world.table.method));
     let ink = TextColor(color(INK));
     commands.spawn(screen_root(Screen::Hero)).with_children(|root| {
         let sheet = Node { margin: UiRect::top(px(6)), width: px(464), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
@@ -203,7 +250,8 @@ fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<A
         area.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|line| {
             text_button(line, &art, &fonts, format!("{}: {}", T::HeroRace.text(*lang), tr(ru, &race.name)), Action::Race);
             text_button(line, &art, &fonts, format!("{}: {}", T::HeroClass.text(*lang), tr(ru, &class.name)), Action::Class);
-            text_button(line, &art, &fonts, method_label(draft.method).text(*lang).to_string(), Action::Method);
+            // The host chose the method for the whole world.
+            line.spawn((Text::new(method_label(draft.method).text(*lang).to_string()), fonts.body(), faded));
             if draft.method == AbilityMethod::Roll {
                 button(line, &art, &fonts, T::Reroll, true, Action::Reroll);
             }
@@ -234,22 +282,37 @@ fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<A
             });
             columns.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|right| {
                 right.spawn((Text::new(format!("{} {}/{}", T::HeroSkills.text(*lang), draft.skills.len(), class.skill_picks)), fonts.body(), faded));
-                right.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, 4.0 * (BUTTON_HEIGHT + 1.0))).with_children(|rows| {
+                let caster = draft.caster().filter(|hero| hero.cantrips_allowed() + hero.spells_allowed() > 0);
+                let skill_rows = if caster.is_some() { 2.5 } else { 4.0 };
+                right.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, skill_rows * (BUTTON_HEIGHT + 1.0))).with_children(|rows| {
                     for skill in &class.skill_options {
                         let name = data.skill(skill).map_or(skill.as_str(), |s| tr(ru, &s.name));
                         let mark = if draft.skills.contains(skill) { "[x]" } else { "[ ]" };
                         text_button(rows, &art, &fonts, format!("{mark} {name}"), Action::Skill(skill.clone()));
                     }
                 });
+                if let Some(hero) = &caster {
+                    let chosen = |cantrips: bool| draft.spells.iter().filter_map(|s| data.spells.get(s)).filter(|s| (s.level == 0) == cantrips).count();
+                    right.spawn((
+                        Text::new(format!("{} {}/{} · {} {}/{}", T::Cantrips.text(*lang), chosen(true), hero.cantrips_allowed(), T::Spells.text(*lang), chosen(false), hero.spells_allowed())),
+                        fonts.body(),
+                        faded,
+                    ));
+                    right.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, 2.5 * (BUTTON_HEIGHT + 1.0))).with_children(|rows| {
+                        let mut pool = data.class_spells(&hero.class, hero.highest_slot());
+                        pool.sort_by_key(|s| (s.level, tr(ru, &s.name).to_string()));
+                        for spell in pool {
+                            let mark = if draft.spells.contains(&spell.index) { "[x]" } else { "[ ]" };
+                            // Spells the rules cannot carry out by themselves go through the master.
+                            let kind = if spell.mechanised() { "" } else { " *" };
+                            text_button(rows, &art, &fonts, format!("{mark} {} {}{kind}", spell.level, tr(ru, &spell.name)), Action::Spell(spell.index.clone()));
+                        }
+                    });
+                }
                 // What the choices come to, so the player sees the character before making it.
                 let preview = Draft { skills: class.skill_options.iter().take(class.skill_picks).cloned().collect(), picked: None, problem: None, ..clone_of(&draft) };
                 if let Ok(hero) = preview.build("x", "") {
-                    let spells: Vec<&str> = hero.spells.iter().filter_map(|s| data.spells.get(s)).map(|s| tr(ru, &s.name)).collect();
-                    let mut summary = format!("{} {} · {} {}", T::HitPoints.text(*lang), hero.max_hp, T::ArmorClass.text(*lang), hero.ac());
-                    if !spells.is_empty() {
-                        summary.push_str(&format!(" · {} {}", T::Spells.text(*lang), spells.join(", ")));
-                    }
-                    right.spawn((Text::new(summary), fonts.body(), ink));
+                    right.spawn((Text::new(format!("{} {} · {} {}", T::HitPoints.text(*lang), hero.max_hp, T::ArmorClass.text(*lang), hero.ac())), fonts.body(), ink));
                 }
                 if let Some(problem) = &draft.problem {
                     right.spawn((Text::new(problem.clone()), fonts.body(), TextColor(color(WAX))));
@@ -269,7 +332,7 @@ fn redraw(mut commands: Commands, draft: Res<Draft>, lang: Res<Lang>, art: Res<A
 }
 
 fn clone_of(draft: &Draft) -> Draft {
-    Draft { race: draft.race, class: draft.class, method: draft.method, base: draft.base, rolled: draft.rolled, skills: draft.skills.clone(), picked: draft.picked, problem: draft.problem.clone() }
+    Draft { race: draft.race, class: draft.class, method: draft.method, base: draft.base, rolled: draft.rolled, skills: draft.skills.clone(), spells: draft.spells.clone(), picked: draft.picked, problem: draft.problem.clone() }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -289,21 +352,15 @@ fn on_activate(
     draft.problem = None;
     let data = srd();
     match action {
-        Action::Race => draft.race = (draft.race + 1) % data.races.len(),
+        Action::Race => {
+            draft.race = (draft.race + 1) % data.races.len();
+            // Another people changes the scores, and with them what may be cast.
+            draft.spells = draft.usual_spells();
+        }
+        Action::Spell(spell) => draft.toggle_spell(spell),
         Action::Class => {
             draft.class = (draft.class + 1) % data.classes.len();
             draft.skills.clear();
-            draft.deal();
-        }
-        Action::Method => {
-            draft.method = match draft.method {
-                AbilityMethod::PointBuy => AbilityMethod::StandardArray,
-                AbilityMethod::StandardArray => AbilityMethod::Roll,
-                AbilityMethod::Roll => AbilityMethod::PointBuy,
-            };
-            if draft.method == AbilityMethod::Roll {
-                draft.rolled = roll_scores(&mut Rng::from_clock());
-            }
             draft.deal();
         }
         Action::Reroll => {
@@ -341,8 +398,16 @@ fn on_activate(
                     let world = &mut game.world;
                     let length = world.party.len();
                     world.owners.resize(length, String::new());
+                    let owner = owner_name(&session, &settings);
+                    // A player whose hero died lets go of it.
+                    if !owner.is_empty()
+                        && let Some(old) = world.owners.iter().position(|o| *o == owner)
+                        && world.party[old].dead
+                    {
+                        world.owners[old] = String::new();
+                    }
                     world.party.push(hero);
-                    world.owners.push(owner_name(&session, &settings));
+                    world.owners.push(owner);
                     next.set(Screen::Play);
                 }
                 (Err(_), _) if name.trim().is_empty() => draft.problem = Some(T::NeedName.text(*lang).to_string()),
@@ -376,10 +441,36 @@ pub fn sheet_lines(hero: &Character, lang: Lang) -> Vec<String> {
             lines.push(format!("{} {}", T::Slots.text(lang), slots.join(" · ")));
         }
     }
+    lines.push(format!("{} {}/{}", T::HitDice.text(lang), hero.hit_dice_left(), hero.level));
+    for feat in &hero.feats {
+        lines.push(format!("{} {}", T::Feats.text(lang), feat_line(feat, lang)));
+    }
     if hero.points_to_place > 0 {
         lines.push(format!("{} {}", T::PointsToPlace.text(lang), hero.points_to_place));
     }
     lines
+}
+
+/// An ability from outside the book in one line: its name, what it does in numbers, and
+/// how it reads.
+pub fn feat_line(feat: &rules::Feat, lang: Lang) -> String {
+    let mut numbers = Vec::new();
+    if !feat.dice.is_empty() {
+        let what = if feat.heals { T::FightHeals.text(lang) } else { T::FightDamage.text(lang) };
+        let often = if feat.uses == 0 { T::AtWill.text(lang).to_string() } else { format!("{}/{} {}", feat.uses.saturating_sub(feat.used), feat.uses, T::PerRest.text(lang)) };
+        numbers.push(format!("{what} {}, {often}", feat.dice));
+    }
+    if feat.ac != 0 {
+        numbers.push(format!("{} +{}", T::ArmorClass.text(lang), feat.ac));
+    }
+    if feat.hp != 0 {
+        numbers.push(format!("{} +{}", T::HitPoints.text(lang), feat.hp));
+    }
+    if feat.speed != 0 {
+        numbers.push(format!("{} +{}", T::Movement.text(lang), feat.speed / 5));
+    }
+    let mark = if feat.secret { "★ " } else { "" };
+    format!("{mark}{} ({}) — {}", feat.name, numbers.join("; "), feat.description)
 }
 
 pub struct HeroPlugin;

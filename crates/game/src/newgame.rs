@@ -23,6 +23,9 @@ enum Action {
     Keys,
     Violence,
     Sex,
+    Book,
+    Limits,
+    Method,
 }
 
 #[derive(Component)]
@@ -43,6 +46,25 @@ struct Making {
     /// The table's content switches; both are on unless the host turns them off here.
     no_violence: bool,
     no_sex: bool,
+    /// How the table plays: by the book or with inventions, with caps or without, and how
+    /// ability scores are made.
+    table: world::TableRules,
+}
+
+fn book_label(making: &Making) -> T {
+    if making.table.book_only { T::TableBook } else { T::TableMixed }
+}
+
+fn limits_label(making: &Making) -> T {
+    if making.table.no_limits { T::LimitsOff } else { T::LimitsOn }
+}
+
+fn method_label(making: &Making) -> T {
+    match making.table.method {
+        rules::AbilityMethod::PointBuy => T::MethodPointBuy,
+        rules::AbilityMethod::StandardArray => T::MethodArray,
+        rules::AbilityMethod::Roll => T::MethodRoll,
+    }
 }
 
 fn violence_label(making: &Making) -> T {
@@ -99,7 +121,7 @@ fn refresh_form(
 fn build_form(commands: &mut Commands, art: &Art, fonts: &Fonts, making: &Making, can_ask: bool) {
     let ink = TextColor(color(INK));
     commands.spawn(screen_root(Screen::NewGame)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(30)), width: px(400), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
+        let sheet = Node { margin: UiRect::top(px(14)), width: px(420), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
         spawn_panel(root, art, sheet, |sheet| {
             sheet.spawn((Text::default(), T::NewWorldTitle, fonts.title(1), ink));
             sheet.spawn((Text::default(), T::NewWorldAsk, fonts.body(), ink));
@@ -121,6 +143,11 @@ fn build_form(commands: &mut Commands, art: &Art, fonts: &Fonts, making: &Making
             sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
                 button(line, art, fonts, violence_label(making), true, Action::Violence);
                 button(line, art, fonts, sex_label(making), true, Action::Sex);
+            });
+            sheet.spawn(Node { column_gap: px(6), row_gap: px(3), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
+                button(line, art, fonts, book_label(making), true, Action::Book);
+                button(line, art, fonts, limits_label(making), true, Action::Limits);
+                button(line, art, fonts, method_label(making), true, Action::Method);
             });
             if !can_ask {
                 sheet.spawn((Text::default(), T::NeedKey, fonts.body(), TextColor(color(WAX))));
@@ -152,7 +179,7 @@ fn spawn_waiting(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
 }
 
 fn start_making(making: &mut Making, request: String, gm: &Gm, store: &Store, settings: &Settings, master: &Master) {
-    *making = Making { request: request.clone(), seconds: 0.0, trouble: None, no_violence: making.no_violence, no_sex: making.no_sex };
+    *making = Making { request: request.clone(), seconds: 0.0, trouble: None, no_violence: making.no_violence, no_sex: making.no_sex, table: making.table };
     master.ask(gm, store, settings, Ask::NewWorld { request });
 }
 
@@ -183,6 +210,15 @@ fn on_activate(
         }
         Action::Violence => making.no_violence = !making.no_violence,
         Action::Sex => making.no_sex = !making.no_sex,
+        Action::Book => making.table.book_only = !making.table.book_only,
+        Action::Limits => making.table.no_limits = !making.table.no_limits,
+        Action::Method => {
+            making.table.method = match making.table.method {
+                rules::AbilityMethod::PointBuy => rules::AbilityMethod::StandardArray,
+                rules::AbilityMethod::StandardArray => rules::AbilityMethod::Roll,
+                rules::AbilityMethod::Roll => rules::AbilityMethod::PointBuy,
+            }
+        }
         Action::Keys => {
             // Keep what was typed, and come back to this form afterwards.
             if let Ok(input) = input.single() {
@@ -203,6 +239,9 @@ fn show_switches(making: Res<Making>, buttons: Query<(&Action, &Children)>, mut 
         let wanted = match action {
             Action::Violence => violence_label(&making),
             Action::Sex => sex_label(&making),
+            Action::Book => book_label(&making),
+            Action::Limits => limits_label(&making),
+            Action::Method => method_label(&making),
             _ => continue,
         };
         for child in children {
@@ -241,6 +280,7 @@ fn wait_for_world(
                 }
                 world.violence = !making.no_violence;
                 world.sex = !making.no_sex;
+                world.table = making.table;
                 let world_id = format!("{:x}", crate::store::unix_now());
                 play::begin(&mut commands, &mut next, *world, world_id);
                 return;

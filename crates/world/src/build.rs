@@ -6,7 +6,7 @@
 //! with no map at all is refused.
 
 use crate::base::{FALLBACK_TILE, MARKER_SPRITE, base_sprites, base_tiles, default_palette};
-use crate::model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, PALETTE_MAX, Player, Prop, SAVE_VERSION, Sprite, Stub, TILE, TileDef, World, index_of};
+use crate::model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, PALETTE_MAX, Player, Prop, SAVE_VERSION, Sprite, Stub, TILE, TileDef, World, index_of, TableRules};
 use crate::party::Stats;
 use crate::path::{Cell, elbow, nearest, reachable};
 use crate::story::{ActionDraft, Story, read_actions};
@@ -526,6 +526,9 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         owners: Vec::new(),
         present: Vec::new(),
         gm: None,
+        table: TableRules::default(),
+        offers: Vec::new(),
+        secrets_due: Vec::new(),
         others: Vec::new(),
         level_ups: Vec::new(),
     };

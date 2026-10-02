@@ -124,6 +124,86 @@ pub struct LevelUp {
     pub ability_improvement: bool,
 }
 
+/// An ability outside the book: one the game master invented for a character, or a secret
+/// skill earned by an unusual deed. It is put together from things the rules can carry out
+/// (harm, healing, a few plain numbers) and cut to what the character's level allows.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct Feat {
+    pub name: String,
+    pub description: String,
+    /// Dice of harm or healing; empty for a feat that only changes numbers.
+    pub dice: String,
+    pub heals: bool,
+    /// Feet.
+    pub range: u32,
+    /// Feet around the target; 0 for one target.
+    pub area: u32,
+    /// Targets roll this save instead of the character rolling to hit.
+    pub save: Option<Ability>,
+    /// Times between long rests; 0 is at will.
+    pub uses: u8,
+    pub used: u8,
+    /// Plain numbers added for as long as the character has the feat.
+    pub ac: i32,
+    pub hp: i32,
+    /// Feet per turn.
+    pub speed: i32,
+    /// Earned by an unusual deed rather than chosen at a level.
+    pub secret: bool,
+}
+
+impl Feat {
+    /// Cuts the feat down to what a character of `level` may have: an average roll within
+    /// the level's budget (smaller at will, smaller over an area), sane ranges, small
+    /// passive numbers. A table that plays without limits skips the budget, not the sanity.
+    pub fn fit(&mut self, level: u32, limits: bool) {
+        let level = level.clamp(1, 20) as f32;
+        self.name = self.name.trim().chars().take(40).collect();
+        self.description = self.description.trim().chars().take(300).collect();
+        self.uses = self.uses.min(5);
+        self.used = 0;
+        self.range = self.range.clamp(5, 150);
+        self.area = self.area.min(30);
+        match Dice::parse(&self.dice, 0) {
+            Some(mut dice) if dice.average() > 0.0 => {
+                dice.count = dice.count.min(20);
+                dice.sides = dice.sides.clamp(0, 12);
+                dice.bonus = dice.bonus.clamp(0, 20);
+                if limits {
+                    let mut budget = if self.uses == 0 { 3.0 + 2.0 * level } else { 8.0 + 5.0 * level };
+                    if self.area > 0 {
+                        budget *= 0.6;
+                    }
+                    dice.bonus = dice.bonus.min((budget / 3.0) as i32);
+                    let each = (dice.sides as f32 + 1.0) / 2.0;
+                    if dice.sides > 0 && dice.average() > budget {
+                        dice.count = (((budget - dice.bonus as f32) / each).floor() as u32).max(1);
+                    }
+                    // One die can still be too much: then it is a smaller die.
+                    if dice.sides > 0 && dice.average() > budget {
+                        dice.sides = (((budget - dice.bonus as f32) * 2.0 - 1.0).floor() as u32).clamp(2, 12);
+                    }
+                }
+                self.dice = dice.to_string();
+            }
+            _ => {
+                self.dice.clear();
+                self.heals = false;
+                self.uses = 0;
+            }
+        }
+        let (ac, hp, speed) = if limits { (1 + level as i32 / 10, 2 * level as i32, 10) } else { (5, 100, 60) };
+        self.ac = self.ac.clamp(0, ac);
+        self.hp = self.hp.clamp(0, hp);
+        self.speed = self.speed.clamp(0, speed) / 5 * 5;
+    }
+
+    pub fn uses_left(&self) -> Option<u8> {
+        (self.uses > 0).then(|| self.uses.saturating_sub(self.used))
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Character {
     pub name: String,
@@ -152,6 +232,17 @@ pub struct Character {
     pub points_to_place: u8,
     #[serde(default)]
     pub dead: bool,
+    /// Hit dice spent on short rests since the last long one. A character has as many
+    /// hit dice as levels.
+    #[serde(default)]
+    pub hit_dice_used: u32,
+    /// Abilities outside the book.
+    #[serde(default)]
+    pub feats: Vec<Feat>,
+    /// The character reached a level at which the game master may offer an ability of
+    /// its own, and has not been offered one yet.
+    #[serde(default)]
+    pub feat_due: bool,
 }
 
 impl Character {
@@ -192,6 +283,9 @@ impl Character {
             death: DeathSaves::default(),
             points_to_place: 0,
             dead: false,
+            hit_dice_used: 0,
+            feats: Vec::new(),
+            feat_due: false,
         };
         character.max_hp = (class_data.hit_die as i32 + character.modifier(Ability::Con)).max(1);
         character.hp = character.max_hp;
@@ -240,12 +334,55 @@ impl Character {
                 _ => 10 + dex,
             },
         };
-        body + if self.shield { 2 } else { 0 }
+        body + if self.shield { 2 } else { 0 } + self.feats.iter().map(|f| f.ac).sum::<i32>()
     }
 
     /// Feet per turn.
     pub fn speed(&self) -> u32 {
-        srd().race(&self.race).map_or(30, |r| r.speed)
+        srd().race(&self.race).map_or(30, |r| r.speed) + self.feats.iter().map(|f| f.speed.max(0) as u32).sum::<u32>()
+    }
+
+    /// Takes an ability from outside the book, cut to the character's level.
+    pub fn grant(&mut self, mut feat: Feat, limits: bool) {
+        feat.fit(self.level, limits);
+        if feat.name.is_empty() {
+            return;
+        }
+        self.max_hp += feat.hp;
+        self.hp += feat.hp;
+        self.feats.push(feat);
+    }
+
+    /// The best of the abilities a feat could be driven by.
+    pub fn feat_modifier(&self) -> i32 {
+        let casting = self.casting_ability().map_or(i32::MIN, |a| self.modifier(a));
+        casting.max(self.modifier(Ability::Str)).max(self.modifier(Ability::Dex))
+    }
+
+    pub fn hit_dice_left(&self) -> u32 {
+        self.level.saturating_sub(self.hit_dice_used)
+    }
+
+    /// An hour's rest: hit dice are rolled, one at a time, until the character is whole or
+    /// has none left. A warlock's slots come back. Gives the hit points regained.
+    pub fn short_rest(&mut self, rng: &mut Rng) -> i32 {
+        if self.dead {
+            return 0;
+        }
+        let before = self.hp.max(0);
+        let die = self.class_data().hit_die;
+        while self.hp < self.max_hp && self.hit_dice_left() > 0 {
+            self.hit_dice_used += 1;
+            let rolled = (rng.die(die) as i32 + self.modifier(Ability::Con)).max(1);
+            self.hp = (self.hp.max(0) + rolled).min(self.max_hp);
+        }
+        if self.hp > 0 {
+            self.death = DeathSaves::default();
+        }
+        if self.class == "warlock" {
+            self.slots_used = [0; 9];
+        }
+        self.hp.max(0) - before
     }
 
     /// The ability a weapon attack uses: Dexterity for ranged weapons, the better of the two
@@ -361,6 +498,10 @@ impl Character {
             if improvement {
                 self.points_to_place += 2;
             }
+            // Every second level is a moment for something of the character's own.
+            if self.level % 2 == 0 {
+                self.feat_due = true;
+            }
             gained.push(LevelUp { level: self.level, hp_gained, features: self.level_data().features.clone(), ability_improvement: improvement });
         }
         gained
@@ -443,12 +584,17 @@ impl Character {
         (die, outcome)
     }
 
-    /// A night's rest: hit points and spell slots come back.
+    /// A night's rest: hit points, spell slots and the uses of feats come back, and half
+    /// of the hit dice.
     pub fn long_rest(&mut self) {
         if !self.dead {
             self.hp = self.max_hp;
             self.slots_used = [0; 9];
             self.death = DeathSaves::default();
+            self.hit_dice_used = self.hit_dice_used.saturating_sub((self.level / 2).max(1));
+            for feat in &mut self.feats {
+                feat.used = 0;
+            }
         }
     }
 }
@@ -688,4 +834,55 @@ mod tests {
         let back: Character = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
         assert_eq!(back, f);
     }
+
+    #[test]
+    fn a_short_rest_spends_hit_dice_and_a_long_one_gives_half_back() {
+        let mut hero = make("fighter", "human", [15, 12, 14, 8, 10, 13]);
+        hero.gain_xp(2_700);
+        assert_eq!(hero.level, 4);
+        hero.hp = 1;
+        let gained = hero.short_rest(&mut Rng::seeded(2));
+        assert!(gained > 0 && hero.hit_dice_used > 0 && hero.hit_dice_used <= 4, "{gained} {}", hero.hit_dice_used);
+        assert_eq!(hero.hp, 1 + gained);
+        // A whole character rolls nothing.
+        let used = hero.hit_dice_used;
+        hero.hp = hero.max_hp;
+        assert_eq!(hero.short_rest(&mut Rng::seeded(3)), 0);
+        assert_eq!(hero.hit_dice_used, used);
+        hero.hit_dice_used = 4;
+        hero.hp = 1;
+        assert_eq!(hero.short_rest(&mut Rng::seeded(3)), 0, "no dice left");
+        hero.long_rest();
+        assert_eq!((hero.hp, hero.hit_dice_used), (hero.max_hp, 2));
+    }
+
+    #[test]
+    fn a_feat_is_cut_to_the_level_and_its_numbers_count() {
+        let mut hero = make("fighter", "human", [15, 12, 14, 8, 10, 13]);
+        let (ac, hp, speed) = (hero.ac(), hero.max_hp, hero.speed());
+        hero.grant(Feat { name: "Storm".into(), dice: "20d12+50".into(), range: 900, area: 10, uses: 9, ac: 7, hp: 500, speed: 44, ..Feat::default() }, true);
+        let feat = &hero.feats[0];
+        let dice = Dice::parse(&feat.dice, 0).unwrap();
+        assert!(dice.average() <= (8.0 + 5.0) * 0.6 + 0.01, "{}", feat.dice);
+        assert_eq!((feat.range, feat.uses, feat.ac, feat.hp, feat.speed), (150, 5, 1, 2, 10));
+        assert_eq!((hero.ac(), hero.max_hp, hero.speed()), (ac + 1, hp + 2, speed + 10));
+        // Without limits the dice stand, within sanity.
+        let mut wild = Feat { name: "Wild".into(), dice: "6d10".into(), uses: 1, ..Feat::default() };
+        wild.fit(1, false);
+        assert_eq!(wild.dice, "6d10");
+        // A feat without a name is not a feat.
+        hero.grant(Feat::default(), true);
+        assert_eq!(hero.feats.len(), 1);
+    }
+
+    #[test]
+    fn every_second_level_calls_for_a_feat() {
+        let mut hero = make("fighter", "human", [15, 12, 14, 8, 10, 13]);
+        hero.gain_xp(300);
+        assert!(hero.feat_due, "level 2");
+        hero.feat_due = false;
+        hero.gain_xp(600);
+        assert!(!hero.feat_due, "level 3");
+    }
+
 }

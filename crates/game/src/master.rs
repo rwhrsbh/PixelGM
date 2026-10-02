@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use world::story::KEPT_LINES;
-use world::{ChapterDraft, CreatureCard, LocationDraft, TurnDraft, World, WorldDraft, build_world, extract_json, fake, prompt};
+use world::{ChapterDraft, CreatureCard, FeatsDraft, LocationDraft, PortraitDraft, StuntDraft, TurnDraft, World, WorldDraft, build_world, extract_json, fake, prompt};
 
 pub enum Ask {
     NewWorld {
@@ -35,6 +35,24 @@ pub enum Ask {
         near: Option<String>,
         /// What a human master told the model to make of it.
         direction: Option<String>,
+    },
+    /// Abilities of a hero's own: three to choose from, or one secret skill.
+    Feats {
+        world: Box<World>,
+        hero: usize,
+        secret: bool,
+    },
+    /// A hero tries something in a fight that the rules have no button for. `spell` is
+    /// the spell and slot when the something is a spell the rules cannot carry out.
+    Stunt {
+        world: Box<World>,
+        said: String,
+        spell: Option<(String, u8)>,
+    },
+    /// Draw a hero as the player described it.
+    Portrait {
+        world: Box<World>,
+        hero: usize,
     },
     /// A human master asks for a creature to keep in their library.
     Invent {
@@ -60,6 +78,9 @@ pub enum Answer {
     Event(Result<Box<TurnDraft>, Trouble>),
     Chapter(Result<ChapterDraft, Trouble>),
     Card { for_player: String, card: Result<Box<CreatureCard>, Trouble> },
+    Feats { hero: usize, secret: bool, feats: Result<Vec<rules::Feat>, Trouble> },
+    Stunt { spell: Option<(String, u8)>, draft: Result<Box<StuntDraft>, Trouble> },
+    Portrait { hero: usize, rows: Result<Vec<String>, Trouble> },
 }
 
 /// How many times an answer that cannot be read is asked for again before giving up. Each
@@ -189,8 +210,12 @@ impl Call {
         let request = request_for(&system, prompt, self.thinking);
         let mut last = String::new();
         for _ in 0..self.attempts {
+            let started = Instant::now();
             let (text, model) = match self.gm.dispatcher.generate(&request, self.lowest) {
-                Ok((reply, model)) => (reply.text, model.id),
+                Ok((reply, model)) => {
+                    info!("the master answered: {} in {:.1} s, {} characters for a prompt of {}", model.id, started.elapsed().as_secs_f32(), reply.text.chars().count(), prompt.chars().count());
+                    (reply.text, model.id)
+                }
                 // The host's own keys are missing or spent: the guests' keys are next.
                 Err(error @ (GenError::NoKeys | GenError::Exhausted { .. })) => match self.relay.ask(&system, prompt, self.thinking, self.lowest) {
                     Some(Ok((model, text))) => (text, model),
@@ -198,7 +223,10 @@ impl Call {
                     Some(Err(trouble)) => return Err(trouble),
                     None => return Err(error.into()),
                 },
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    warn!("the master did not answer after {:.1} s: {error:?}", started.elapsed().as_secs_f32());
+                    return Err(error.into());
+                }
             };
             self.store.log_answer(&model, &text);
             match extract_json(&text).map(serde_json::from_str::<T>) {
@@ -233,7 +261,7 @@ impl Master {
 
     pub fn ask(&self, gm: &Gm, store: &Store, settings: &Settings, ask: Ask) {
         // Work nobody is waiting for uses only the best tier and is not retried.
-        let unhurried = matches!(ask, Ask::Location { ahead: true, .. } | Ask::Event { .. });
+        let unhurried = matches!(ask, Ask::Location { ahead: true, .. } | Ask::Event { .. } | Ask::Portrait { .. });
         let call = Call {
             gm: gm.clone(),
             store: store.clone(),
@@ -244,6 +272,21 @@ impl Master {
         };
         let language = language_name(settings.lang);
         let (fake, answers, drawing) = (self.fake, self.answers.clone(), self.drawing.clone());
+        info!(
+            "the master is asked: {}{}",
+            match &ask {
+                Ask::NewWorld { .. } => "a new world".to_string(),
+                Ask::Location { id, ahead, .. } => format!("the place '{id}'{}", if *ahead { " (ahead)" } else { "" }),
+                Ask::Turn { said, direction, .. } => format!("a turn, {} characters said{}", said.chars().count(), if direction.is_some() { ", directed" } else { "" }),
+                Ask::Event { .. } => "an event of its own".to_string(),
+                Ask::Chapter { .. } => "a chapter".to_string(),
+                Ask::Feats { hero, secret, .. } => format!("abilities for hero {hero}{}", if *secret { " (secret)" } else { "" }),
+                Ask::Stunt { .. } => "a stunt in a fight".to_string(),
+                Ask::Portrait { hero, .. } => format!("a portrait of hero {hero}"),
+                Ask::Invent { .. } => "a creature for a library".to_string(),
+            },
+            if fake { " (fake master)" } else { "" }
+        );
         if let Ask::Location { id, .. } = &ask {
             drawing.lock().unwrap().insert(id.clone());
         }
@@ -269,6 +312,18 @@ impl Master {
                     };
                     let draft: Result<TurnDraft, Trouble> = if fake { faked(fake::turn(direction.as_deref().unwrap_or(&said))) } else { call.read(prompt::play_prompt(&world), &asked) };
                     Answer::Turn { said, near, draft: draft.map(Box::new) }
+                }
+                Ask::Feats { world, hero, secret } => {
+                    let draft: Result<FeatsDraft, Trouble> = if fake { faked(fake::feats(secret)) } else { call.read(prompt::play_prompt(&world), &prompt::feats(&world, hero, secret)) };
+                    Answer::Feats { hero, secret, feats: draft.map(|d| d.read()) }
+                }
+                Ask::Stunt { world, said, spell } => {
+                    let draft: Result<StuntDraft, Trouble> = if fake { faked(fake::stunt(&said)) } else { call.read(prompt::play_prompt(&world), &prompt::stunt(&world, &said)) };
+                    Answer::Stunt { spell, draft: draft.map(Box::new) }
+                }
+                Ask::Portrait { world, hero } => {
+                    let draft: Result<PortraitDraft, Trouble> = if fake { faked(fake::portrait()) } else { call.read(prompt::system_prompt(&world.language), &prompt::portrait(&world, hero)) };
+                    Answer::Portrait { hero, rows: draft.map(|d| d.rows) }
                 }
                 Ask::Invent { world, request, for_player } => {
                     let card: Result<CreatureCard, Trouble> = if fake { faked(fake::creature(&request)) } else { call.read(prompt::play_prompt(&world), &prompt::invent(&world, &request)) };

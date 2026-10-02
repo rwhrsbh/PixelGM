@@ -26,6 +26,49 @@ pub struct Whisper {
     pub text: String,
 }
 
+/// What the master wrote when asked for abilities of a character's own.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(default)]
+pub struct FeatsDraft {
+    pub feats: Vec<Value>,
+}
+
+impl FeatsDraft {
+    /// The feats that could be read; one that cannot is dropped, not fatal.
+    pub fn read(&self) -> Vec<rules::Feat> {
+        self.feats.iter().filter_map(|value| serde_json::from_value::<rules::Feat>(lenient(value.clone())).ok()).filter(|feat| !feat.name.trim().is_empty()).collect()
+    }
+}
+
+/// Models write numbers as strings and leave nulls where nothing applies.
+fn lenient(mut value: Value) -> Value {
+    if let Some(fields) = value.as_object_mut() {
+        fields.retain(|_, v| !v.is_null());
+        for key in ["range", "area", "uses", "ac", "hp", "speed"] {
+            if let Some(number) = fields.get(key).and_then(|v| v.as_str()).and_then(|s| s.trim().parse::<i64>().ok()) {
+                fields.insert(key.to_string(), Value::from(number));
+            }
+        }
+        if let Some(save) = fields.get("save").and_then(|v| v.as_str()).map(|s| s.trim().to_lowercase()) {
+            match rules::Ability::from_index(&save) {
+                Some(ability) => fields.insert("save".to_string(), serde_json::to_value(ability).unwrap_or(Value::Null)),
+                None => fields.remove("save"),
+            };
+        }
+        if let Some(dice) = fields.get("dice").filter(|v| v.is_number()).map(|v| v.to_string()) {
+            fields.insert("dice".to_string(), Value::from(dice));
+        }
+    }
+    value
+}
+
+/// A hero's picture, as the master drew it.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(default)]
+pub struct PortraitDraft {
+    pub rows: Vec<String>,
+}
+
 /// A creature the game master keeps to use again: what it is, how it looks, how it fights.
 /// A human master collects these in a library of their own and brings them into any world.
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
@@ -73,7 +116,29 @@ pub struct ChapterDraft {
     pub facts: Vec<String>,
 }
 
+/// The id of the sprite a hero is drawn with, once the master has drawn one.
+pub fn portrait_id(name: &str) -> String {
+    format!("portrait_{}", slug(name))
+}
+
 impl World {
+    /// Keeps the picture the master drew of a hero. `false` when it cannot be used.
+    pub fn set_portrait(&mut self, hero: usize, rows: &[String]) -> bool {
+        let Some(name) = self.party.get(hero).map(|h| h.name.clone()) else { return false };
+        match sprite_from(rows, self.palette.len()) {
+            Some(picture) => {
+                self.sprites.insert(portrait_id(&name), picture);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The sprite to draw a hero with: its own picture, or the stock figure.
+    pub fn hero_sprite(&self, hero: Option<usize>) -> String {
+        hero.and_then(|i| self.party.get(i)).map(|h| portrait_id(&h.name)).filter(|id| self.sprites.contains_key(id)).unwrap_or_else(|| crate::base::HERO_SPRITE.to_string())
+    }
+
     /// Takes the master's answer to what the party did. `said` is the party's own words; an
     /// empty `said` means the master spoke unprompted.
     pub fn take_turn(&mut self, said: &str, draft: &TurnDraft) -> (Turn, Vec<String>) {
@@ -193,6 +258,36 @@ mod tests {
         let back: TurnDraft = serde_json::from_str(&serde_json::to_string(&draft).unwrap()).unwrap();
         assert_eq!(back, draft);
         assert_eq!(back.whispers[0], Whisper { to: "Brak".into(), text: "You smell smoke.".into() });
+    }
+
+
+    #[test]
+    fn feats_are_read_leniently_and_the_unreadable_are_dropped() {
+        let draft: FeatsDraft = serde_json::from_value(serde_json::json!({ "feats": [
+            { "name": "Ember hands", "description": "Fire.", "dice": "2d6", "range": "30", "save": "DEX", "uses": 2, "area": null },
+            { "name": "", "dice": "1d4" },
+            "nonsense",
+            { "name": "Thick skin", "ac": 1, "dice": 0 }
+        ] })).unwrap();
+        let feats = draft.read();
+        assert_eq!(feats.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["Ember hands", "Thick skin"]);
+        assert_eq!((feats[0].range, feats[0].save, feats[0].uses), (30, Some(rules::Ability::Dex), 2));
+        assert_eq!(feats[1].ac, 1);
+    }
+
+
+    #[test]
+    fn a_hero_is_drawn_with_its_own_picture_once_there_is_one() {
+        let mut w = world();
+        let skills = vec!["athletics".to_string(), "perception".to_string()];
+        w.party.push(rules::Character::create("Brak the Bold", "", "human", "fighter", [15, 12, 14, 8, 10, 13], &skills, &[]).unwrap());
+        assert_eq!(w.hero_sprite(Some(0)), crate::base::HERO_SPRITE);
+        assert!(!w.set_portrait(0, &[]), "an empty picture is no picture");
+        let portrait: PortraitDraft = serde_json::from_str(&fake::portrait()).unwrap();
+        assert!(w.set_portrait(0, &portrait.rows));
+        assert_eq!(w.hero_sprite(Some(0)), "portrait_brak_the_bold");
+        assert_eq!(w.hero_sprite(Some(7)), crate::base::HERO_SPRITE);
+        assert_eq!(w.hero_sprite(None), crate::base::HERO_SPRITE);
     }
 
 }

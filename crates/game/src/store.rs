@@ -220,6 +220,34 @@ impl Store {
         cards
     }
 
+    /// Puts what is needed to look into a problem in one new folder: the logs, the world
+    /// being played and its saves, the settings, the spent quotas and the master's latest
+    /// answers. Keys are never part of it.
+    pub fn collect_report(&self, world_id: &str, world: Option<&World>) -> io::Result<PathBuf> {
+        let report = self.dir.join("reports").join(format!("report-{}", unix_now()));
+        fs::create_dir_all(&report)?;
+        let copy_dir = |from: PathBuf, to: PathBuf| -> io::Result<()> {
+            for file in fs::read_dir(from).into_iter().flatten().flatten().filter(|f| f.path().is_file()) {
+                fs::create_dir_all(&to)?;
+                fs::copy(file.path(), to.join(file.file_name()))?;
+            }
+            Ok(())
+        };
+        copy_dir(self.dir.join("logs"), report.join("logs"))?;
+        copy_dir(self.dir.join("answers"), report.join("answers"))?;
+        for name in ["settings.json", "quota.json"] {
+            if self.dir.join(name).is_file() {
+                fs::copy(self.dir.join(name), report.join(name))?;
+            }
+        }
+        // The world as it is this moment, not as it was last saved.
+        if let Some(world) = world {
+            fs::write(report.join("world.json"), serde_json::to_string(world)?)?;
+        }
+        copy_dir(self.saves_dir().join(world_id), report.join("saves"))?;
+        Ok(report)
+    }
+
     pub fn save_keys(&self, keys: &[String]) -> io::Result<()> {
         let mut file = KeyFile::default();
         for key in keys {
@@ -366,6 +394,22 @@ mod tests {
         let cards = store.load_cards();
         assert_eq!(cards.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Ant", "Bog troll"]);
         assert_eq!(cards[1].description, "Wet.");
+    }
+
+
+    #[test]
+    fn a_report_gathers_logs_answers_and_settings_but_never_keys() {
+        let store = temp_store("report");
+        store.log_answer("model-x", "{}");
+        store.save_settings(&Settings::default()).unwrap();
+        store.save_keys(&["AIzaSecretSecretSecret".to_string()]).unwrap();
+        fs::create_dir_all(store.dir.join("logs")).unwrap();
+        fs::write(store.dir.join("logs").join("pixelgm.log"), "hello").unwrap();
+        let report = store.collect_report("w1", None).unwrap();
+        assert!(report.join("logs").join("pixelgm.log").is_file());
+        assert!(report.join("settings.json").is_file());
+        assert_eq!(fs::read_dir(report.join("answers")).unwrap().count(), 1);
+        assert!(!report.join("keys.json").exists());
     }
 
 }

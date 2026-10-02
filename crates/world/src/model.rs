@@ -250,6 +250,15 @@ pub struct World {
     /// The player in the game master's seat. Nobody means the model runs the game alone.
     #[serde(default)]
     pub gm: Option<String>,
+    /// How this table plays, chosen by the host when the world was made.
+    #[serde(default)]
+    pub table: TableRules,
+    /// Abilities the game master has offered and a player has yet to choose from.
+    #[serde(default)]
+    pub offers: Vec<FeatOffer>,
+    /// Heroes whose unusual deed earned a secret skill the master has yet to write.
+    #[serde(default)]
+    pub secrets_due: Vec<usize>,
     /// The other players' tokens in the place the party is in. Not saved: they are where
     /// their players last said they were.
     #[serde(skip)]
@@ -261,6 +270,27 @@ pub struct World {
 
 fn yes() -> bool {
     true
+}
+
+/// The host's choices about the rules of a table.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct TableRules {
+    /// Only what the book has: SRD monsters, no invented abilities.
+    pub book_only: bool,
+    /// The caps that keep a generous master in check are lifted.
+    pub no_limits: bool,
+    /// How ability scores are made for every character of this world.
+    pub method: rules::AbilityMethod,
+    /// The 2024 edition of the reference rules instead of the 2014 one. Still a beta.
+    pub srd_2024: bool,
+}
+
+/// Abilities offered to one hero. The player picks one.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct FeatOffer {
+    pub hero: usize,
+    pub feats: Vec<rules::Feat>,
 }
 
 impl World {

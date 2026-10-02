@@ -161,6 +161,38 @@ pub fn turn(said: &str) -> String {
     .to_string()
 }
 
+/// The answer to "offer this hero abilities".
+pub fn feats(secret: bool) -> String {
+    let all = json!([
+        { "name": "Ember hands", "description": "Fire leaps from your palms.", "dice": "2d6", "range": 30, "save": "dex", "uses": 2 },
+        { "name": "Camp medic", "description": "You know where to press.", "dice": "1d8", "heals": true, "range": 5, "uses": 2 },
+        { "name": "Thick skin", "description": "Scars on scars.", "ac": 1, "hp": 2 }
+    ]);
+    let feats = if secret { json!([all[0]]) } else { all };
+    json!({ "feats": feats }).to_string()
+}
+
+/// The answer to an improvised action in a fight.
+pub fn stunt(said: &str) -> String {
+    json!({
+        "narration": format!("You try it: {said}."),
+        "ability": "dex", "skill": "acrobatics", "dc": 8, "target": "wolf", "damage": "1d6", "heal": "",
+        "success": "It works better than it had any right to.", "failure": "It does not come off."
+    })
+    .to_string()
+}
+
+/// The answer to "draw this hero": a figure unlike the stock one.
+pub fn portrait() -> String {
+    json!({ "rows": [
+        "0000011111000000", "0000199999100000", "0000199999100000", "0000122222100000",
+        "0000121212100000", "0000122222100000", "0000011111000000", "0001166666110000",
+        "0016666666661000", "0016166666161000", "0012166666121000", "0001166666110000",
+        "0000166166100000", "0000166166100000", "0000133133100000", "0000111011100000"
+    ] })
+    .to_string()
+}
+
 /// The answer to a human master's "make me a creature".
 pub fn creature(request: &str) -> String {
     let name = request.trim().chars().take(24).collect::<String>();

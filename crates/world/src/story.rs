@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Dice may be written as "2d6" or as a bare number.
-fn lenient_text<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+pub(crate) fn lenient_text<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     Ok(match Value::deserialize(d)? {
         Value::String(s) => s,
         Value::Number(n) => n.to_string(),
@@ -19,7 +19,7 @@ fn lenient_text<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     })
 }
 
-fn lenient_int<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+pub(crate) fn lenient_int<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     Ok(match Value::deserialize(d)? {
         Value::Number(n) => n.as_f64().map_or(0, |f| f.round() as i64),
         Value::String(s) => s.trim().parse::<f64>().map_or(0, |f| f.round() as i64),
@@ -124,6 +124,17 @@ pub enum Effect {
     },
     /// The hostile creatures here attack.
     Fight,
+    /// A hero did something out of the ordinary. The game keeps count and decides whether
+    /// a secret skill comes of it.
+    Deed {
+        #[serde(default)]
+        hero: String,
+    },
+    /// The story brings a dead hero back.
+    Revive {
+        #[serde(default)]
+        hero: String,
+    },
 }
 
 /// Something the players can do with a thing without asking the game master: the outcome
@@ -339,6 +350,16 @@ impl World {
                     }
                     continue;
                 }
+                Effect::Deed { hero } => {
+                    self.deed(hero, &mut Rng::from_clock());
+                    continue;
+                }
+                Effect::Revive { hero } => {
+                    if !self.revive(hero) {
+                        notes.push(format!("revive: nobody dead is called '{hero}'"));
+                    }
+                    continue;
+                }
                 _ => {}
             }
             let tiles = &self.tiles;
@@ -444,7 +465,7 @@ impl World {
                     }
                 }
                 Effect::Fact { text } => self.story.remember(text),
-                Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight => {}
+                Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight | Effect::Deed { .. } | Effect::Revive { .. } => {}
             }
         }
         // Whatever changed, the party must not end up inside something.

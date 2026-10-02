@@ -71,6 +71,12 @@ pub fn button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label
 
 /// Spawns a button whose label is data rather than a translated string, such as a row in a
 /// list. The text starts at the left and is cut off rather than wrapped.
+/// Marks the one button of a sheet that Enter presses even while the mouse is steering:
+/// "read on", "roll". Without the mark Enter is left to the sheet, which may use it to
+/// confirm something else.
+#[derive(Component, Clone, Copy)]
+pub struct EnterPresses;
+
 pub fn text_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: String, extra: impl Bundle) {
     let look = ButtonLook::Idle;
     parent.spawn((
