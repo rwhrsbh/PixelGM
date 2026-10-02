@@ -42,6 +42,10 @@ decision changes.
   embedding and similar variants are excluded by name tokens.
 - One order for every task, including sprites and translation: the user judged flash-lite too
   weak to be preferred for anything.
+- Model lists differ between keys (projects), so the chain is the union of every key's lists;
+  a key that lacks a model answers 404 for it and only that pair is put to rest.
+- Spent quotas and each model's thinking dialect are saved (`quota.json`, keys named by a
+  fingerprint) so a restart neither forgets them nor burns requests rediscovering them.
 - Cooldowns are kept per (key, model) pair, because quotas are per model:
   - 429 → next key on the same model; the pair rests for the server's `retryDelay`.
   - Every key exhausted for a model → next model.
@@ -162,6 +166,9 @@ decision changes.
 - The author has nobody to play with: correctness is checked by automated tests, a scripted
   fake GM, several local instances, and screenshots taken from the game.
 - A "collect report" button packs the log and the save.
+- The game takes developer flags (`crates/game/src/shot.rs`): `--do` plays a script of clicks,
+  typing and screenshots through the real input path, `--hidden true` keeps the window off the
+  desktop, and `PIXELGM_HOME` gives each instance its own settings folder.
 
 ## Build order
 

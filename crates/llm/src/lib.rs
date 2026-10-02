@@ -10,6 +10,6 @@ pub mod thinking;
 
 pub use catalog::{ApiVersion, ListedModel, Model, Tier, build_chain};
 pub use client::{Failure, GenRequest, HttpResponse, Reply, Transport, Turn, UreqTransport, Usage};
-pub use dispatch::{Dispatcher, GenError};
-pub use pool::{KeyId, Millis, Outcome, PairUsage, Pick, Pool};
+pub use dispatch::{Dispatcher, GenError, KeyHealth, SavedState};
+pub use pool::{Availability, KeyId, Millis, Outcome, PairUsage, Pick, Pool, SavedRest, fingerprint};
 pub use thinking::{ThinkingMode, ThinkingSetting};

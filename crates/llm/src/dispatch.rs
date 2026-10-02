@@ -3,9 +3,10 @@
 
 use crate::catalog::{ApiVersion, ListedModel, Model, Tier, build_chain};
 use crate::client::{Failure, GenRequest, Reply, Transport, parse_generate, parse_list};
-use crate::pool::{KeyId, Millis, Outcome, Pick, Pool};
+use crate::pool::{KeyId, Millis, Outcome, Pick, Pool, SavedRest};
 use crate::thinking::ThinkingMode;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,6 +24,23 @@ pub enum GenError {
     Network(String),
     Blocked(String),
     BadRequest(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyHealth {
+    Working,
+    Rejected,
+    /// The answer says nothing about the key: no network, or the service is failing.
+    Unreachable(String),
+}
+
+/// What is worth remembering between launches: spent quotas and how each model takes its
+/// thinking setting.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedState {
+    pub rests: Vec<SavedRest>,
+    pub thinking: BTreeMap<String, ThinkingMode>,
 }
 
 #[derive(Default)]
@@ -80,16 +98,53 @@ impl<T: Transport> Dispatcher<T> {
         }
     }
 
-    /// Rebuilds the chain from both model lists, using the first key that can list them.
+    pub fn export_state(&self) -> SavedState {
+        let state = self.state.lock().unwrap();
+        SavedState { rests: state.pool.export_rests((self.clock)()), thinking: state.thinking.iter().map(|(m, t)| (m.clone(), *t)).collect() }
+    }
+
+    /// Call after the keys are added: rests are matched to the keys present.
+    pub fn import_state(&self, saved: &SavedState) {
+        let mut state = self.state.lock().unwrap();
+        state.pool.import_rests(&saved.rests, (self.clock)());
+        state.thinking.extend(saved.thinking.iter().map(|(m, t)| (m.clone(), *t)));
+    }
+
+    /// The clock the pool's rest times are measured on.
+    pub fn now(&self) -> Millis {
+        (self.clock)()
+    }
+
+    /// Asks the API whether a key is accepted, without spending generation quota.
+    pub fn probe_key(&self, id: KeyId) -> KeyHealth {
+        let secret = self.state.lock().unwrap().pool.live_keys().find(|(k, _)| *k == id).map(|(_, s)| s.to_string());
+        let Some(secret) = secret else { return KeyHealth::Rejected };
+        match self.list(ApiVersion::V1Beta, &secret) {
+            Ok(_) => KeyHealth::Working,
+            Err(Ok(Failure::KeyRejected)) => {
+                self.state.lock().unwrap().pool.report((self.clock)(), "", id, Outcome::KeyRejected);
+                KeyHealth::Rejected
+            }
+            Err(Ok(failure)) => KeyHealth::Unreachable(format!("{failure:?}")),
+            Err(Err(unreachable)) => KeyHealth::Unreachable(unreachable),
+        }
+    }
+
+    /// Rebuilds the chain from the model lists of every live key. Keys of different projects
+    /// can see different models, so the chain is the union; a key that lacks a model answers
+    /// 404 for it and the pool stops pairing them.
     pub fn refresh(&self) -> Result<(), GenError> {
         let keys: Vec<(KeyId, String)> = self.state.lock().unwrap().pool.live_keys().map(|(id, s)| (id, s.to_string())).collect();
+        let (mut v1, mut v1beta) = (Vec::new(), Vec::new());
+        let mut listed = false;
         let mut last = GenError::NoKeys;
         for (id, secret) in keys {
             let lists = self.list(ApiVersion::V1, &secret).and_then(|v1| Ok((v1, self.list(ApiVersion::V1Beta, &secret)?)));
             match lists {
-                Ok((v1, v1beta)) => {
-                    self.state.lock().unwrap().pool.set_chain(build_chain(&v1, &v1beta));
-                    return Ok(());
+                Ok((a, b)) => {
+                    v1.extend(a);
+                    v1beta.extend(b);
+                    listed = true;
                 }
                 Err(Ok(Failure::KeyRejected)) => {
                     self.state.lock().unwrap().pool.report((self.clock)(), "", id, Outcome::KeyRejected);
@@ -98,7 +153,11 @@ impl<T: Transport> Dispatcher<T> {
                 Err(Err(unreachable)) => last = GenError::Network(unreachable),
             }
         }
-        Err(last)
+        if !listed {
+            return Err(last);
+        }
+        self.state.lock().unwrap().pool.set_chain(build_chain(&v1, &v1beta));
+        Ok(())
     }
 
     /// Runs the request on the best model available no lower than `lowest`. Returns the answer
@@ -187,7 +246,9 @@ mod tests {
                 return Ok(HttpResponse { status: 400, body: json!({ "error": { "message": "API key not valid." } }).to_string() });
             }
             self.lists.fetch_add(1, Ordering::SeqCst);
-            let models: Vec<Value> = self.models.iter().map(|m| json!({ "name": format!("models/{m}"), "supportedGenerationMethods": ["generateContent"] })).collect();
+            // A key from a project that only has the oldest model.
+            let visible = if key == "narrow" { &self.models[..1] } else { &self.models[..] };
+            let models: Vec<Value> = visible.iter().map(|m| json!({ "name": format!("models/{m}"), "supportedGenerationMethods": ["generateContent"] })).collect();
             Ok(HttpResponse { status: 200, body: json!({ "models": models }).to_string() })
         }
 
@@ -304,6 +365,45 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_remembers_spent_quota_and_thinking_dialects() {
+        let first = rig(&["a", "b"], |c| {
+            if c.thinking.get("thinkingLevel").is_some() {
+                status(400, "Thinking level is not supported for this model.")
+            } else if c.key == "a" {
+                Ok(HttpResponse { status: 429, body: json!({ "error": { "details": [{ "retryDelay": "3600s" }] } }).to_string() })
+            } else {
+                ok("x")
+            }
+        });
+        first.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        let saved = first.dispatcher.export_state();
+        assert_eq!(serde_json::from_str::<SavedState>(&serde_json::to_string(&saved).unwrap()).unwrap(), saved);
+
+        let second = rig(&["a", "b"], |_| ok("x"));
+        second.dispatcher.import_state(&saved);
+        second.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        let calls = second.calls.lock().unwrap();
+        // Straight to the key with quota, in the dialect the model accepts: one request, no probing.
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].key, "b");
+        assert_eq!(calls[0].thinking, json!({ "thinkingBudget": 4096 }));
+    }
+
+    #[test]
+    fn probing_tells_working_rejected_and_removed_keys_apart() {
+        let r = rig(&[], |_| ok("x"));
+        let good = r.dispatcher.add_key("a");
+        let bad = r.dispatcher.add_key("revoked");
+        assert_eq!(r.dispatcher.probe_key(good), KeyHealth::Working);
+        assert_eq!(r.dispatcher.probe_key(bad), KeyHealth::Rejected);
+        assert!(r.dispatcher.with_pool(|p| p.is_dead(bad)));
+        r.dispatcher.remove_key(good);
+        assert_eq!(r.dispatcher.probe_key(good), KeyHealth::Rejected);
+        // Probing never costs a generation request.
+        assert!(r.trail().is_empty());
+    }
+
+    #[test]
     fn no_keys_and_only_rejected_keys_both_say_no_keys() {
         assert_eq!(rig(&[], |_| ok("x")).dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma), Err(GenError::NoKeys));
         assert_eq!(rig(&["revoked"], |_| ok("x")).dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma), Err(GenError::NoKeys));
@@ -323,6 +423,18 @@ mod tests {
         assert_eq!(model.id, "gemini-2.0-flash");
         // Two lists (v1 and v1beta) at start, two more after the 404.
         assert_eq!(r.lists.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn chain_is_the_union_of_every_keys_models_and_a_key_skips_what_it_lacks() {
+        let r = rig(&["narrow", "a"], |c| if c.key == "narrow" && c.model != "gemini-2.0-flash" { status(404, "not found") } else { ok("x") });
+        let (_, model) = r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        assert_eq!(model.id, "gemini-3.0-flash");
+        assert_eq!(r.trail(), pairs(&[("gemini-3.0-flash", "narrow"), ("gemini-3.0-flash", "a")]));
+        // The second request goes straight to the key that has the model.
+        r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        assert_eq!(r.trail().last().unwrap(), &("gemini-3.0-flash".to_string(), "a".to_string()));
+        assert_eq!(r.trail().len(), 3);
     }
 
     #[test]

@@ -1,0 +1,208 @@
+//! The settings screen, and the systems that make a changed setting take effect.
+
+use crate::art::Art;
+use crate::i18n::{Lang, T};
+use crate::menu::{Nav, Screen, screen_root, spawn_panel};
+use crate::store::{Settings, Store};
+use crate::theme::*;
+use crate::widgets::{PixelButton, button};
+use bevy::prelude::*;
+use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
+use llm::{ThinkingSetting, Tier};
+
+/// One row of the screen: a setting whose value changes by clicking through its choices.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+enum Choice {
+    Language,
+    Window,
+    Thinking,
+    Fallback,
+}
+
+impl Choice {
+    fn label(self) -> T {
+        match self {
+            Choice::Language => T::SetLanguage,
+            Choice::Window => T::SetWindow,
+            Choice::Thinking => T::SetThinking,
+            Choice::Fallback => T::SetFallback,
+        }
+    }
+
+    fn hint(self) -> Option<T> {
+        match self {
+            Choice::Thinking => Some(T::ThinkingHint),
+            Choice::Fallback => Some(T::FallbackHint),
+            _ => None,
+        }
+    }
+
+    fn value(self, s: &Settings) -> T {
+        match self {
+            Choice::Language => T::LanguageName,
+            Choice::Window => {
+                if s.fullscreen {
+                    T::Fullscreen
+                } else {
+                    T::Windowed
+                }
+            }
+            Choice::Thinking => match s.thinking {
+                ThinkingSetting::Off => T::ThinkingOff,
+                ThinkingSetting::Low => T::ThinkingLow,
+                ThinkingSetting::Medium => T::ThinkingMedium,
+                ThinkingSetting::High => T::ThinkingHigh,
+            },
+            Choice::Fallback => match s.lowest_tier {
+                Tier::Flash => T::FallbackFlash,
+                Tier::FlashLite => T::FallbackLite,
+                Tier::Gemma => T::FallbackGemma,
+            },
+        }
+    }
+
+    fn advance(self, s: &mut Settings) {
+        match self {
+            Choice::Language => {
+                s.lang = match s.lang {
+                    Lang::Ru => Lang::En,
+                    Lang::En => Lang::Ru,
+                }
+            }
+            Choice::Window => s.fullscreen = !s.fullscreen,
+            Choice::Thinking => {
+                s.thinking = match s.thinking {
+                    ThinkingSetting::Off => ThinkingSetting::Low,
+                    ThinkingSetting::Low => ThinkingSetting::Medium,
+                    ThinkingSetting::Medium => ThinkingSetting::High,
+                    ThinkingSetting::High => ThinkingSetting::Off,
+                }
+            }
+            Choice::Fallback => {
+                s.lowest_tier = match s.lowest_tier {
+                    Tier::Flash => Tier::FlashLite,
+                    Tier::FlashLite => Tier::Gemma,
+                    Tier::Gemma => Tier::Flash,
+                }
+            }
+        }
+    }
+}
+
+const CHOICES: [Choice; 4] = [Choice::Language, Choice::Window, Choice::Thinking, Choice::Fallback];
+
+fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
+    commands.spawn(screen_root(Screen::Settings)).with_children(|root| {
+        let sheet = Node { margin: UiRect::top(px(30)), width: px(300), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
+        spawn_panel(root, &art, sheet, |sheet| {
+            sheet.spawn((Text::default(), T::Settings, fonts.title(1), TextColor(color(INK))));
+            for choice in CHOICES {
+                sheet.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|block| {
+                    block.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|line| {
+                        line.spawn((Text::default(), choice.label(), fonts.body(), TextColor(color(INK))));
+                        line.spawn((Node { width: px(110), flex_direction: FlexDirection::Column, ..default() },))
+                            .with_child(button(&art, &fonts, choice.value(&settings), true, choice));
+                    });
+                    if let Some(hint) = choice.hint() {
+                        block.spawn((Text::default(), hint, fonts.body(), TextColor(color(PARCHMENT_DARK))));
+                    }
+                });
+            }
+            sheet.spawn(Node { margin: UiRect::top(px(4)), ..default() }).with_child(button(&art, &fonts, T::Back, true, Nav::Go(Screen::Main)));
+        });
+    });
+}
+
+fn on_click(click: On<Pointer<Click>>, buttons: Query<(&Choice, &PixelButton)>, mut settings: ResMut<Settings>, store: Res<Store>) {
+    let Ok((choice, _)) = buttons.get(click.entity) else { return };
+    choice.advance(&mut settings);
+    if let Err(e) = store.save_settings(&settings) {
+        error!("could not save settings: {e}");
+    }
+}
+
+/// Each value button shows its setting's current value: the label is a child of the button.
+fn show_values(settings: Res<Settings>, buttons: Query<(&Choice, &Children)>, mut labels: Query<&mut T>) {
+    if !settings.is_changed() {
+        return;
+    }
+    for (choice, children) in &buttons {
+        for child in children {
+            if let Ok(mut label) = labels.get_mut(*child) {
+                let wanted = choice.value(&settings);
+                if *label != wanted {
+                    *label = wanted;
+                }
+            }
+        }
+    }
+}
+
+fn apply_language(settings: Res<Settings>, mut lang: ResMut<Lang>) {
+    if *lang != settings.lang {
+        *lang = settings.lang;
+    }
+}
+
+fn apply_window_mode(settings: Res<Settings>, mut window: Single<&mut Window, With<PrimaryWindow>>) {
+    let wanted = if settings.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
+    if window.mode != wanted {
+        window.mode = wanted;
+    }
+}
+
+/// F11 and Alt+Enter switch between the window and the whole screen from anywhere.
+fn fullscreen_shortcut(keyboard: Res<ButtonInput<KeyCode>>, mut settings: ResMut<Settings>, store: Res<Store>) {
+    let alt = keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    if keyboard.just_pressed(KeyCode::F11) || (alt && keyboard.just_pressed(KeyCode::Enter)) {
+        settings.fullscreen = !settings.fullscreen;
+        if let Err(e) = store.save_settings(&settings) {
+            error!("could not save settings: {e}");
+        }
+    }
+}
+
+pub struct SettingsPlugin;
+
+impl Plugin for SettingsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(Screen::Settings), spawn_settings)
+            .add_systems(Update, (fullscreen_shortcut, apply_language, apply_window_mode, show_values).chain())
+            .add_observer(on_click);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_choice_cycles_back_to_where_it_started() {
+        for choice in CHOICES {
+            let start = Settings::default();
+            let mut s = start.clone();
+            let mut steps = 0;
+            loop {
+                choice.advance(&mut s);
+                steps += 1;
+                if s == start {
+                    break;
+                }
+                assert!(steps < 10, "{choice:?} never returns");
+            }
+            assert!(steps >= 2, "{choice:?} has only one value");
+        }
+    }
+
+    #[test]
+    fn advancing_a_choice_changes_only_what_it_shows() {
+        for choice in CHOICES {
+            let mut s = Settings::default();
+            let before = (s.lang, s.fullscreen, s.thinking, s.lowest_tier);
+            choice.advance(&mut s);
+            let after = (s.lang, s.fullscreen, s.thinking, s.lowest_tier);
+            let changed = [before.0 != after.0, before.1 != after.1, before.2 != after.2, before.3 != after.3];
+            assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{choice:?}");
+        }
+    }
+}

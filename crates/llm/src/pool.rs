@@ -2,6 +2,7 @@
 //! resting state is kept per (key, model) pair, never per key.
 
 use crate::catalog::{Model, Tier};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Milliseconds on whatever clock the caller uses; the pool only compares and adds.
@@ -25,7 +26,7 @@ pub enum Outcome {
     RateLimited { retry_after: Option<Millis>, limit: Option<u32> },
     /// The model itself is overloaded or failing; another key would meet the same answer.
     Overloaded,
-    /// The model no longer exists.
+    /// This key cannot see the model: it was removed, or this key's project never had it.
     ModelGone,
     /// The key is invalid or revoked.
     KeyRejected,
@@ -49,9 +50,37 @@ pub struct PairUsage {
     pub resting_until: Option<Millis>,
 }
 
+/// One model across all live keys, for the quota meter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Availability {
+    pub free_keys: u32,
+    pub live_keys: u32,
+    pub next_free: Option<Millis>,
+}
+
+/// A spent quota as it is written to disk, so a restart does not forget it and burn requests
+/// rediscovering it. The key is named by a fingerprint, never by its secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedRest {
+    pub key: String,
+    pub model: String,
+    pub until: Millis,
+    pub limit: Option<u32>,
+}
+
+/// A short stable name for a key that does not reveal it (FNV-1a, 64 bits).
+pub fn fingerprint(secret: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in secret.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 const PAIR_BACKOFF: (Millis, Millis) = (30_000, 3_600_000);
 const MODEL_BACKOFF: (Millis, Millis) = (20_000, 300_000);
-const GONE_REST: Millis = 3_600_000;
+const GONE_REST: Millis = 24 * 3_600_000;
 
 #[derive(Debug, Default)]
 pub struct Pool {
@@ -63,6 +92,9 @@ pub struct Pool {
     pair_strikes: HashMap<(KeyId, String), u32>,
     model_strikes: HashMap<String, u32>,
     usage: HashMap<(KeyId, String), PairUsage>,
+    /// Saved rests of keys that are not entered right now. They wait here so the key gets
+    /// them back whenever it is added, and so saving does not forget them.
+    waiting_rests: Vec<SavedRest>,
     needs_relist: bool,
 }
 
@@ -85,7 +117,21 @@ impl Pool {
         let id = KeyId(self.next_key);
         self.next_key += 1;
         self.keys.push(Key { id, secret: secret.to_string(), dead: false });
+        let print = fingerprint(secret);
+        let (mine, others): (Vec<SavedRest>, Vec<SavedRest>) = std::mem::take(&mut self.waiting_rests).into_iter().partition(|r| r.key == print);
+        self.waiting_rests = others;
+        for rest in mine {
+            self.rest_pair(id, rest);
+        }
         id
+    }
+
+    fn rest_pair(&mut self, id: KeyId, rest: SavedRest) {
+        let pair = (id, rest.model);
+        self.pair_rest.insert(pair.clone(), rest.until);
+        let usage = self.usage.entry(pair).or_default();
+        usage.resting_until = Some(rest.until);
+        usage.limit = rest.limit;
     }
 
     pub fn remove_key(&mut self, id: KeyId) {
@@ -101,6 +147,28 @@ impl Pool {
 
     pub fn is_dead(&self, id: KeyId) -> bool {
         self.keys.iter().any(|k| k.id == id && k.dead)
+    }
+
+    /// Every key in the order it was added, rejected ones included: id, secret, rejected.
+    pub fn keys(&self) -> impl Iterator<Item = (KeyId, &str, bool)> {
+        self.keys.iter().map(|k| (k.id, k.secret.as_str(), k.dead))
+    }
+
+    /// How many live keys can call `model` right now, out of how many, and when the next one
+    /// frees up if none can.
+    pub fn availability(&self, now: Millis, model: &str) -> Availability {
+        let model_rest = self.model_rest.get(model).copied().unwrap_or(0);
+        let mut out = Availability::default();
+        for key in self.keys.iter().filter(|k| !k.dead) {
+            out.live_keys += 1;
+            let free_at = model_rest.max(self.pair_rest.get(&(key.id, model.to_string())).copied().unwrap_or(0));
+            if free_at <= now {
+                out.free_keys += 1;
+            } else {
+                out.next_free = Some(out.next_free.map_or(free_at, |t| t.min(free_at)));
+            }
+        }
+        out
     }
 
     pub fn set_chain(&mut self, chain: Vec<Model>) {
@@ -119,6 +187,34 @@ impl Pool {
 
     pub fn usage(&self, key: KeyId, model: &str) -> PairUsage {
         self.usage.get(&(key, model.to_string())).copied().unwrap_or_default()
+    }
+
+    /// The quota rests still running at `now`, for saving.
+    pub fn export_rests(&self, now: Millis) -> Vec<SavedRest> {
+        let mut rests: Vec<SavedRest> = self
+            .pair_rest
+            .iter()
+            .filter(|(_, until)| **until > now)
+            .filter_map(|((id, model), until)| {
+                let key = self.keys.iter().find(|k| k.id == *id)?;
+                let limit = self.usage.get(&(*id, model.clone())).and_then(|u| u.limit);
+                Some(SavedRest { key: fingerprint(&key.secret), model: model.clone(), until: *until, limit })
+            })
+            .collect();
+        rests.extend(self.waiting_rests.iter().filter(|r| r.until > now).cloned());
+        rests.sort_by(|a, b| (&a.key, &a.model).cmp(&(&b.key, &b.model)));
+        rests
+    }
+
+    /// Restores saved rests. Expired ones are dropped; rests of keys that are not entered yet
+    /// wait for the key to be added.
+    pub fn import_rests(&mut self, rests: &[SavedRest], now: Millis) {
+        for rest in rests.iter().filter(|r| r.until > now) {
+            match self.keys.iter().find(|k| fingerprint(&k.secret) == rest.key).map(|k| k.id) {
+                Some(id) => self.rest_pair(id, rest.clone()),
+                None => self.waiting_rests.push(rest.clone()),
+            }
+        }
     }
 
     /// Best model that can be called now, no worse than `lowest`, with a key that still has
@@ -174,10 +270,10 @@ impl Pool {
                 self.model_rest.insert(model.to_string(), now + backoff(MODEL_BACKOFF, *strikes));
             }
             Outcome::ModelGone => {
-                self.chain.retain(|m| m.id != model);
-                // The list can keep naming a model that no longer answers; without this rest a
-                // relist would hand it straight back.
-                self.model_rest.insert(model.to_string(), now + GONE_REST);
+                // Model lists differ between keys, so a 404 speaks for this key only. The pair
+                // rests for long: a relist may keep naming the model, and without the rest the
+                // same request would come straight back.
+                self.pair_rest.insert(pair, now + GONE_REST);
                 self.needs_relist = true;
             }
             Outcome::KeyRejected => {
@@ -277,11 +373,17 @@ mod tests {
     }
 
     #[test]
-    fn vanished_model_leaves_the_chain_and_asks_for_a_relist() {
-        let (mut p, a, _) = pool();
+    fn model_missing_for_one_key_is_still_served_by_another() {
+        let (mut p, a, b) = pool();
         p.report(0, "big", a, Outcome::ModelGone);
         assert!(p.needs_relist());
-        assert_eq!(picked(&p, 0, Tier::Gemma).0, "small");
+        assert_eq!(picked(&p, 0, Tier::Gemma), ("big".into(), b));
+        p.report(0, "big", b, Outcome::ModelGone);
+        assert_eq!(picked(&p, 0, Tier::Gemma), ("small".into(), a));
+        // A relist that still names the model must not bring the same 404 back.
+        let chain = p.chain().to_vec();
+        p.set_chain(chain);
+        assert_eq!(picked(&p, 1, Tier::Gemma).0, "small");
     }
 
     #[test]
@@ -305,6 +407,51 @@ mod tests {
         assert_eq!(p.usage(a, "big"), PairUsage { used: 2, limit: Some(20), resting_until: Some(100_002) });
         p.report(100_002, "big", a, Outcome::Ok);
         assert_eq!(p.usage(a, "big"), PairUsage { used: 1, limit: Some(20), resting_until: None });
+    }
+
+    #[test]
+    fn availability_counts_free_keys_and_names_the_next_release() {
+        let (mut p, a, b) = pool();
+        assert_eq!(p.availability(0, "big"), Availability { free_keys: 2, live_keys: 2, next_free: None });
+        p.report(0, "big", a, limited(600));
+        p.report(0, "big", b, limited(900));
+        assert_eq!(p.availability(1, "big"), Availability { free_keys: 0, live_keys: 2, next_free: Some(600_000) });
+        assert_eq!(p.availability(1, "small").free_keys, 2);
+        p.report(1, "small", b, Outcome::KeyRejected);
+        assert_eq!(p.availability(1, "small"), Availability { free_keys: 1, live_keys: 1, next_free: None });
+        assert_eq!(p.keys().map(|(id, _, dead)| (id, dead)).collect::<Vec<_>>(), [(a, false), (b, true)]);
+    }
+
+    #[test]
+    fn spent_quota_survives_a_restart_without_storing_the_key() {
+        let (mut p, a, _) = pool();
+        p.report(0, "big", a, limited(600));
+        p.report(0, "small", a, limited(5));
+        let saved = p.export_rests(40_000);
+        // The short rest (stretched to the 30 s minimum) is already over at the moment of saving.
+        assert_eq!(saved, [SavedRest { key: fingerprint("key-a"), model: "big".into(), until: 600_000, limit: Some(20) }]);
+        assert!(!format!("{saved:?}").contains("key-a"));
+
+        let (mut fresh, a2, b2) = pool();
+        fresh.import_rests(&saved, 40_000);
+        assert_eq!(picked(&fresh, 40_000, Tier::Gemma), ("big".into(), b2));
+        assert_eq!(fresh.usage(a2, "big"), PairUsage { used: 0, limit: Some(20), resting_until: Some(600_000) });
+        assert_eq!(fresh.availability(40_000, "big").free_keys, 1);
+    }
+
+    #[test]
+    fn stale_rests_are_dropped_and_an_absent_keys_rest_waits_for_the_key() {
+        let (mut p, a, _) = pool();
+        let late = SavedRest { key: fingerprint("key-late"), model: "big".into(), until: 9_000_000, limit: Some(20) };
+        p.import_rests(&[SavedRest { key: fingerprint("key-a"), model: "big".into(), until: 500, limit: None }, late.clone()], 1_000);
+        assert_eq!(picked(&p, 1_000, Tier::Gemma), ("big".into(), a));
+        assert_eq!(p.availability(1_000, "big").free_keys, 2);
+        // Saving before the key comes back must not lose its rest.
+        assert_eq!(p.export_rests(1_000), [late.clone()]);
+        let c = p.add_key("key-late");
+        assert_eq!(p.usage(c, "big").resting_until, Some(9_000_000));
+        assert_eq!(p.availability(1_000, "big"), Availability { free_keys: 2, live_keys: 3, next_free: Some(9_000_000) });
+        assert_eq!(p.export_rests(1_000), [late]);
     }
 
     #[test]
