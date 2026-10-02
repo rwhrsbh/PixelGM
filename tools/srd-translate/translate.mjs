@@ -286,14 +286,16 @@ function parseItems(text) {
   return out;
 }
 
-async function requestBatch(pool, model, key, items) {
+async function requestBatch(pool, model, key, items, retried) {
   const tc = pool.thinkingConfig(model);
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM }] },
     contents: [{ role: "user", parts: [{ text: JSON.stringify(items.map((en, i) => ({ i, en }))) }] }],
     safetySettings: SAFETY_OFF,
     generationConfig: {
-      temperature: 0.2,
+      // A repeat of a failed batch is sampled more loosely: an identical request tends to be
+      // cut at the same place.
+      temperature: retried ? 0.8 : 0.2,
       responseMimeType: "application/json",
       responseSchema: { type: "ARRAY", items: { type: "OBJECT", properties: { i: { type: "INTEGER" }, ru: { type: "STRING" } }, required: ["i", "ru"] } },
       ...(tc ? { thinkingConfig: tc } : {}),
@@ -338,17 +340,25 @@ let queue = sources.filter((s) => !tm.has(s));
 const totalChars = sources.reduce((n, s) => n + s.length, 0);
 log(`strings ${sources.length} (${Math.round(totalChars / 1000)}k chars), already translated ${sources.length - queue.length}, to do ${queue.length}`);
 
+// Each failure shrinks the batch an item travels in, so one bad string (or an answer cut for
+// recitation) spoils fewer neighbours next time without spending a request per string.
+const BATCH_ITEMS_AFTER_FAILURES = [BATCH_ITEMS, 24, 6, 1];
+
 function takeBatch() {
   const batch = [];
   let chars = 0;
-  while (queue.length && batch.length < BATCH_ITEMS) {
-    const next = queue[0];
-    // Strings that already failed go alone, so one bad item cannot spoil a batch again.
-    const lonely = (attempts.get(next) || 0) >= 2;
-    if (batch.length && (lonely || chars + next.length > BATCH_CHARS)) break;
-    batch.push(queue.shift());
+  const level = Math.min(attempts.get(queue[0]) || 0, BATCH_ITEMS_AFTER_FAILURES.length - 1);
+  const cap = BATCH_ITEMS_AFTER_FAILURES[level];
+  for (let i = 0; i < queue.length && batch.length < cap; ) {
+    const next = queue[i];
+    if (Math.min(attempts.get(next) || 0, BATCH_ITEMS_AFTER_FAILURES.length - 1) !== level) {
+      i++;
+      continue;
+    }
+    if (batch.length && chars + next.length > BATCH_CHARS) break;
+    batch.push(next);
+    queue.splice(i, 1);
     chars += next.length;
-    if (lonely) break;
   }
   return batch;
 }
@@ -387,7 +397,7 @@ async function worker(id) {
     // Hold the pair while the request runs so the other workers spread over other models and keys.
     pool.pairCooldown.set(pair, now() + REQUEST_TIMEOUT_MS);
     inFlight++;
-    const res = await requestBatch(pool, model, key, batch);
+    const res = await requestBatch(pool, model, key, batch, (attempts.get(batch[0]) || 0) > 0);
     inFlight--;
     pool.pairCooldown.set(pair, 0);
 
@@ -401,8 +411,10 @@ async function worker(id) {
       } else if (res.status === 400 && /thinking/i.test(msg) && pool.downgradeThinking(model)) {
         log(`${model}: thinking mode -> ${pool.thinking.get(model)}`);
       } else if (res.status === 404) {
-        log(`404 ${model}: gone, relisting`);
-        await pool.refresh(true);
+        // The model list is per key: one key can lack a model the others have. Rest only this
+        // pair, and for long, or the same request comes straight back.
+        pool.pairCooldown.set(pair, now() + 24 * 60 * 60 * 1000);
+        log(`404 ${model} key#${keys.indexOf(key)}: this key does not have the model`);
       } else if ((res.status === 400 || res.status === 401 || res.status === 403) && /api key|permission|credential/i.test(msg)) {
         pool.deadKeys.add(key);
         log(`key#${keys.indexOf(key)} rejected: ${msg}`);
