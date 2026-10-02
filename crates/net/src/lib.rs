@@ -3,7 +3,11 @@
 //! The host is the only authority: it holds the world, clients send what they want to do
 //! and are sent what happened. This crate only moves messages; what they mean is the game's
 //! business. Messages are JSON in length-prefixed frames over TCP, which serves both for a
-//! direct connection by address and for several instances on one machine in tests.
+//! direct connection by address and for several instances on one machine in tests. The
+//! same frames travel through Steam for players who are Steam friends (`steam`).
+
+pub mod steam;
+pub use steam::Steam;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -83,6 +87,8 @@ pub struct Host<C, H> {
     events: Receiver<HostEvent<C>>,
     peers: Arc<Mutex<HashMap<PeerId, Sender<Vec<u8>>>>>,
     port: u16,
+    /// A Steam host's lobby; stays empty for a host listening on a port.
+    lobby: steam::LobbyState,
     _sends: PhantomData<H>,
 }
 
@@ -110,11 +116,17 @@ impl<C: DeserializeOwned + Send + 'static, H: Serialize> Host<C, H> {
                 });
             }
         });
-        Ok(Self { events, peers, port, _sends: PhantomData })
+        Ok(Self { events, peers, port, lobby: Arc::default(), _sends: PhantomData })
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// How a Steam host's lobby is doing: `None` while Steam has not answered (and always
+    /// for a host listening on a port), then the lobby's id or why there is none.
+    pub fn lobby(&self) -> Option<Result<u64, String>> {
+        self.lobby.lock().unwrap().clone()
     }
 
     /// Everything that happened since the last call, in order.

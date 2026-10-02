@@ -11,7 +11,7 @@ use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::play::{self, Game, Phase, Redraw};
 use crate::store::{Settings, Store};
 use crate::theme::*;
-use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button};
+use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, text_button};
 use bevy::input_focus::AutoFocus;
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextCursorStyle};
@@ -225,8 +225,37 @@ pub fn my_turn(world: &World, session: &Session, settings: &Settings) -> bool {
 }
 
 pub fn host(port: u16) -> std::io::Result<Session> {
-    let net = Host::listen(("0.0.0.0", port))?;
-    Ok(Session::Host(Mutex::new(Hosting { net, names: HashMap::new(), tokens: HashMap::new(), sent: String::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() })))
+    Ok(fresh_hosting(Host::listen(("0.0.0.0", port))?))
+}
+
+/// Steam, once the multiplayer screen has asked for it. Asking makes Steam show the player
+/// as in a game, so it is not done before the player goes there.
+#[derive(Resource, Default)]
+pub struct SteamLink {
+    tried: bool,
+    steam: Option<net::Steam>,
+    /// Friends hosting right now, as last looked up: their names and lobbies.
+    friends: Vec<(String, u64)>,
+    since_look: f32,
+}
+
+/// How often the list of friends hosting is looked up while the lobby screen is open.
+const FRIENDS_LOOK_PERIOD: f32 = 3.0;
+
+fn fresh_hosting(net: Host<Up, Down>) -> Session {
+    Session::Host(Mutex::new(Hosting { net, names: HashMap::new(), tokens: HashMap::new(), sent: String::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
+}
+
+/// Hosts in a Steam lobby that the player's friends can see.
+pub fn host_steam(steam: &net::Steam) -> Session {
+    fresh_hosting(Host::listen_steam(steam))
+}
+
+/// Joins a friend's Steam lobby.
+pub fn join_steam(steam: &net::Steam, lobby: u64, name: &str) -> Session {
+    let net = Client::connect_steam(steam, lobby);
+    net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL });
+    Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default() }))
 }
 
 pub fn join(address: &str, name: &str) -> std::io::Result<Session> {
@@ -561,6 +590,9 @@ enum LobbyAction {
     Host,
     Join,
     Leave,
+    HostSteam,
+    /// Join the Steam lobby of the friend at this place in the list.
+    JoinSteam(usize),
 }
 
 #[derive(Component)]
@@ -588,32 +620,69 @@ fn field(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, initial: &
     });
 }
 
-fn spawn_lobby(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>, session: Res<Session>) {
+fn spawn_lobby(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>, session: Res<Session>, mut link: ResMut<SteamLink>) {
+    if !link.tried {
+        link.tried = true;
+        match net::Steam::init() {
+            Ok(steam) => {
+                link.friends = steam.friends_hosting();
+                link.steam = Some(steam);
+            }
+            Err(e) => info!("Steam is not available: {e}"),
+        }
+    }
+    build_lobby(&mut commands, &art, &fonts, &settings, &session, &link);
+}
+
+fn build_lobby(commands: &mut Commands, art: &Art, fonts: &Fonts, settings: &Settings, session: &Session, link: &SteamLink) {
     let ink = TextColor(color(INK));
+    let faded = TextColor(color(FADED));
     let alone = matches!(*session, Session::Solo);
     commands.spawn(screen_root(Screen::Lobby)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(30)), width: px(400), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
-        spawn_panel(root, &art, sheet, |sheet| {
+        let sheet = Node { margin: UiRect::top(px(8)), width: px(420), flex_direction: FlexDirection::Column, row_gap: px(5), ..default() };
+        spawn_panel(root, art, sheet, |sheet| {
             sheet.spawn((Text::default(), T::Multiplayer, fonts.title(1), ink));
-            sheet.spawn((Text::default(), T::LobbyHelp, fonts.body(), TextColor(color(FADED))));
+            sheet.spawn((Text::default(), T::LobbyHelp, fonts.body(), faded));
             sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
                 line.spawn((Node { width: px(90), flex_shrink: 0.0, ..default() }, Text::default(), T::LobbyName, fonts.body(), ink));
-                field(line, &art, &fonts, &player_name(&settings), (NameField, AutoFocus));
+                field(line, art, fonts, &player_name(settings), (NameField, AutoFocus));
             });
+            // Steam first: friends find each other without addresses or open ports.
+            if link.steam.is_some() {
+                sheet.spawn(Node { column_gap: px(6), row_gap: px(2), flex_wrap: FlexWrap::Wrap, align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                    button(line, art, fonts, T::SteamHost, alone, LobbyAction::HostSteam);
+                    if link.friends.is_empty() {
+                        line.spawn((Text::default(), T::SteamNoFriends, fonts.body(), faded));
+                    } else {
+                        line.spawn((Text::default(), T::SteamFriends, fonts.body(), ink));
+                        for (n, (friend, _)) in link.friends.iter().enumerate() {
+                            let joinable = PixelButtonState(alone);
+                            text_button(line, art, fonts, friend.clone(), (LobbyAction::JoinSteam(n), joinable));
+                        }
+                    }
+                });
+            } else {
+                sheet.spawn((Text::default(), T::SteamUnavailable, fonts.body(), faded));
+            }
+            sheet.spawn((Text::default(), T::DirectTitle, fonts.body(), faded));
             sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
                 line.spawn((Node { width: px(90), flex_shrink: 0.0, ..default() }, Text::default(), T::LobbyAddress, fonts.body(), ink));
-                field(line, &art, &fonts, &format!("127.0.0.1:{DEFAULT_PORT}"), AddressField);
-                button(line, &art, &fonts, T::LobbyJoin, alone, LobbyAction::Join);
+                field(line, art, fonts, &format!("127.0.0.1:{DEFAULT_PORT}"), AddressField);
+                button(line, art, fonts, T::LobbyJoin, alone, LobbyAction::Join);
             });
             sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                button(line, &art, &fonts, T::LobbyHost, alone, LobbyAction::Host);
-                button(line, &art, &fonts, T::LobbyLeave, !alone, LobbyAction::Leave);
+                button(line, art, fonts, T::LobbyHost, alone, LobbyAction::Host);
+                button(line, art, fonts, T::LobbyLeave, !alone, LobbyAction::Leave);
             });
             sheet.spawn((Text::default(), LobbyStatus, fonts.body(), TextColor(color(WAX_DARK))));
-            sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Back, true, Nav::Back));
+            sheet.spawn(Node::default()).with_children(|slot| button(slot, art, fonts, T::Back, true, Nav::Back));
         });
     });
 }
+
+/// Whether a friend's button may be pressed: only while not at a table already.
+#[derive(Component)]
+struct PixelButtonState(bool);
 
 /// The address other machines on the same network can reach this one at.
 fn local_address() -> String {
@@ -626,9 +695,19 @@ fn lobby_status(session: Res<Session>, table: Res<Table>, settings: Res<Settings
     let lang = settings.lang;
     let text = match &*session {
         Session::Host(hosting) => {
-            let port = hosting.lock().unwrap().net.port();
+            let (port, lobby) = {
+                let hosting = hosting.lock().unwrap();
+                (hosting.net.port(), hosting.net.lobby())
+            };
             let players = session.players();
-            format!("{} {}:{port}\n{} {}", T::LobbyHosting.text(lang), local_address(), T::LobbyPlayers.text(lang), if players.is_empty() { "—".to_string() } else { players.join(", ") })
+            // A host with no port is in a Steam lobby.
+            let how = match (port, lobby) {
+                (0, None) => T::SteamOpening.text(lang).to_string(),
+                (0, Some(Ok(_))) => T::SteamOpen.text(lang).to_string(),
+                (0, Some(Err(why))) => format!("{} {why}", T::SteamRefused.text(lang)),
+                _ => format!("{} {}:{port}", T::LobbyHosting.text(lang), local_address()),
+            };
+            format!("{how}\n{} {}", T::LobbyPlayers.text(lang), if players.is_empty() { "—".to_string() } else { players.join(", ") })
         }
         Session::Client(_) => T::LobbyJoined.text(lang).to_string(),
         Session::Solo => table.status.map_or(String::new(), |t| t.text(lang).to_string()),
@@ -651,8 +730,14 @@ fn on_activate(
     mut table: ResMut<Table>,
     store: Res<Store>,
     mut next: ResMut<NextState<Screen>>,
+    link: Res<SteamLink>,
+    friends: Query<&PixelButtonState>,
 ) {
     let Ok(action) = buttons.get(used.entity) else { return };
+    // A friend's button is only live while this player is not at a table.
+    if friends.get(used.entity).is_ok_and(|live| !live.0) {
+        return;
+    }
     if let Ok(name) = name.single() {
         let typed = name.value().to_string();
         if !typed.trim().is_empty() && typed.trim() != settings.player_name {
@@ -682,21 +767,51 @@ fn on_activate(
             }
         }
         LobbyAction::Leave => *session = Session::Solo,
+        LobbyAction::HostSteam => {
+            if let Some(steam) = &link.steam {
+                *session = host_steam(steam);
+            }
+        }
+        LobbyAction::JoinSteam(n) => {
+            if let (Some(steam), Some((_, lobby))) = (&link.steam, link.friends.get(*n)) {
+                *session = join_steam(steam, *lobby, &player_name(&settings));
+            }
+        }
     }
     // The buttons depend on the session: draw the screen again.
     next.set(Screen::Lobby);
 }
 
 /// Re-entering the same screen does not rebuild it, so the lobby redraws itself when the
-/// session changes.
-fn refresh_lobby(mut commands: Commands, session: Res<Session>, roots: Query<Entity, With<DespawnOnExit<Screen>>>, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>, screen: Res<State<Screen>>) {
-    if !session.is_changed() || session.is_added() || *screen.get() != Screen::Lobby {
+/// session changes or another friend starts or stops hosting.
+#[allow(clippy::too_many_arguments)]
+fn refresh_lobby(
+    mut commands: Commands,
+    time: Res<Time>,
+    session: Res<Session>,
+    mut link: ResMut<SteamLink>,
+    roots: Query<Entity, With<DespawnOnExit<Screen>>>,
+    art: Res<Art>,
+    fonts: Res<Fonts>,
+    settings: Res<Settings>,
+) {
+    link.since_look += time.delta_secs();
+    let mut friends_changed = false;
+    if link.since_look >= FRIENDS_LOOK_PERIOD {
+        link.since_look = 0.0;
+        if let Some(steam) = &link.steam {
+            let now = steam.friends_hosting();
+            friends_changed = now != link.friends;
+            link.friends = now;
+        }
+    }
+    if !(friends_changed || session.is_changed() && !session.is_added()) {
         return;
     }
     for root in &roots {
         commands.entity(root).despawn();
     }
-    spawn_lobby(commands, art, fonts, settings, session);
+    build_lobby(&mut commands, &art, &fonts, &settings, &session, &link);
 }
 
 pub struct CoopPlugin;
@@ -705,6 +820,7 @@ impl Plugin for CoopPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Session>()
             .init_resource::<Table>()
+            .init_resource::<SteamLink>()
             .add_systems(OnEnter(Screen::Lobby), spawn_lobby)
             .add_systems(PreUpdate, (host_pump, client_pump, presence).chain())
             .add_systems(Update, (lobby_status, refresh_lobby).run_if(in_state(Screen::Lobby)))
