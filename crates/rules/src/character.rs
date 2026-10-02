@@ -115,7 +115,7 @@ pub enum DeathRoll {
 }
 
 /// What a character gained on reaching a new level.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
 pub struct LevelUp {
     pub level: u32,
     pub hp_gained: i32,

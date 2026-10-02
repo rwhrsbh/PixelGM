@@ -7,7 +7,7 @@ use crate::story::{Effect, Speaker};
 use rules::character::LevelUp;
 use rules::combat::{Cell, Strike};
 use rules::dice::Edge;
-use rules::{Ability, Combatant, Dice, Encounter, Outcome, Rng, Roll, Side, srd};
+use rules::{Ability, Combatant, Dice, Encounter, Event, Outcome, Rng, Roll, Side, srd};
 use serde::{Deserialize, Serialize};
 
 /// What happens on one side of a check.
@@ -69,7 +69,7 @@ pub struct StatAttack {
 }
 
 /// How a fight ended, for the interface to tell.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct FightSummary {
     pub won: bool,
     /// Experience each surviving hero received.
@@ -273,6 +273,83 @@ impl World {
     }
 }
 
+/// Something a hero does on its turn in a fight. Kept as data so that a player on another
+/// machine can ask the host to do it.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub enum FightIntent {
+    Move(Cell),
+    Attack { target: usize, weapon: usize },
+    Cast { spell: String, slot: u8, target: usize },
+    Dodge,
+    Dash,
+    Disengage,
+    EndTurn,
+}
+
+impl World {
+    /// The name of whoever plays the hero acting in the fight; `None` when a monster is
+    /// acting, there is no fight, or the hero has no owner (a solo game).
+    pub fn acting_owner(&self) -> Option<&str> {
+        let fight = self.fight.as_ref()?;
+        let index: usize = fight.actor().id.strip_prefix("hero_")?.parse().ok()?;
+        self.owners.get(index).map(String::as_str).filter(|o| !o.is_empty())
+    }
+
+    /// Carries out what the acting hero's player asked for. Nothing happens, and no events
+    /// come back, when it is not a hero's turn or the rules do not allow it.
+    pub fn fight_act(&mut self, intent: &FightIntent) -> Vec<Event> {
+        let Some(mut fight) = self.fight.clone() else { return Vec::new() };
+        if fight.actor().side != Side::Party {
+            return Vec::new();
+        }
+        let events = match intent {
+            FightIntent::Move(cell) => {
+                let blocked = |c: Cell| self.fight_blocked(c);
+                fight.move_to(*cell, &blocked)
+            }
+            FightIntent::Attack { target, weapon } if *target < fight.combatants.len() => fight.attack(*target, *weapon),
+            FightIntent::Cast { spell, slot, target } if *target < fight.combatants.len() => {
+                let hero = fight.actor().id.strip_prefix("hero_").and_then(|n| n.parse::<usize>().ok());
+                let strike = hero.and_then(|h| spell_strike(self, h, spell, *slot));
+                let can_pay = hero.and_then(|h| self.party.get(h)).is_some_and(|h| *slot == 0 || h.slots_left(*slot) > 0);
+                match strike {
+                    Some(strike) if can_pay => {
+                        let events = fight.cast(&strike, *target);
+                        // The slot is spent only when the spell was actually cast.
+                        if !events.is_empty()
+                            && let Some(h) = hero.and_then(|h| self.party.get_mut(h))
+                        {
+                            h.spend_slot(*slot);
+                        }
+                        events
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            FightIntent::Dodge => fight.dodge(),
+            FightIntent::Dash => fight.dash(),
+            FightIntent::Disengage => fight.disengage(),
+            FightIntent::EndTurn => fight.end_turn(),
+            _ => Vec::new(),
+        };
+        self.fight = Some(fight);
+        events
+    }
+
+    /// A monster's whole turn, when it is one's turn.
+    pub fn fight_monster_turn(&mut self) -> Vec<Event> {
+        let Some(mut fight) = self.fight.clone() else { return Vec::new() };
+        if fight.actor().side != Side::Enemy {
+            return Vec::new();
+        }
+        let blocked = |cell: Cell| self.fight_blocked(cell);
+        let mut events = fight.enemy_turn(&blocked);
+        events.extend(fight.end_turn());
+        self.fight = Some(fight);
+        events
+    }
+}
+
 /// A spell as something to do in a fight: the strike when the rules can carry it out.
 pub fn spell_strike(world: &World, hero: usize, spell: &str, slot: u8) -> Option<Strike> {
     Strike::spell(world.party.get(hero)?, srd().spells.get(spell)?, slot)
@@ -431,6 +508,36 @@ mod tests {
         assert!(w.party[0].is_down());
         w.revive_fallen();
         assert_eq!(w.party[0].hp, 1);
+    }
+
+    #[test]
+    fn a_player_acts_through_intents_and_a_monster_takes_its_own_turn() {
+        let mut w = world();
+        w.owners = vec!["Ann".into()];
+        apply(&mut w, json!([{ "op": "attitude", "id": "cat", "attitude": "hostile" }]));
+        w.start_fight(Rng::seeded(2));
+        let fight = w.fight.as_mut().unwrap();
+        fight.turn = fight.order.iter().position(|i| *i == 0).unwrap();
+        fight.combatants[0].movement_left = 6;
+        fight.combatants[0].action_left = true;
+        assert_eq!(w.acting_owner(), Some("Ann"));
+        assert_eq!(w.fight_monster_turn(), [], "it is the hero turn");
+
+        let at = w.fight.as_ref().unwrap().combatants[0].at();
+        let blocked = |c: Cell| w.fight_blocked(c);
+        let goal = *w.fight.as_ref().unwrap().reach(&blocked).first().unwrap().last().unwrap();
+        let events = w.fight_act(&FightIntent::Move(goal));
+        assert!(matches!(&events[0], Event::Moved { who, .. } if who == "hero_0"));
+        assert_ne!(w.fight.as_ref().unwrap().combatants[0].at(), at);
+        assert_eq!(w.fight_act(&FightIntent::Attack { target: 99, weapon: 0 }), [], "no such target");
+        assert_eq!(w.fight_act(&FightIntent::Cast { spell: "fireball".into(), slot: 3, target: 1 }), [], "a fighter has no spells");
+
+        let events = w.fight_act(&FightIntent::EndTurn);
+        assert!(matches!(&events[0], Event::TurnBegan { who, .. } if who == "cat"));
+        assert_eq!(w.acting_owner(), None);
+        assert_eq!(w.fight_act(&FightIntent::Dodge), [], "not a hero turn");
+        let events = w.fight_monster_turn();
+        assert!(matches!(events.last(), Some(Event::TurnBegan { who, .. }) if who == "hero_0"));
     }
 
     #[test]

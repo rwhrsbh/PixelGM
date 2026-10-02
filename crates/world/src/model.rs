@@ -193,6 +193,14 @@ impl Player {
     }
 }
 
+/// Another player's token: a name and a place.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Token {
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+}
+
 pub const SAVE_VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -231,6 +239,14 @@ pub struct World {
     /// The fight in progress, if any.
     #[serde(default)]
     pub fight: Option<Encounter>,
+    /// Who plays each hero of the party, by player name, in the same order. Empty in a
+    /// game played alone.
+    #[serde(default)]
+    pub owners: Vec<String>,
+    /// The other players' tokens in the place the party is in. Not saved: they are where
+    /// their players last said they were.
+    #[serde(skip)]
+    pub others: Vec<Token>,
     /// Levels gained since the interface last looked: shown once, not saved.
     #[serde(skip)]
     pub level_ups: Vec<(String, LevelUp)>,

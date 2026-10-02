@@ -18,7 +18,7 @@ pub struct TurnDraft {
 
 /// What the players see after a turn: the telling, and choices whose outcomes are already
 /// written, so picking one costs no request.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(serde::Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Turn {
     pub narration: String,
     pub options: Vec<Action>,
