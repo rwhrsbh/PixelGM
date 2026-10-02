@@ -4,9 +4,20 @@
 use crate::base::MARKER_SPRITE;
 use crate::build::slug;
 use crate::model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, Player, Prop, Stub, World};
+use crate::party::{Branch, PendingCheck};
+use rules::{Ability, Rng};
 use crate::path::nearest;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+
+/// Dice may be written as "2d6" or as a bare number.
+fn lenient_text<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::String(s) => s,
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    })
+}
 
 fn lenient_int<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     Ok(match Value::deserialize(d)? {
@@ -80,6 +91,34 @@ pub enum Effect {
     },
     /// Something worth remembering for the rest of the campaign.
     Fact { text: String },
+    /// The outcome is uncertain: the party rolls, and one of two prepared branches follows.
+    Check {
+        ability: String,
+        #[serde(default)]
+        skill: Option<String>,
+        #[serde(deserialize_with = "lenient_int")]
+        dc: i64,
+        #[serde(default)]
+        success: Branch,
+        #[serde(default)]
+        failure: Branch,
+    },
+    /// The party is hurt outside a fight. `amount` is dice or a number.
+    Damage {
+        #[serde(deserialize_with = "lenient_text")]
+        amount: String,
+    },
+    Heal {
+        #[serde(deserialize_with = "lenient_text")]
+        amount: String,
+    },
+    /// Experience for something achieved in the story.
+    Xp {
+        #[serde(deserialize_with = "lenient_int")]
+        amount: i64,
+    },
+    /// The hostile creatures here attack.
+    Fight,
 }
 
 /// Something the players can do with a thing without asking the game master: the outcome
@@ -262,7 +301,41 @@ impl World {
         let mut notes = Vec::new();
         let here = self.current.clone();
         let resolve = |id: &str| if id == "self" { me.unwrap_or("self").to_string() } else { slug(id) };
-        for effect in effects {
+        for (n, effect) in effects.iter().enumerate() {
+            // Effects on the party itself come first: they need the whole world, not just
+            // the place.
+            match effect {
+                Effect::Check { ability, skill, dc, success, failure } => {
+                    let Some(ability) = Ability::from_index(ability.trim()) else {
+                        notes.push(format!("check: there is no ability '{ability}'"));
+                        continue;
+                    };
+                    let skill = skill.as_ref().map(|s| s.trim().to_lowercase().replace([' ', '_'], "-")).filter(|s| !s.is_empty());
+                    // Everything after a check waits for the die.
+                    self.pending = Some(PendingCheck { ability, skill, difficulty: (*dc).clamp(1, 40) as i32, success: success.clone(), failure: failure.clone(), me: me.map(str::to_string), rest: effects[n + 1..].to_vec() });
+                    break;
+                }
+                Effect::Damage { amount } => {
+                    self.hurt_party(amount, &mut Rng::from_clock());
+                    continue;
+                }
+                Effect::Heal { amount } => {
+                    self.heal_party(amount, &mut Rng::from_clock());
+                    continue;
+                }
+                Effect::Xp { amount } => {
+                    let ups = self.award_story_xp(*amount);
+                    self.level_ups.extend(ups);
+                    continue;
+                }
+                Effect::Fight => {
+                    if !self.start_fight(Rng::from_clock()) {
+                        notes.push("fight: nothing hostile is here".to_string());
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             let tiles = &self.tiles;
             let Some(location) = self.locations.get_mut(&here) else { break };
             match effect {
@@ -344,7 +417,7 @@ impl World {
                     if kind.trim().eq_ignore_ascii_case("creature") {
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
                         if let Some((cx, cy)) = nearest(wanted, free) {
-                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new() });
+                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: None, stats: None });
                         }
                     } else {
                         location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: Vec::new() });
@@ -366,6 +439,7 @@ impl World {
                     }
                 }
                 Effect::Fact { text } => self.story.remember(text),
+                Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight => {}
             }
         }
         // Whatever changed, the party must not end up inside something.

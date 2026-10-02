@@ -1,6 +1,9 @@
 //! The saved shape of a world.
 
+use crate::party::{PendingCheck, Stats};
 use crate::story::{Action, Story};
+use rules::character::LevelUp;
+use rules::{Character, Encounter};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -113,6 +116,12 @@ pub struct Creature {
     pub attitude: Attitude,
     #[serde(default)]
     pub actions: Vec<Action>,
+    /// The SRD monster whose numbers it fights with, when it is one.
+    #[serde(default)]
+    pub monster: Option<String>,
+    /// Fighting numbers of its own, for creatures the SRD does not have.
+    #[serde(default)]
+    pub stats: Option<Stats>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -213,6 +222,18 @@ pub struct World {
     pub violence: bool,
     #[serde(default = "yes")]
     pub sex: bool,
+    /// The player characters.
+    #[serde(default)]
+    pub party: Vec<Character>,
+    /// A check the master called for that has not been rolled yet.
+    #[serde(default)]
+    pub pending: Option<PendingCheck>,
+    /// The fight in progress, if any.
+    #[serde(default)]
+    pub fight: Option<Encounter>,
+    /// Levels gained since the interface last looked: shown once, not saved.
+    #[serde(skip)]
+    pub level_ups: Vec<(String, LevelUp)>,
 }
 
 fn yes() -> bool {
@@ -222,6 +243,10 @@ fn yes() -> bool {
 impl World {
     pub fn here(&self) -> &Location {
         &self.locations[&self.current]
+    }
+
+    pub fn here_mut(&mut self) -> &mut Location {
+        self.locations.get_mut(&self.current).expect("the party is always in a place that exists")
     }
 
     /// Name of a place, drawn or not.

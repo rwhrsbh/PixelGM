@@ -7,6 +7,7 @@
 
 use crate::base::{FALLBACK_TILE, MARKER_SPRITE, base_sprites, base_tiles, default_palette};
 use crate::model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, PALETTE_MAX, Player, Prop, SAVE_VERSION, Sprite, Stub, TILE, TileDef, World, index_of};
+use crate::party::Stats;
 use crate::path::{Cell, elbow, nearest, reachable};
 use crate::story::{ActionDraft, Story, read_actions};
 use serde::{Deserialize, Deserializer};
@@ -74,6 +75,8 @@ pub struct CreatureDraft {
     pub sprite: String,
     pub attitude: String,
     pub actions: Vec<ActionDraft>,
+    pub monster: String,
+    pub stats: Option<Stats>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -334,7 +337,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             "hostile" => Attitude::Hostile,
             _ => Attitude::Neutral,
         };
-        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes) });
+        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone() });
     }
 
     let id = forced_id.map(str::to_string).unwrap_or_else(|| {
@@ -517,6 +520,10 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         story: Story::default(),
         violence: true,
         sex: true,
+        party: Vec::new(),
+        pending: None,
+        fight: None,
+        level_ups: Vec::new(),
     };
     Ok((world, notes))
 }

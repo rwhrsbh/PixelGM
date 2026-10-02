@@ -179,7 +179,13 @@ pub fn location(id: &str, name: &str, from: &str) -> String {
         "legend": legend(),
         "map": clearing(seed, &[back, onward]),
         "spawn": [2, 8],
-        "props": [{ "id": "fire", "name": "Cold fire", "description": "Ashes.", "x": 15, "y": 8, "blocking": true, "sprite": "campfire" }],
+        "props": [{ "id": "fire", "name": "Cold fire", "description": "Ashes.", "x": 15, "y": 8, "blocking": true, "sprite": "campfire",
+            "actions": [{ "label": "Dig through the ashes", "outcome": "You sift the ashes.", "effects": [
+                { "op": "check", "ability": "wis", "skill": "perception", "dc": 12,
+                  "success": { "narration": "Something glints: a ring.", "effects": [{ "op": "give", "name": "Ash ring", "description": "Warm to the touch." }, { "op": "xp", "amount": 25 }] },
+                  "failure": { "narration": "Only soot, and it stings your eyes.", "effects": [{ "op": "damage", "amount": "1" }] } }
+            ] }] }],
+        "creatures": [{ "id": "wolf", "name": "Wolf", "description": "Lean and hungry.", "x": 20, "y": 8, "sprite": "cat", "attitude": "hostile", "monster": "wolf" }],
         "exits": [
             { "x": back.0, "y": back.1, "to": from, "label": "Back" },
             { "x": onward.0, "y": onward.1, "to": further, "label": "Onward" }

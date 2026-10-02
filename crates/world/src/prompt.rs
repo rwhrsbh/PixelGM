@@ -7,6 +7,9 @@ use crate::model::{Attitude, MAP_H, MAP_W, World, char_of};
 use crate::story::{KEPT_LINES, Speaker};
 use std::fmt::Write;
 
+/// How the master says what a creature fights with.
+const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "monster" the index of the D&D 5e SRD monster it is or most resembles (goblin, wolf, bandit, skeleton, giant-spider, ogre, guard, …), or give "stats" of its own: {"ac": 13, "hp": 11, "speed": 30, "attacks": [{"name": "…", "bonus": 4, "damage": "1d6+2", "range": 5}], "xp": 50}. Match the danger to a first-level party unless told otherwise."##;
+
 /// How the master changes the world. Shared by drawing (prepared actions) and by play.
 const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "remove", "id": "…"} — a prop or creature leaves the scene
@@ -19,6 +22,11 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral"}
   {"op": "exit", "x": 0, "y": 0, "to": "place_id", "label": "…"} — a way out appears
   {"op": "fact", "text": "…"} — something that must be remembered for the rest of the campaign
+  {"op": "check", "ability": "str|dex|con|int|wis|cha", "skill": "stealth", "dc": 15, "success": {"narration": "…", "effects": []}, "failure": {"narration": "…", "effects": []}} — the outcome is uncertain: the game rolls the die and takes one branch. Write both. Skills: acrobatics, animal-handling, arcana, athletics, deception, history, insight, intimidation, investigation, medicine, nature, perception, performance, persuasion, religion, sleight-of-hand, stealth, survival. Difficulty: 5 trivial, 10 easy, 15 moderate, 20 hard, 25 very hard.
+  {"op": "damage", "amount": "2d6"} / {"op": "heal", "amount": "1d8"} — to the party, outside a fight
+  {"op": "xp", "amount": 50} — for something achieved; rarely, and modestly
+  {"op": "fight"} — the hostile creatures here attack; the game runs the fight by the rules
+Never roll dice yourself and never decide an uncertain outcome: that is what "check" is for. Nothing may follow a check in the same list except what should happen whichever way it goes.
 Use only ids that exist. Inside an action that belongs to a thing, the id "self" means that thing."##;
 
 /// The rules that never change. The answer format is plain JSON so that every model in the
@@ -50,6 +58,7 @@ Draw "new_tiles" when a place needs something these do not cover. A place should
 EXITS. An exit is a walkable cell, usually on the edge of the map or in a doorway, that leads to another place named by "to". Every place an exit leads to is listed in "neighbors" unless it already exists. Give a place two to four exits. Everything must be reachable on foot from "spawn".
 
 PROPS are things worth a look (a well, a wreck, a shrine); CREATURES are beings (people, animals, monsters). Each names a sprite by id; draw the sprite in "sprites" unless one with that id already exists. "attitude" is friendly, neutral or hostile.
+{FIGHTERS}
 
 ACTIONS. Give every prop and creature two or three "actions": things the players are likely to do with it. The players pick one from a list and read its outcome at once, without asking you, so write the outcome now: one to three sentences, told to the players as their game master ("you"), with the effects it has. Make them matter: a clue, an item, a changed attitude, a new way out. A creature that can talk has an action in which it says something worth hearing.
 
@@ -70,7 +79,7 @@ const LOCATION_SHAPE: &str = r##"{
   "new_tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
   "sprites": [{"id": "…", "rows": ["16 or 32 characters", "… as many rows"]}],
   "props": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "blocking": true, "sprite": "…", "actions": [{"label": "what the players choose", "outcome": "what happens", "effects": []}]}],
-  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
+  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "monster": "srd-index or omit", "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
   "exits": [{"x": 0, "y": 0, "to": "neighbor_id", "label": "what the way out looks like"}],
   "neighbors": [{"id": "neighbor_id", "name": "…", "description": "one sentence: what is there"}]
 }"##;
@@ -165,7 +174,14 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     for tile_id in world.tiles.keys() {
         let _ = write!(text, " {tile_id}");
     }
-    let _ = write!(text, "\n\nTHE PARTY CARRIES:");
+    if !world.party.is_empty() {
+        let _ = writeln!(text, "\n\nTHE PARTY:");
+        for hero in &world.party {
+            let state = if hero.dead { " (dead)".to_string() } else { format!(", {} of {} hit points", hero.hp, hero.max_hp) };
+            let _ = writeln!(text, "- {}, {} {} of level {}{state}. Trained in: {}. {}", hero.name, hero.race, hero.class, hero.level, hero.skills.join(", "), hero.description);
+        }
+    }
+    let _ = write!(text, "\nTHE PARTY CARRIES:");
     if world.story.inventory.is_empty() {
         let _ = write!(text, " nothing of note");
     }
@@ -279,6 +295,7 @@ mod tests {
     fn drawing_rules_ask_for_prepared_actions_and_explain_effects() {
         let p = system_prompt("English");
         assert!(p.contains("ACTIONS.") && p.contains("\"op\": \"give\"") && p.contains("\"self\""));
+        assert!(p.contains("\"op\": \"check\"") && p.contains("\"op\": \"fight\"") && p.contains("\"monster\""));
     }
 
     #[test]
