@@ -297,6 +297,8 @@ THE PARTY CARRIES: {}", things.join(", "));
 
 const TURN_SHAPE: &str = r##"{
   "narration": "what happens, told to the players",
+  "gained": ["the name of every thing the narration says a hero got, found, took or was handed"],
+  "lost": ["the name of every thing the narration says a hero lost, spent, gave away or broke"],
   "effects": [],
   "sprites": [{"id": "…", "rows": ["…"]}],
   "palette": {"g": "#rrggbb"},
@@ -403,6 +405,20 @@ Answer with this JSON object:
         world.title,
         world.party_level()
     )
+}
+
+/// The same request again, with what was wrong with the answer: the game checked it and it
+/// could not be played as told.
+pub fn mend(asked: &str, faults: &[String]) -> String {
+    let mut text = format!("{asked}
+
+YOUR ANSWER TO THIS WAS CHECKED BY THE GAME AND CANNOT BE PLAYED AS IT IS:
+");
+    for fault in faults {
+        let _ = writeln!(text, "- {fault}");
+    }
+    text.push_str("Answer again with the whole JSON object, the same story, every fault mended: each thing in \"gained\" has its \"give\" with \"rows\", each in \"lost\" its \"take\", every id, tile and sprite is one that exists or is made in this answer.");
+    text
 }
 
 /// The party does something the master has not prepared an outcome for. `near` is the thing

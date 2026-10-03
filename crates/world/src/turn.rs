@@ -20,6 +20,94 @@ pub struct TurnDraft {
     pub options: Vec<ActionDraft>,
     /// What only one character learns.
     pub whispers: Vec<Whisper>,
+    /// The master's own count of what its narration says the heroes got and lost, by name:
+    /// the game holds the effects against it.
+    pub gained: Vec<String>,
+    pub lost: Vec<String>,
+}
+
+/// Every effect in an answer, however deep: the turn's own, those of its choices, and those
+/// behind a check.
+fn every_effect<'a>(value: &'a Value, found: &mut Vec<&'a Value>) {
+    match value {
+        Value::Array(list) => list.iter().for_each(|v| every_effect(v, found)),
+        Value::Object(map) => {
+            if map.contains_key("op") {
+                found.push(value);
+            }
+            map.values().for_each(|v| every_effect(v, found));
+        }
+        _ => {}
+    }
+}
+
+impl World {
+    /// What is wrong with the master's answer that it could mend if asked again: a thing
+    /// told of but not handed over, a thing with no picture, someone or some ground that is
+    /// not there. Empty when the answer can be played as it is.
+    pub fn faults(&self, draft: &TurnDraft) -> Vec<String> {
+        let mut faults = Vec::new();
+        if draft.narration.trim().is_empty() {
+            faults.push("\"narration\" is empty".to_string());
+        }
+        let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let same = |a: &str, b: &str| {
+            let (a, b) = (a.to_lowercase(), b.to_lowercase());
+            !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a))
+        };
+        // What the telling itself hands over and takes away.
+        let mut deep = Vec::new();
+        draft.effects.iter().for_each(|e| every_effect(e, &mut deep));
+        let given: Vec<String> = deep.iter().filter(|e| text(e, "op") == "give").map(|e| text(e, "name")).collect();
+        let taken: Vec<String> = deep.iter().filter(|e| text(e, "op") == "take").map(|e| text(e, "name")).collect();
+        for name in draft.gained.iter().filter(|n| !n.trim().is_empty()) {
+            if !given.iter().any(|g| same(g, name)) {
+                faults.push(format!("the narration says a hero gets \"{name}\" but no \"give\" effect hands it over"));
+            }
+        }
+        for name in draft.lost.iter().filter(|n| !n.trim().is_empty()) {
+            if !taken.iter().any(|t| same(t, name)) {
+                faults.push(format!("the narration says a hero loses \"{name}\" but no \"take\" effect removes it"));
+            }
+        }
+        // Everything named must be there, or be made in this same answer.
+        let mut all = Vec::new();
+        draft.effects.iter().for_each(|e| every_effect(e, &mut all));
+        draft.options.iter().flat_map(|o| o.effects.iter()).for_each(|e| every_effect(e, &mut all));
+        let here = self.here();
+        let spawned: Vec<String> = all.iter().filter(|e| text(e, "op") == "spawn").map(|e| slug(&text(e, "id"))).collect();
+        let heroes: Vec<String> = self.party.iter().map(|h| slug(&h.name)).collect();
+        let known = |id: &str| {
+            matches!(id, "" | "self" | "party" | "hero" | "heroes" | "player" | "players" | "everyone" | "all") || heroes.iter().any(|h| h == id) || spawned.iter().any(|s| s == id) || here.props.iter().any(|p| p.id == id) || here.creatures.iter().any(|c| c.id == id)
+        };
+        let drawn_tiles: Vec<String> = draft.tiles.iter().map(|t| slug(&t.id)).collect();
+        let drawn_sprites: Vec<String> = draft.sprites.iter().map(|s| slug(&s.id)).collect();
+        for effect in &all {
+            let op = text(effect, "op");
+            let id = slug(&text(effect, "id"));
+            match op.as_str() {
+                "remove" | "move" | "animate" | "attitude" if !known(&id) => faults.push(format!("\"{op}\" names \"{id}\", which is not in this place: use an id from PLACE or WHAT IS WHERE, or \"spawn\" it first")),
+                "tile" => {
+                    let tile = slug(&text(effect, "tile"));
+                    if !self.tiles.contains_key(&tile) && !drawn_tiles.contains(&tile) {
+                        faults.push(format!("\"tile\" uses \"{tile}\", which is neither in TILES THAT EXIST nor drawn in this answer's \"tiles\""));
+                    }
+                }
+                "spawn" => {
+                    let sprite = slug(&text(effect, "sprite"));
+                    if !sprite.is_empty() && !self.sprites.contains_key(&sprite) && !drawn_sprites.contains(&sprite) {
+                        faults.push(format!("\"spawn\" of \"{id}\" uses the sprite \"{sprite}\", which is neither in SPRITES THAT EXIST nor drawn in this answer's \"sprites\""));
+                    }
+                }
+                "give" if effect.get("rows").and_then(Value::as_array).is_none_or(|rows| rows.is_empty()) => faults.push(format!("\"give\" of \"{}\" has no \"rows\": every thing given needs its picture", text(effect, "name"))),
+                _ => {}
+            }
+        }
+        faults.sort();
+        faults.dedup();
+        faults.truncate(8);
+        faults
+    }
 }
 
 /// Words for one player alone. `to` names the character, or the player.
@@ -220,6 +308,32 @@ mod tests {
     fn world() -> World {
         let draft: WorldDraft = serde_json::from_str(&fake::world("turn")).unwrap();
         build_world(&draft, "turn", "English").unwrap().0
+    }
+
+    #[test]
+    fn an_answer_that_cannot_be_played_as_told_is_found_out() {
+        let w = world();
+        let bad: TurnDraft = serde_json::from_value(serde_json::json!({
+            "narration": "You take a flask and an amulet.",
+            "gained": ["Flask", "Amulet"],
+            "effects": [
+                { "op": "give", "name": "Flask of water", "rows": ["11", "11"] },
+                { "op": "remove", "id": "pulse_core" },
+                { "op": "tile", "x": 1, "y": 1, "tile": "ice" },
+                { "op": "give", "name": "Rope" }
+            ]
+        }))
+        .unwrap();
+        let faults = w.faults(&bad).join(" | ");
+        assert!(faults.contains("Amulet") && !faults.contains("\"Flask\""), "{faults}");
+        assert!(faults.contains("pulse_core") && faults.contains("\"ice\"") && faults.contains("\"Rope\" has no"), "{faults}");
+        let good: TurnDraft = serde_json::from_value(serde_json::json!({
+            "narration": "The cat jumps on a slab of ice.",
+            "tiles": [{ "id": "ice", "walkable": true, "rows": ["1"] }],
+            "effects": [{ "op": "tile", "x": 1, "y": 1, "tile": "ice" }, { "op": "animate", "id": "cat", "motion": "jump" }, { "op": "animate", "id": "party", "motion": "nod" }]
+        }))
+        .unwrap();
+        assert_eq!(w.faults(&good), Vec::<String>::new());
     }
 
     #[test]

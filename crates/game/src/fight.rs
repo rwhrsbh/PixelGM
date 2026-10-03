@@ -204,6 +204,11 @@ fn ask_stunt(said: String, spell: Option<(String, u8)>, world: &World, view: &mu
     if session.is_client() {
         session.intend(Intent::Stunt { said, spell });
     } else {
+        // The guests see what the host's hero tries.
+        if session.is_host() {
+            let who = world.fight.as_ref().map(|f| f.actor().name.clone()).unwrap_or_default();
+            session.broadcast(&Down::Thinking(format!("{who}: {said}")));
+        }
         master.ask(gm, store, settings, Ask::Stunt { world: Box::new(world.clone()), said, spell });
     }
 }

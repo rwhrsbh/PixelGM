@@ -2709,6 +2709,9 @@ fn on_activate(
             *phase = Phase::Arriving { t: 0.0 };
         }
         (PlayAction::Do(index), Phase::Looking { thing }) => {
+            if let (true, Some(label)) = (session.is_host(), action_label(&game.world, &thing, index)) {
+                announce(&session, &mut table, &game.world, &player_name(&settings), &label, true);
+            }
             if let Some(outcome) = game.world.perform(&thing, index) {
                 *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
             }
@@ -2763,6 +2766,23 @@ fn hero_of<'a>(world: &'a World, player: &str) -> Option<&'a str> {
     world.party.get(index).map(|h| h.name.as_str())
 }
 
+/// What a prepared action of a thing here is called.
+fn action_label(world: &World, thing: &str, index: usize) -> Option<String> {
+    let here = world.here();
+    let (name, actions) = here.props.iter().find(|p| p.id == thing).map(|p| (&p.name, &p.actions)).or_else(|| here.creatures.iter().find(|c| c.id == thing).map(|c| (&c.name, &c.actions)))?;
+    actions.get(index).map(|a| format!("{} ({name})", a.label))
+}
+
+/// Tells everyone at the table what a player has set about.
+fn announce(session: &Session, table: &mut Table, world: &World, player: &str, what: &str, own: bool) {
+    let said = format!("{}: {what}", hero_of(world, player).unwrap_or(player));
+    session.broadcast(&Down::Thinking(said.clone()));
+    // The one who did it has it on their own sheet.
+    if !own {
+        table.notices.push(said);
+    }
+}
+
 /// Carries out what guests asked for, the same way the host's own presses are carried out.
 #[allow(clippy::too_many_arguments)]
 fn guests(
@@ -2783,7 +2803,12 @@ fn guests(
         // What a guest does to the world happens where that guest stands.
         let home = matches!(intent, Intent::Do { .. } | Intent::Choose(_) | Intent::Roll | Intent::Say { .. } | Intent::Gm(_) | Intent::OpenChest { .. }).then(|| enter_scene(&mut game, &mut table, &player));
         let shown = match intent {
-            Intent::Do { thing, index } => game.world.perform(&thing, index).map(outcome_of),
+            Intent::Do { thing, index } => {
+                if let Some(label) = action_label(&game.world, &thing, index) {
+                    announce(&session, &mut table, &game.world, &player, &label, false);
+                }
+                game.world.perform(&thing, index).map(outcome_of)
+            }
             Intent::Choose(index) => table.options.get(&game.world.current).and_then(|options| options.get(index)).cloned().map(|option| {
                 let outcome = game.world.choose(&option);
                 // And what follows it is asked of the master, unless it is busy.
@@ -2876,7 +2901,13 @@ fn guests(
                 // Only the player whose hero is acting may try something for it.
                 if game.world.acting_owner() == Some(player.as_str()) {
                     view.wait_for_master();
-                    master.ask(&gm, &store, &settings, Ask::Stunt { world: Box::new(game.world.clone()), said, spell });
+                    announce(&session, &mut table, &game.world, &player, &said, false);
+                    // The master sees the fight through the eyes of the one who acts.
+                    let mut seen = game.world.clone();
+                    if let Some(token) = seen.others.iter().find(|t| t.name == player) {
+                        seen.facing = token.facing;
+                    }
+                    master.ask(&gm, &store, &settings, Ask::Stunt { world: Box::new(seen), said, spell });
                 }
                 None
             }

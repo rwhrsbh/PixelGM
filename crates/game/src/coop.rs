@@ -715,7 +715,8 @@ fn client_pump(
             }
             ClientEvent::Message(Down::Thinking(said)) => {
                 // What a fellow player does is seen by all; one's own words are on the sheet.
-                if !matches!(&*phase, Phase::Asking { said: mine, .. } if said.ends_with(mine.as_str())) {
+                let mine = game.as_ref().and_then(|g| g.world.owners.iter().position(|o| *o == me).and_then(|i| g.world.party.get(i))).map(|h| format!("{}: ", h.name));
+                if !mine.is_some_and(|mine| said.starts_with(&mine)) && !said.starts_with(&format!("{me}: ")) {
                     table.notices.push(said);
                 }
             }

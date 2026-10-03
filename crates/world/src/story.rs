@@ -250,7 +250,7 @@ pub struct ActionDraft {
     pub near: String,
 }
 
-const MAX_ACTIONS: usize = 4;
+const MAX_ACTIONS: usize = 5;
 const MAX_LABEL: usize = 140;
 
 /// Reads effects one by one, so a single malformed effect does not cost the rest.

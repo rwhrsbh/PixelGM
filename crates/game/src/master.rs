@@ -339,7 +339,24 @@ impl Master {
                         Some(direction) => prompt::directive(&world, &said, direction),
                         None => prompt::turn(&world, &said, near.as_deref()),
                     };
-                    let draft: Result<TurnDraft, Trouble> = if fake { faked(fake::turn(direction.as_deref().unwrap_or(&said))) } else { call.read(prompt::play_prompt(&world), &asked) };
+                    let mut draft: Result<TurnDraft, Trouble> = if fake { faked(fake::turn(direction.as_deref().unwrap_or(&said))) } else { call.read(prompt::play_prompt(&world), &asked) };
+                    // The game checks the answer; one that cannot be played as told is asked
+                    // for once more, with what was wrong. The better of the two is kept.
+                    if let (false, Ok(first)) = (fake, &draft) {
+                        let faults = world.faults(first);
+                        if !faults.is_empty() {
+                            info!("the master's answer had faults, asked again: {}", faults.join("; "));
+                            let again: Result<TurnDraft, Trouble> = call.read(prompt::play_prompt(&world), &prompt::mend(&asked, &faults));
+                            match again {
+                                Ok(second) if world.faults(&second).len() < faults.len() => {
+                                    info!("the second answer is better: {} faults left", world.faults(&second).len());
+                                    draft = Ok(second);
+                                }
+                                Ok(_) => info!("the second answer was no better; the first is kept"),
+                                Err(_) => info!("the second answer could not be read; the first is kept"),
+                            }
+                        }
+                    }
                     Answer::Turn { said, near, draft: draft.map(Box::new) }
                 }
                 Ask::Feats { world, hero, secret } => {
