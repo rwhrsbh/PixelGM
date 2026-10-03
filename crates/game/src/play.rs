@@ -1361,7 +1361,9 @@ fn hud(
     let other_tongue = foreign(world, *lang);
     let translator = translator.bypass_change_detection();
     let mut read = |text: &str| translator.read(other_tongue, text);
-    let place = read(&here.name);
+    // A long name is cut, so that the line of keys beside it never wraps.
+    let full = read(&here.name);
+    let place = if full.chars().count() > 22 { format!("{}…", full.chars().take(21).collect::<String>().trim_end()) } else { full };
     for mut text in &mut names {
         if text.0 != place {
             text.0 = place.clone();
