@@ -15,6 +15,7 @@ mod menu;
 mod nav;
 mod newgame;
 mod play;
+mod post;
 mod saves;
 mod scene;
 mod doll;
@@ -67,6 +68,6 @@ fn main() -> AppExit {
         hero::HeroPlugin,
         fight::FightPlugin,
     ))
-    .add_plugins((translate::TranslatePlugin, bag_ui::BagPlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
+    .add_plugins((translate::TranslatePlugin, bag_ui::BagPlugin, post::PostPlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
     app.run()
 }

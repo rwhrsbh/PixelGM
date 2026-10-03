@@ -22,6 +22,7 @@ enum Choice {
     Music,
     Sound,
     Voice,
+    Grade,
 }
 
 impl Choice {
@@ -36,6 +37,7 @@ impl Choice {
             Choice::Music => T::SetMusic,
             Choice::Sound => T::SetSound,
             Choice::Voice => T::SetVoice,
+            Choice::Grade => T::SetGrade,
         }
     }
 
@@ -46,6 +48,7 @@ impl Choice {
             Choice::Predraw => Some(T::PredrawHint),
             Choice::Initiative => Some(T::InitiativeHint),
             Choice::Voice => Some(T::VoiceHint),
+            Choice::Grade => Some(T::GradeHint),
             _ => None,
         }
     }
@@ -83,6 +86,7 @@ impl Choice {
                 Initiative::Rare => T::InitiativeRare,
                 Initiative::Often => T::InitiativeOften,
             },
+            Choice::Grade => s.grade.label(),
             Choice::Music => volume_name(s.music),
             Choice::Sound => volume_name(s.sound),
             Choice::Voice => {
@@ -130,6 +134,7 @@ impl Choice {
             Choice::Music => s.music = (s.music.min(4) + 1) % 5,
             Choice::Sound => s.sound = (s.sound.min(4) + 1) % 5,
             Choice::Voice => s.voice = !s.voice,
+            Choice::Grade => s.grade = s.grade.next(),
         }
     }
 }
@@ -138,7 +143,7 @@ fn volume_name(level: u8) -> T {
     [T::Volume0, T::Volume1, T::Volume2, T::Volume3, T::Volume4][level.min(4) as usize]
 }
 
-const CHOICES: [Choice; 9] = [Choice::Language, Choice::Window, Choice::Music, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
+const CHOICES: [Choice; 10] = [Choice::Language, Choice::Window, Choice::Grade, Choice::Music, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
 
 fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
     commands.spawn(screen_root(Screen::Settings)).with_children(|root| {
@@ -252,7 +257,7 @@ mod tests {
             let mut s = Settings::default();
             let before = s.clone();
             choice.advance(&mut s);
-            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice];
+            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade];
             assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{choice:?}");
         }
     }

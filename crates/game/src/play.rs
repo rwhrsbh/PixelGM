@@ -524,10 +524,14 @@ fn draw(
         let map = Vec2::new(CANVAS.x as f32, CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL);
         commands.spawn((InLocation, DarkLayer, Sprite { custom_size: Some(map), ..Sprite::from_image(cache.dark.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.6))));
         for lamp in &cache.lamps {
-            commands.spawn((InLocation, Sprite::from_image(cache.warm.clone()), Transform::from_translation(on_screen(lamp.x, lamp.y).extend(1.62))));
+            commands.spawn((InLocation, Sprite { color: Color::linear_rgb(1.6, 1.4, 1.1), ..Sprite::from_image(cache.warm.clone()) }, Transform::from_translation(on_screen(lamp.x, lamp.y).extend(1.62))));
         }
     }
     commands.spawn((InLocation, Sprite::from_image(cache.vignette.clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.7))));
+    if settings.grade.scan_lines() {
+        let lines = images.add(crate::post::scan_lines(CANVAS.x, CANVAS.y - (HUD_HEIGHT * crate::screen::UI_PIXEL) as u32).into_image());
+        commands.spawn((InLocation, Sprite::from_image(lines), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.72))));
+    }
     commands.spawn((InLocation, WalkGrid, Sprite { color: Color::NONE, ..Sprite::from_image(cache.grid.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.75))));
 
     let mut picture = |id: &str| world.sprites.get(id).or_else(|| world.sprites.get(MARKER_SPRITE)).map(|s| images.add(crate::scene::sprite(s, &world.palette).into_image()));
@@ -536,7 +540,9 @@ fn draw(
     for prop in &here.props {
         let (x, y) = foot(prop.x, prop.y);
         if let Some(image) = picture(&prop.sprite) {
-            commands.spawn((InLocation, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(x, y).extend(depth(y)))));
+            // What burns is drawn brighter than white, so that it glows.
+            let glow = if crate::scene::is_lamp(prop) { Color::linear_rgb(1.9, 1.6, 1.25) } else { Color::WHITE };
+            commands.spawn((InLocation, Sprite { color: glow, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(x, y).extend(depth(y)))));
         }
     }
     for (n, creature) in here.creatures.iter().enumerate() {

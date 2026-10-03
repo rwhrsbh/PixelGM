@@ -5,7 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "png", "system_clipboard", "bevy_audio", "vorbis", "wav"] }
+bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "png", "system_clipboard", "bevy_audio", "vorbis", "wav", "tonemapping_luts", "zstd_rust"] }
 llm = { path = "../llm" }
 world = { path = "../world" }
 rules = { path = "../rules" }

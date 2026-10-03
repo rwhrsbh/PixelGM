@@ -795,16 +795,19 @@ pub struct Lamp {
 const LIGHT_WORDS: [&str; 22] =
     ["fire", "torch", "lamp", "lantern", "candle", "brazier", "hearth", "glow", "crystal", "light", "flame", "forge", "костёр", "костер", "факел", "ламп", "фонар", "свеч", "огон", "очаг", "светил", "пламя"];
 
+/// Whether a thing sounds like it burns or glows.
+pub fn is_lamp(prop: &world::Prop) -> bool {
+    let named = format!("{} {} {}", prop.id, prop.sprite, prop.name).to_lowercase();
+    LIGHT_WORDS.iter().any(|word| named.contains(word))
+}
+
 /// The lamps of a place: whatever among its things sounds like it burns or glows.
 pub fn lamps(location: &Location) -> Vec<Lamp> {
     let tile = world::TILE as f32;
     location
         .props
         .iter()
-        .filter(|prop| {
-            let named = format!("{} {} {}", prop.id, prop.sprite, prop.name).to_lowercase();
-            LIGHT_WORDS.iter().any(|word| named.contains(word))
-        })
+        .filter(|prop| is_lamp(prop))
         .map(|prop| Lamp { x: (prop.x as f32 + 0.5) * tile, y: (prop.y as f32 + 0.5) * tile, reach: 4.2 })
         .collect()
 }

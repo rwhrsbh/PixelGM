@@ -184,6 +184,16 @@ texts! {
     SlotSpare: "Запасное оружие", "Spare weapon";
     SlotShield: "Щит", "Shield";
     SlotBody: "Доспех", "Armour";
+    SetGrade: "Цветокоррекция", "Colour grade";
+    GradeHint: "Тон и эффекты поверх картинки мира; интерфейс не меняется", "The tone and effects over the world; the interface stays as it is";
+    GradeClean: "чистая", "clean";
+    GradeWarm: "тёплая", "warm";
+    GradeCold: "холодная", "cold";
+    GradeNoir: "нуар", "noir";
+    GradeSepia: "сепия", "sepia";
+    GradeVivid: "сочная", "vivid";
+    GradeDream: "сон", "dream";
+    GradeCrt: "старый кинескоп", "old CRT";
     TabLook: "Внешность", "Appearance";
     TabStats: "Способности", "Abilities";
     LookBuild: "Сложение", "Build";
