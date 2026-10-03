@@ -322,6 +322,12 @@ pub struct Action {
     /// The thing the party must stand beside to do it, if any.
     #[serde(default)]
     pub near: Option<String>,
+    /// A thing the party must carry to do it: the key of a lock, the crank of a winch.
+    #[serde(default)]
+    pub needs: Option<String>,
+    /// Whether doing it uses that thing up.
+    #[serde(default)]
+    pub spends: bool,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
@@ -331,6 +337,8 @@ pub struct ActionDraft {
     pub outcome: String,
     pub effects: Vec<Value>,
     pub near: String,
+    pub needs: String,
+    pub spends: bool,
 }
 
 const MAX_ACTIONS: usize = 5;
@@ -359,6 +367,8 @@ pub fn read_actions(drafts: &[ActionDraft], notes: &mut Vec<String>) -> Vec<Acti
             outcome: d.outcome.trim().to_string(),
             effects: read_effects(&d.effects, notes),
             near: Some(slug(&d.near)).filter(|id| !id.is_empty()),
+            needs: Some(d.needs.trim().to_string()).filter(|n| !n.is_empty()),
+            spends: d.spends,
         })
         .collect()
 }
@@ -1194,6 +1204,30 @@ impl World {
         if index >= actions.len() {
             return None;
         }
+        // A lock wants its key: without it nothing happens, and the action stays to be tried again.
+        if let Some(needed) = actions[index].needs.clone() {
+            let wanted = needed.to_lowercase();
+            let carried = |name: &str| name.to_lowercase() == wanted || name.to_lowercase().contains(&wanted) || wanted.contains(&name.to_lowercase());
+            let holder = self.story.bags.iter().position(|b| b.inventory.iter().any(|i| carried(&i.name)));
+            match holder {
+                None => {
+                    let russian = self.language.to_lowercase().starts_with("ru") || self.language.contains("усск");
+                    return Some(if russian { format!("Для этого нужно: {needed}.") } else { format!("This needs: {needed}.") });
+                }
+                Some(bag) => {
+                    let spends = self.locations.get(&here).and_then(|l| l.props.iter().find(|p| p.id == thing).map(|p| &p.actions).or_else(|| l.creatures.iter().find(|c| c.id == thing).map(|c| &c.actions))).and_then(|a| a.get(index)).is_some_and(|a| a.spends);
+                    if spends {
+                        let name = self.story.bags[bag].inventory.iter().find(|i| carried(&i.name)).map(|i| i.name.clone()).unwrap_or_default();
+                        self.story.bags[bag].take(&name);
+                    }
+                }
+            }
+        }
+        let location = self.locations.get_mut(&here)?;
+        let actions = match location.props.iter_mut().find(|p| p.id == thing) {
+            Some(p) => &mut p.actions,
+            None => &mut location.creatures.iter_mut().find(|c| c.id == thing)?.actions,
+        };
         let action = actions.remove(index);
         self.story.say(Speaker::Player, &action.label);
         self.story.say(Speaker::Master, &action.outcome);
@@ -1278,6 +1312,27 @@ mod tests {
         assert!((3..=7).all(|x| w.here().tile_id(x, 5) == Some("wood_floor")));
         w.apply(&effects(json!([{ "op": "travel", "to": "open_space", "name": "Open Space", "description": "Stars and a frozen world below." }])), None);
         assert_eq!(w.stubs["open_space"].description, "Stars and a frozen world below.");
+    }
+
+    #[test]
+    fn a_lock_wants_its_key_and_a_plate_goes_off_underfoot() {
+        let mut w = world();
+        w.party.push(rules::Character::create("Ann", "", "human", "fighter", [15, 14, 13, 12, 10, 8], &["acrobatics".to_string(), "athletics".to_string()], &[]).unwrap());
+        let gate: Vec<Action> = read_actions(&[serde_json::from_value(json!({ "label": "Unlock the gate", "outcome": "The gate swings open.", "needs": "Iron key", "spends": true, "effects": [{ "op": "tile", "x": 4, "y": 4, "tile": "door" }] })).unwrap()], &mut Vec::new());
+        w.here_mut().props[0].actions = gate;
+        let thing = w.here().props[0].id.clone();
+        // Without the key nothing happens and the lock can be tried again.
+        assert!(w.perform(&thing, 0).unwrap().contains("Iron key"));
+        assert_eq!(w.here().props[0].actions.len(), 1);
+        w.apply(&effects(json!([{ "op": "give", "name": "Iron key" }])), None);
+        assert_eq!(w.perform(&thing, 0).unwrap(), "The gate swings open.");
+        assert_eq!(w.here().tile_id(4, 4), Some("door"));
+        assert!(w.story.bags[0].inventory.iter().all(|i| i.name != "Iron key"), "the key is spent");
+        // A plate: stepping on its cell does what it was made to do.
+        let (px, py) = w.player.cell();
+        w.apply(&effects(json!([{ "op": "secret", "x": px, "y": py, "dc": 30, "kind": "plate", "note": "A slab sinks underfoot.", "effects": [{ "op": "tile", "x": 6, "y": 6, "tile": "door" }] }])), None);
+        assert!(w.notice().contains(&"A slab sinks underfoot.".to_string()));
+        assert_eq!(w.here().tile_id(6, 6), Some("door"));
     }
 
     #[test]

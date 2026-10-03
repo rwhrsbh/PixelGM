@@ -534,6 +534,15 @@ impl World {
             let under = dx == 0 && dy == 0;
             let near = dx <= 2 && dy <= 2;
             let trap = secret.kind == "trap";
+            // A plate, a tripwire in plain sight, a rune on the floor: what it does, it does
+            // when stepped on, seen or not.
+            if secret.kind == "plate" {
+                if under {
+                    secret.found = true;
+                    fired.push((secret.note.clone(), secret.effects.clone(), false));
+                }
+                continue;
+            }
             if near && eye >= secret.dc {
                 // Seen in time: a trap is marked and avoided; anything else is found.
                 secret.found = true;
