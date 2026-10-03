@@ -363,6 +363,10 @@ Answer with this JSON object:
 
 /// The party does something the master has not prepared an outcome for. `near` is the thing
 /// they stand next to, if any.
+/// What a choice that was picked is sent to the master as: the outcome is in the story
+/// already, so the master goes on from there.
+pub const GO_ON: &str = "[this choice was taken and its outcome is told above; go on from there: what follows, and new options]";
+
 pub fn turn(world: &World, said: &str, near: Option<&str>) -> String {
     let beside = near.map(|id| format!(" They are standing next to \"{id}\".")).unwrap_or_default();
     format!(

@@ -259,6 +259,8 @@ impl Session {
 /// last offered, tellings waiting to be read, and what the guests asked for.
 #[derive(Resource, Default)]
 pub struct Table {
+    /// The outcome of a choice, shown while the master works out what follows it.
+    pub going_on: Option<String>,
     /// What the master was last asked on a guest's behalf and has not answered yet.
     pub busy: Option<String>,
     /// The guest that question was asked for: the answer happens where that guest is.

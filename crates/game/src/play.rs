@@ -121,6 +121,13 @@ struct SceneCache {
 #[derive(Component)]
 struct WalkGrid;
 
+/// The outcome of a choice is shown only while its continuation is awaited.
+fn forget_going_on(phase: Res<Phase>, mut table: ResMut<Table>) {
+    if table.going_on.is_some() && !matches!(*phase, Phase::Asking { .. }) {
+        table.going_on = None;
+    }
+}
+
 /// Things gained and lost, a line each in the corner for a few seconds.
 #[derive(Component)]
 struct FeedLine(f32);
@@ -1447,6 +1454,9 @@ fn receive(
             }
             Answer::Turn { said, near, draft } => {
                 let mine = matches!(&*phase, Phase::Asking { said: asked, .. } if *asked == said);
+                if mine {
+                    table.going_on = None;
+                }
                 let for_a_guest = table.busy.as_deref() == Some(said.as_str());
                 if !mine && !for_a_guest {
                     continue;
@@ -1757,6 +1767,7 @@ struct Extra {
     /// The class this player's hero takes its next levels in; empty with no hero.
     advancing: String,
     folded: bool,
+    going_on: Option<String>,
 }
 
 /// Whether the telling being read is folded away.
@@ -1836,7 +1847,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
             }
         }
         Phase::Writing { .. } => Sheet::Writing { table: extra.seat != SeatState::Alone },
-        Phase::Asking { said, .. } => Sheet::Asking(said.clone()),
+        Phase::Asking { said, .. } => Sheet::Asking(extra.going_on.clone().unwrap_or_else(|| said.replace(world::prompt::GO_ON, "").trim().to_string())),
         Phase::Reading { turn } => if extra.folded { Sheet::Folded } else { Sheet::Reading(turn.clone()) },
         Phase::Refused { trouble, .. } => Sheet::Refused(trouble_text(trouble, now, lang)),
         Phase::Journal => {
@@ -1897,6 +1908,7 @@ fn overlay(
             .map(|class| tr(*lang == Lang::Ru, &class.name).to_string())
             .unwrap_or_default(),
         folded: folded.0,
+        going_on: table.going_on.clone(),
     };
     if *phase == Phase::Master {
         let others = others_at_table(&game.world, &me);
@@ -2113,7 +2125,8 @@ fn overlay(
                 sheet.spawn((Text::default(), if *table { T::WritingHintTable } else { T::WritingHint }, fonts.body(), faded));
             }
             Sheet::Asking(said) => {
-                sheet.spawn((Text::new(format!("«{said}»")), fonts.body(), faded));
+                let shown = if table.going_on.is_some() { said.clone() } else { format!("«{said}»") };
+                sheet.spawn((Text::new(shown), fonts.body(), if table.going_on.is_some() { ink } else { faded }));
                 sheet.spawn((Text::default(), T::TestRunning, fonts.body(), ink));
             }
             Sheet::Reading(turn) => {
@@ -2445,8 +2458,17 @@ fn on_activate(
         }
         (PlayAction::Choose(index), Phase::Reading { turn }) => {
             if let Some(option) = turn.options.get(index) {
+                // The outcome happens at once; the master is asked what follows it.
                 let outcome = game.world.choose(option);
-                *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
+                redraw.0 = true;
+                autosave(&store, &game);
+                table.going_on = Some(outcome.clone());
+                let next = send(format!("{} {}", option.label, world::prompt::GO_ON), None, &game, &gm, &store, &settings, &master, &session, &table);
+                *phase = match next {
+                    // The master is busy: the outcome is told on its own.
+                    Phase::Reading { .. } => told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table),
+                    other => other,
+                };
             }
         }
         (PlayAction::AskAgain, Phase::Refused { said, near, .. }) => *phase = send(said, near, &game, &gm, &store, &settings, &master, &session, &table),
@@ -2481,7 +2503,18 @@ fn guests(
         let home = matches!(intent, Intent::Do { .. } | Intent::Choose(_) | Intent::Roll | Intent::Say { .. } | Intent::Gm(_)).then(|| enter_scene(&mut game, &mut table, &player));
         let shown = match intent {
             Intent::Do { thing, index } => game.world.perform(&thing, index).map(outcome_of),
-            Intent::Choose(index) => table.options.get(&game.world.current).and_then(|options| options.get(index)).cloned().map(|option| outcome_of(game.world.choose(&option))),
+            Intent::Choose(index) => table.options.get(&game.world.current).and_then(|options| options.get(index)).cloned().map(|option| {
+                let outcome = game.world.choose(&option);
+                // And what follows it is asked of the master, unless it is busy.
+                if table.busy.is_none() && table.drafts.is_empty() && !matches!(*phase, Phase::Asking { .. }) {
+                    let said = format!("{}: {} {}", hero_of(&game.world, &player).unwrap_or(&player), option.label, world::prompt::GO_ON);
+                    master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near: None, direction: None });
+                    session.broadcast(&Down::Thinking(said.clone()));
+                    table.busy = Some(said);
+                    table.busy_for = Some(player.clone());
+                }
+                outcome_of(outcome)
+            }),
             Intent::Roll if !game.world.pending_here() => None,
             Intent::Roll => game.world.roll_check(&mut Rng::from_clock()).map(|done| {
                 if !table.elsewhere {
@@ -3015,7 +3048,7 @@ impl Plugin for PlayPlugin {
                 Update,
                 (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
-            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
             .add_observer(on_master_activate);
     }
