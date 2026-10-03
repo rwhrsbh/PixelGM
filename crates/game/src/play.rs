@@ -885,7 +885,7 @@ fn draw(
             for n in world.companions_here() {
                 let companion = &world.companions[n];
                 if let Some(image) = ally_images[n].clone() {
-                    commands.spawn((InLocation, Ally { owner: companion.owner.clone(), rank: world.companions.iter().take(n).filter(|c| c.owner == companion.owner).count() }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::default())).with_children(|me| shadow_under(me, &cache.shadow));
+                    commands.spawn((InLocation, Ally { owner: companion.owner.clone(), rank: world.companions.iter().take(n).filter(|c| c.owner == companion.owner).count(), id: companion.creature.id.clone() }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::default())).with_children(|me| shadow_under(me, &cache.shadow));
                 }
             }
             for other in world.tokens_here() {
@@ -909,6 +909,156 @@ fn draw(
 struct Ally {
     owner: String,
     rank: usize,
+    id: String,
+}
+
+/// Words over someone's head, for a few seconds.
+#[derive(Component)]
+struct Bubble {
+    who: String,
+    age: f32,
+    size: Vec2,
+}
+
+const BUBBLE_SECONDS: f32 = 6.5;
+
+/// In a live world the people of a place talk: a handful of lines is asked for once per
+/// place, of the cheap models, and said one by one. They also move about a little.
+#[allow(clippy::too_many_arguments)]
+fn live_world(
+    time: Res<Time>,
+    mut game: ResMut<Game>,
+    phase: Res<Phase>,
+    session: Res<Session>,
+    settings: Res<Settings>,
+    store: Res<Store>,
+    gm: Res<Gm>,
+    master: Res<Master>,
+    mut table: ResMut<Table>,
+    mut redraw: ResMut<Redraw>,
+    mut asked: Local<std::collections::HashSet<String>>,
+    mut wait: Local<(f32, f32)>,
+) {
+    if session.is_client() || !game.world.table.live || *phase != Phase::Walking || game.world.party.is_empty() {
+        return;
+    }
+    let dt = time.delta_secs();
+    let place = game.world.current.clone();
+    // Lines for another place are no use here.
+    if table.chatter.0 != place && !table.chatter.1.is_empty() {
+        table.chatter.1.clear();
+    }
+    let speakers = game.world.here().creatures.iter().any(|c| c.attitude != world::Attitude::Hostile) || !game.world.companions_here().is_empty();
+    if speakers && table.chatter.1.is_empty() && !asked.contains(&place) && table.busy.is_none() {
+        asked.insert(place.clone());
+        master.ask(&gm, &store, &settings, Ask::Chatter { world: Box::new(game.world.clone()) });
+        wait.0 = 8.0;
+    }
+    wait.0 -= dt;
+    if wait.0 <= 0.0 && table.chatter.0 == place {
+        if let Some((who, text)) = table.chatter.1.pop_front() {
+            session.broadcast(&Down::Bubble { place: place.clone(), who: who.clone(), text: text.clone() });
+            table.bubbles.push((who, text));
+            // Twenty to forty seconds to the next, by the clock's own noise.
+            wait.0 = 20.0 + (time.elapsed_secs() * 7.3) % 20.0;
+        }
+    }
+    // Now and then someone takes a step or two of their own.
+    wait.1 -= dt;
+    if wait.1 <= 0.0 {
+        wait.1 = 7.0 + (time.elapsed_secs() * 3.1) % 6.0;
+        let mut rng = Rng::from_clock();
+        let world = &game.world;
+        let here = world.here();
+        let (px, py) = world.player.cell();
+        let idle: Vec<usize> = here.creatures.iter().enumerate().filter(|(_, c)| c.attitude != world::Attitude::Hostile && c.stock.is_empty() && ((c.x as i32 - px).abs() > 1 || (c.y as i32 - py).abs() > 1)).map(|(n, _)| n).collect();
+        if !idle.is_empty() {
+            let n = idle[(rng.die(idle.len() as u32) - 1) as usize];
+            let (cx, cy) = (here.creatures[n].x as i32, here.creatures[n].y as i32);
+            let steps = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+            let (dx, dy) = steps[(rng.die(4) - 1) as usize];
+            let (nx, ny) = (cx + dx, cy + dy);
+            let free = (1..world::MAP_W as i32 - 1).contains(&nx)
+                && (1..world::MAP_H as i32 - 1).contains(&ny)
+                && !here.blocked(nx, ny, &world.tiles)
+                && here.exit_at(nx as usize, ny as usize).is_none()
+                && (nx, ny) != (px, py);
+            if free {
+                let place = world.current.clone();
+                if let Some(c) = game.world.locations.get_mut(&place).and_then(|l| l.creatures.get_mut(n)) {
+                    (c.x, c.y) = (nx as usize, ny as usize);
+                    redraw.0 = true;
+                }
+            }
+        }
+    }
+}
+
+/// Puts up the bubbles asked for, keeps each over the head of whoever speaks, and takes
+/// them down in time. A click on one turns to its speaker.
+#[allow(clippy::too_many_arguments)]
+fn bubbles(
+    mut commands: Commands,
+    time: Res<Time>,
+    game: Res<Game>,
+    fonts: Res<Fonts>,
+    mut table: ResMut<Table>,
+    mut phase: ResMut<Phase>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    frame: Res<crate::view::View>,
+    actors: Query<(&Actor, &Transform), Without<Bubble>>,
+    allies: Query<(&Ally, &Transform), Without<Bubble>>,
+    mut shown: Query<(Entity, &mut Bubble, &mut Transform)>,
+) {
+    let head = |who: &str| actors.iter().find(|(a, _)| a.id == who).map(|(_, t)| t.translation).or_else(|| allies.iter().find(|(a, _)| a.id == who).map(|(_, t)| t.translation));
+    for (who, text) in std::mem::take(&mut table.bubbles) {
+        let Some(at) = head(&who) else { continue };
+        // One bubble a speaker.
+        for (entity, bubble, _) in &shown {
+            if bubble.who == who {
+                commands.entity(entity).try_despawn();
+            }
+        }
+        // The cloud is as wide as its longest line, up to a width that reads well.
+        // Letters are drawn twice the size of the picture's pixels; words wrap whole, so a
+        // line holds a little less than its width in letters.
+        let letters = text.chars().count() as f32;
+        let width = (letters * 13.0 + 18.0).clamp(60.0, 236.0);
+        let per_row = ((width - 18.0) / 13.0).floor().max(4.0);
+        let rows = if letters <= per_row { 1.0 } else { (letters / (per_row - 3.0)).ceil() };
+        let size = Vec2::new(width, rows * 20.0 + 10.0);
+        commands
+            .spawn((InLocation, Bubble { who, age: 0.0, size }, Sprite { color: color(PARCHMENT), custom_size: Some(size), ..default() }, Transform::from_translation(Vec3::new(at.x, at.y + 46.0 + size.y / 2.0, 1.88))))
+            .with_children(|cloud| {
+                // An edge of ink, and a tail towards the speaker.
+                cloud.spawn((Sprite { color: color(INK), custom_size: Some(size + Vec2::splat(2.0)), ..default() }, Transform::from_xyz(0.0, 0.0, -0.01)));
+                cloud.spawn((Sprite { color: color(PARCHMENT), custom_size: Some(Vec2::new(6.0, 6.0)), ..default() }, Transform::from_xyz(0.0, -size.y / 2.0 - 2.0, 0.0005)));
+                cloud.spawn((Text2d::new(text), fonts.body(), TextColor(color(INK)), TextLayout::justify(Justify::Center), bevy::text::TextBounds::new_horizontal((width - 16.0) / 2.0), Transform::from_xyz(0.0, 0.0, 0.001).with_scale(Vec3::splat(2.0))));
+            });
+    }
+    let clicked = mouse.just_pressed(MouseButton::Left).then(|| crate::view::map_under_cursor(&window, &frame)).flatten().map(|p| Vec2::new(p.x - CANVAS.x as f32 / 2.0, CANVAS.y as f32 / 2.0 - p.y));
+    for (entity, mut bubble, mut transform) in &mut shown {
+        bubble.age += time.delta_secs();
+        if bubble.age > BUBBLE_SECONDS {
+            commands.entity(entity).try_despawn();
+            continue;
+        }
+        if let Some(at) = head(&bubble.who) {
+            let wanted = Vec3::new(at.x.round(), (at.y + 46.0 + bubble.size.y / 2.0).round(), 1.88);
+            if transform.translation != wanted {
+                transform.translation = wanted;
+            }
+        }
+        // A click on the words turns to whoever said them.
+        if let Some(point) = clicked
+            && *phase == Phase::Walking
+            && (point - transform.translation.truncate()).abs().cmple(bubble.size / 2.0).all()
+            && game.world.here().creatures.iter().any(|c| c.id == bubble.who)
+        {
+            *phase = Phase::Writing { near: Some(bubble.who.clone()) };
+        }
+    }
 }
 
 /// Companions keep a step behind the hero they follow, each in a place of its own.
@@ -1796,6 +1946,9 @@ fn receive(
                     }
                 }
             }
+            Answer::Chatter { place, lines } => {
+                table.chatter = (place, lines.into());
+            }
             Answer::Event(draft) => {
                 background.event_asked = false;
                 background.quiet = 0.0;
@@ -1880,7 +2033,8 @@ fn background_work(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, g
             master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(world.clone()), id: exit.to.clone(), from: world.current.clone(), ahead: true });
         }
     }
-    if let Some(after) = event_after(settings.initiative)
+    let stirring = event_after(settings.initiative).map(|after| if game.world.table.live { after.min(150.0) } else { after }).or(game.world.table.live.then_some(150.0));
+    if let Some(after) = stirring
         && background.quiet >= after
         && !background.event_asked
         && seated(world).is_none()
@@ -3737,7 +3891,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Approach>()
             .init_resource::<UseFor>()
             .add_observer(on_resize)
-            .add_systems(Update, place_allies.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (place_allies, live_world, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (run_clock, clock_face).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, goal_line.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, number_keys.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))

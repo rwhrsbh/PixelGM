@@ -241,6 +241,21 @@ impl Pool {
         }
     }
 
+    /// As `pick`, but from the cheap end: the lite and the open models first, so that small
+    /// talk does not eat the quota the story needs. Anything that is free, failing those.
+    pub fn pick_cheap(&self, now: Millis) -> Pick {
+        for model in self.chain.iter().filter(|m| m.tier != Tier::Flash) {
+            let model_rest = self.model_rest.get(&model.id).copied().unwrap_or(0);
+            for key in self.keys.iter().filter(|k| !k.dead) {
+                let pair_rest = self.pair_rest.get(&(key.id, model.id.clone())).copied().unwrap_or(0);
+                if model_rest.max(pair_rest) <= now {
+                    return Pick::Ready { model: model.clone(), key: key.id, secret: key.secret.clone() };
+                }
+            }
+        }
+        self.pick(now, Tier::Gemma)
+    }
+
     pub fn report(&mut self, now: Millis, model: &str, key: KeyId, outcome: Outcome) {
         let pair = (key, model.to_string());
         match outcome {

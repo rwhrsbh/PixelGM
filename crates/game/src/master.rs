@@ -72,6 +72,10 @@ pub enum Ask {
     Event {
         world: Box<World>,
     },
+    /// What the people of the place say aloud while the party walks about.
+    Chatter {
+        world: Box<World>,
+    },
     /// The older story is to be written up.
     Chapter {
         world: Box<World>,
@@ -83,6 +87,8 @@ pub enum Answer {
     Location { id: String, from: String, ahead: bool, draft: Result<Box<LocationDraft>, Trouble> },
     Turn { said: String, near: Option<String>, draft: Result<Box<TurnDraft>, Trouble> },
     Event(Result<Box<TurnDraft>, Trouble>),
+    /// What the people of a place say aloud, for speech bubbles.
+    Chatter { place: String, lines: Vec<(String, String)> },
     Chapter(Result<ChapterDraft, Trouble>),
     Card { for_player: String, card: Result<Box<CreatureCard>, Trouble> },
     Feats { hero: usize, secret: bool, feats: Result<Vec<rules::Feat>, Trouble> },
@@ -209,6 +215,8 @@ struct Call {
     store: Store,
     thinking: ThinkingSetting,
     lowest: Tier,
+    /// The lite and the open models first.
+    cheap: bool,
     attempts: u32,
     relay: Relay,
 }
@@ -241,7 +249,7 @@ impl Call {
                 warn!("the game master's answer could not be read ({last})");
                 continue;
             }
-            let (text, model) = match self.gm.dispatcher.generate(&request, self.lowest) {
+            let (text, model) = match self.gm.dispatcher.generate_in(&request, self.lowest, self.cheap) {
                 Ok((reply, model)) => {
                     info!("the master answered: {} in {:.1} s, {} characters for a prompt of {}", model.id, started.elapsed().as_secs_f32(), reply.text.chars().count(), prompt.chars().count());
                     (reply.text, model.id)
@@ -291,13 +299,16 @@ impl Master {
     pub fn ask(&self, gm: &Gm, store: &Store, settings: &Settings, ask: Ask) {
         // Work nobody is waiting for uses only the best tier and is not retried.
         let unhurried = matches!(ask, Ask::Location { ahead: true, .. } | Ask::Event { .. } | Ask::Portrait { .. });
+        // Small talk is asked of the cheap models, once.
+        let cheap = matches!(ask, Ask::Chatter { .. });
         let call = Call {
             custom: settings.custom(),
             gm: gm.clone(),
             store: store.clone(),
             thinking: settings.thinking,
-            lowest: if unhurried { Tier::Flash } else { settings.lowest_tier },
-            attempts: if unhurried { 1 } else { READ_ATTEMPTS },
+            lowest: if cheap { Tier::Gemma } else if unhurried { Tier::Flash } else { settings.lowest_tier },
+            attempts: if unhurried || cheap { 1 } else { READ_ATTEMPTS },
+            cheap,
             relay: self.relay.clone(),
         };
         let language = language_name(settings.lang);
@@ -309,6 +320,7 @@ impl Master {
                 Ask::Location { id, ahead, .. } => format!("the place '{id}'{}", if *ahead { " (ahead)" } else { "" }),
                 Ask::Turn { world, said, direction, .. } => format!("a turn, {} characters said{}, from {:?} in '{}' facing {:?}", said.chars().count(), if direction.is_some() { ", directed" } else { "" }, world.player.cell(), world.current, world.facing),
                 Ask::Event { .. } => "an event of its own".to_string(),
+                Ask::Chatter { .. } => "small talk for the place".to_string(),
                 Ask::Chapter { .. } => "a chapter".to_string(),
                 Ask::Feats { hero, secret, .. } => format!("abilities for hero {hero}{}", if *secret { " (secret)" } else { "" }),
                 Ask::Stunt { .. } => "a stunt in a fight".to_string(),
@@ -383,6 +395,13 @@ impl Master {
                 Ask::Invent { world, request, for_player } => {
                     let card: Result<CreatureCard, Trouble> = if fake { faked(fake::creature(&request)) } else { call.read(prompt::play_prompt(&world), &prompt::invent(&world, &request)) };
                     Answer::Card { for_player, card: card.map(Box::new) }
+                }
+                Ask::Chatter { world } => {
+                    let ids: Vec<String> = world.here().creatures.iter().filter(|c| c.attitude != world::Attitude::Hostile).map(|c| c.id.clone()).chain(world.companions_here().into_iter().map(|n| world.companions[n].creature.id.clone())).collect();
+                    let draft: Result<world::turn::ChatterDraft, Trouble> = if fake { faked(fake::chatter(&ids)) } else { call.read(prompt::system_prompt(&world.language), &prompt::chatter(&world)) };
+                    // Only what someone here can be seen to say is kept.
+                    let lines = draft.map(|d| d.lines.into_iter().map(|l| (l.who.trim().to_string(), l.text.trim().trim_matches('"').to_string())).filter(|(who, text)| ids.contains(who) && !text.is_empty()).take(8).collect()).unwrap_or_default();
+                    Answer::Chatter { place: world.current.clone(), lines }
                 }
                 Ask::Event { world } => {
                     let draft: Result<TurnDraft, Trouble> =

@@ -110,6 +110,20 @@ impl World {
     }
 }
 
+/// Things said aloud in a place, to be shown as speech bubbles.
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct ChatterDraft {
+    pub lines: Vec<Said>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct Said {
+    pub who: String,
+    pub text: String,
+}
+
 /// Words for one player alone. `to` names the character, or the player.
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
 #[serde(default)]

@@ -152,6 +152,8 @@ pub enum Up {
 pub enum Down {
     /// The name the guest goes by at this table.
     Welcome { name: String },
+    /// Someone in a place says something aloud: the place, who, the words.
+    Bubble { place: String, who: String, text: String },
     /// The whole world, sent on joining and whenever it changes. `id` names its saves.
     World { id: String, world: Box<World> },
     /// Where everybody's token is.
@@ -279,6 +281,11 @@ impl Session {
 /// last offered, tellings waiting to be read, and what the guests asked for.
 #[derive(Resource, Default)]
 pub struct Table {
+    /// Things the people of a place will say aloud, in the order they will be said, and the
+    /// place they belong to: asked for once, shown one by one.
+    pub chatter: (String, std::collections::VecDeque<(String, String)>),
+    /// What someone says right now, to be put up as a bubble: who, and the words.
+    pub bubbles: Vec<(String, String)>,
     /// What other players have just set about, a line each, shown in the corner for a while.
     pub notices: Vec<String>,
     /// The outcome of a choice, shown while the master works out what follows it.
@@ -723,6 +730,11 @@ fn client_pump(
             ClientEvent::Message(Down::Told(turn)) => {
                 play::show(turn, &mut phase, &mut table);
                 redraw.0 = true;
+            }
+            ClientEvent::Message(Down::Bubble { place, who, text }) => {
+                if game.as_ref().is_some_and(|g| g.world.current == place) {
+                    table.bubbles.push((who, text));
+                }
             }
             ClientEvent::Message(Down::Thinking(said)) => {
                 // What a fellow player does is seen by all; one's own words are on the sheet.

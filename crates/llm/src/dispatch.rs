@@ -226,6 +226,11 @@ impl<T: Transport> Dispatcher<T> {
     /// Runs the request on the best model available no lower than `lowest`. Returns the answer
     /// together with the model that gave it.
     pub fn generate(&self, request: &GenRequest, lowest: Tier) -> Result<(Reply, Model), GenError> {
+        self.generate_in(request, lowest, false)
+    }
+
+    /// As `generate`; with `cheap`, the lite and open models are tried before the best one.
+    pub fn generate_in(&self, request: &GenRequest, lowest: Tier, cheap: bool) -> Result<(Reply, Model), GenError> {
         for _ in 0..MAX_STEPS {
             if self.state.lock().unwrap().pool.needs_relist() {
                 // With an old chain still in hand a failed relist is not fatal.
@@ -238,7 +243,7 @@ impl<T: Transport> Dispatcher<T> {
             let now = (self.clock)();
             let (model, key, secret, mode) = {
                 let state = self.state.lock().unwrap();
-                match state.pool.pick(now, lowest) {
+                match if cheap { state.pool.pick_cheap(now) } else { state.pool.pick(now, lowest) } {
                     Pick::Ready { model, key, secret } => {
                         let mode = state.thinking.get(&model.id).copied().unwrap_or_default();
                         (model, key, secret, mode)

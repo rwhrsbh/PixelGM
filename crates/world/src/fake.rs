@@ -243,6 +243,12 @@ pub fn turn(said: &str) -> String {
     .to_string()
 }
 
+/// The answer to "what do the people here say aloud".
+pub fn chatter(ids: &[String]) -> String {
+    let lines: Vec<Value> = ids.iter().cycle().take(if ids.is_empty() { 0 } else { 4 }).enumerate().map(|(n, id)| json!({ "who": id, "text": format!("Line {} of small talk.", n + 1) })).collect();
+    json!({ "lines": lines }).to_string()
+}
+
 /// The answer to "translate these": each text marked with the language asked for.
 pub fn translation(texts: &[String], language: &str) -> String {
     json!({ "texts": texts.iter().map(|t| format!("[{language}] {t}")).collect::<Vec<_>>() }).to_string()

@@ -522,6 +522,35 @@ pub fn event(world: &World) -> String {
     )
 }
 
+/// Things said aloud by those in a place while the party walks about: a handful at once,
+/// to be shown one by one as speech bubbles.
+pub fn chatter(world: &World) -> String {
+    let here = world.here();
+    let mut text = format!("WORLD: {}. {}\nTone: {}.\nPLACE: {}. {}\n", world.title, world.summary, world.tone, here.name, here.description);
+    let (day, hour, minute) = world.time();
+    let _ = writeln!(text, "TIME: day {day}, {hour:02}:{minute:02} ({}).", world.daylight());
+    let _ = writeln!(text, "WHO IS HERE:");
+    for c in here.creatures.iter().filter(|c| c.attitude != crate::model::Attitude::Hostile) {
+        let _ = writeln!(text, "- {} \"{}\": {}", c.id, c.name, c.description);
+    }
+    for n in world.companions_here() {
+        let c = &world.companions[n].creature;
+        let _ = writeln!(text, "- {} \"{}\" (travels with the party): {}", c.id, c.name, c.description);
+    }
+    if world.quest.is_set() && world.quest.done.is_none() {
+        let _ = writeln!(text, "The party's goal: {}", world.quest.goal);
+    }
+    for threat in world.threats.iter().filter(|t| !t.rumour.is_empty()) {
+        let _ = writeln!(text, "A rumour going round: {}", threat.rumour);
+    }
+    let recent: Vec<&str> = world.story.log.iter().rev().take(3).map(|l| l.text.as_str()).collect();
+    for line in recent.into_iter().rev() {
+        let _ = writeln!(text, "Lately: {}", line.chars().take(240).collect::<String>());
+    }
+    text.push_str("\nWrite 6 to 8 short things these people say aloud of their own accord over the next minutes — to each other, to themselves, to the party passing by: a grumble, gossip, a hint about the goal or the rumour, a remark on what the party just did, a companion's opinion. One sentence each, at most 12 words, in character, no narration, no quotation marks. Use only the ids listed.\n\nAnswer with this JSON object:\n{\"lines\": [{\"who\": \"id\", \"text\": \"…\"}]}");
+    text
+}
+
 /// The story has grown long: the master writes the older part up as a chapter.
 pub fn chapter(world: &World) -> String {
     let mut older = world.clone();
