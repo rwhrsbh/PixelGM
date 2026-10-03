@@ -100,6 +100,8 @@ pub struct CreatureDraft {
     pub count: i64,
     /// What a shopkeeper sells: things as in "give", each with a "price".
     pub shop: Vec<crate::story::ThingDraft>,
+    /// The faction it belongs to.
+    pub faction: String,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -124,6 +126,10 @@ pub struct NeighborDraft {
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
 pub struct LocationDraft {
+    #[serde(deserialize_with = "lenient_int")]
+    pub danger: i64,
+    pub wanderers: Vec<String>,
+    pub encounters: Vec<String>,
     /// Colours added for this place, by letters not in use yet.
     pub palette: BTreeMap<String, String>,
     pub id: String,
@@ -147,6 +153,7 @@ pub struct LocationDraft {
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
 pub struct WorldDraft {
+    pub factions: Vec<crate::living::Faction>,
     pub quest: QuestDraft,
     pub title: String,
     pub summary: String,
@@ -446,7 +453,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             "hostile" => Attitude::Hostile,
             _ => Attitude::Neutral,
         };
-        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone(), count: c.count.clamp(0, 8) as u8, mustered: false, stock: stock_of(&c.shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false });
+        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone(), count: c.count.clamp(0, 8) as u8, mustered: false, stock: stock_of(&c.shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(&c.faction) });
     }
 
     let id = forced_id.map(str::to_string).unwrap_or_else(|| {
@@ -597,7 +604,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     let legend: BTreeMap<char, String> = symbol_of.iter().map(|(tile, symbol)| (*symbol, tile.to_string())).collect();
 
     let name = if draft.name.trim().is_empty() { id.clone() } else { draft.name.trim().to_string() };
-    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), mood: draft.mood.trim().to_lowercase(), marks: Vec::new(), seen: Vec::new(), items: Vec::new(), secrets: draft.secrets.iter().map(|s| { let (x, y) = clamp_cell(s.x, s.y); crate::model::Secret { x, y, dc: if s.dc <= 0 { 13 } else { s.dc.clamp(5, 30) as i32 }, kind: s.kind.trim().to_lowercase(), note: s.note.trim().to_string(), effects: crate::story::read_effects(&s.effects, &mut notes), found: false } }).collect() };
+    let location = Location { danger: draft.danger.clamp(0, 5) as u8, wanderers: draft.wanderers.iter().map(|w| w.trim().to_lowercase().replace([' ', '_'], "-")).filter(|w| rules::srd().monsters.contains_key(w)).take(6).collect(), finds: draft.encounters.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).take(6).collect(), name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), mood: draft.mood.trim().to_lowercase(), marks: Vec::new(), seen: Vec::new(), items: Vec::new(), secrets: draft.secrets.iter().map(|s| { let (x, y) = clamp_cell(s.x, s.y); crate::model::Secret { x, y, dc: if s.dc <= 0 { 13 } else { s.dc.clamp(5, 30) as i32 }, kind: s.kind.trim().to_lowercase(), note: s.note.trim().to_string(), effects: crate::story::read_effects(&s.effects, &mut notes), found: false } }).collect() };
     Ok(Built { id, location, stubs, notes })
 }
 
@@ -639,6 +646,10 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         quest: draft.quest.quest(),
         clock: crate::model::morning(),
         companions: Vec::new(),
+        factions: draft.factions.iter().map(|f| crate::living::Faction { id: slug(&f.id), name: f.name.trim().to_string(), description: f.description.trim().to_string(), standing: f.standing.clamp(-3, 3), met: false }).filter(|f| !f.id.is_empty()).take(6).collect(),
+        threads: Vec::new(),
+        threats: Vec::new(),
+        turns: 0,
         facing: (0, 0),
         title: fallback(&draft.title, &built.location.name),
         summary: draft.summary.trim().to_string(),

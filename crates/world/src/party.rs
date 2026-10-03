@@ -983,6 +983,40 @@ mod tests {
     }
 
     #[test]
+    fn the_world_keeps_standings_threads_threats_and_what_wanders_in() {
+        let mut w = world();
+        apply(&mut w, json!([{ "op": "faction", "id": "Bog Tribe", "name": "The Bog Tribe", "description": "Beetle folk.", "standing": 0 }]));
+        apply(&mut w, json!([{ "op": "standing", "id": "bog_tribe", "change": -2 }, { "op": "thread", "text": "The shaman was robbed; his tribe hunts the thief." }, { "op": "threat", "name": "Ritual", "what": "The cult wakes the thing below.", "rumour": "Chanting under the hill.", "hours": 2 }]));
+        assert_eq!((w.factions[0].standing, w.factions[0].met), (-2, true));
+        assert_eq!(w.threads.len(), 1);
+        assert!(w.threats_due().is_empty());
+        w.pass(121);
+        assert_eq!(w.threats_due().len(), 1);
+        let text = crate::prompt::turn(&w, "x", None);
+        assert!(text.contains("A THREAT HAS COME DUE") && text.contains("bog_tribe") && text.contains("THREADS"), "{text}");
+        apply(&mut w, json!([{ "op": "threat_end", "name": "ritual" }, { "op": "thread_done", "text": "shaman" }]));
+        assert!(w.threats.is_empty() && w.threads.is_empty());
+        // A dangerous place with something to wander in: sooner or later it comes.
+        w.here_mut().danger = 5;
+        w.here_mut().wanderers = vec!["wolf".into()];
+        w.here_mut().finds = vec!["A peddler passes.".into()];
+        let mut rng = Rng::seeded(7);
+        let mut seen = Vec::new();
+        for _ in 0..200 {
+            if let Some(what) = w.wander(&mut rng) {
+                seen.push(what);
+                // Once something hostile stands here, nothing more is rolled.
+                if w.hostiles().next().is_some() {
+                    break;
+                }
+            }
+        }
+        assert!(seen.iter().any(|s| matches!(s, crate::living::Wandered::Ambush(_))), "{seen:?}");
+        assert_eq!(w.wander(&mut rng), None);
+        w.here_mut().danger = 0;
+    }
+
+    #[test]
     fn someone_joins_fights_beside_the_party_and_can_be_sent_away() {
         let mut w = world();
         apply(&mut w, json!([{ "op": "spawn", "kind": "creature", "id": "guard", "name": "Old guard", "x": 6, "y": 6, "sprite": "cat", "attitude": "friendly", "monster": "guard" }]));

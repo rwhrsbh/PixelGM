@@ -2790,10 +2790,28 @@ fn on_activate(
         (PlayAction::Rest, _) => {
             match game.world.can_rest_long() {
                 Ok(()) => {
-                    game.world.eat_rations();
-                    game.world.long_rest();
-                    game.world.pass(8 * 60);
-                    *toast = Toast { text: Some(T::Rested), left: 3.0 };
+                    // A night in a dangerous place may be broken: two rolls, as for two watches.
+                    let mut rng = Rng::from_clock();
+                    let was_night = game.world.is_night();
+                    let broken = (0..2).any(|_| {
+                        // Sleep is at its most dangerous in the dark, whatever the hour it began.
+                        let clock = game.world.clock;
+                        if !was_night {
+                            game.world.clock = clock / 1440 * 1440 + 23 * 60;
+                        }
+                        let came = matches!(game.world.wander(&mut rng), Some(world::living::Wandered::Ambush(_)));
+                        game.world.clock = clock;
+                        came
+                    });
+                    if broken {
+                        game.world.pass(3 * 60);
+                        *toast = Toast { text: Some(T::RestBroken), left: 5.0 };
+                    } else {
+                        game.world.eat_rations();
+                        game.world.long_rest();
+                        game.world.pass(8 * 60);
+                        *toast = Toast { text: Some(T::Rested), left: 3.0 };
+                    }
                     redraw.0 = true;
                     autosave(&store, &game);
                 }
@@ -2926,7 +2944,7 @@ fn hero_of<'a>(world: &'a World, player: &str) -> Option<&'a str> {
 
 /// The world's clock runs a minute to a second of play, on the host's machine. Alone it
 /// stops with the game paused or the window out of sight; a fight counts its own rounds.
-fn run_clock(time: Res<Time>, mut game: ResMut<Game>, phase: Res<Phase>, session: Res<Session>, window: Single<&Window, With<bevy::window::PrimaryWindow>>, mut redraw: ResMut<Redraw>, mut since: Local<f32>) {
+fn run_clock(time: Res<Time>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, session: Res<Session>, window: Single<&Window, With<bevy::window::PrimaryWindow>>, mut redraw: ResMut<Redraw>, mut since: Local<f32>, mut table: ResMut<Table>, lang: Res<Lang>) {
     if session.is_client() || game.world.party.is_empty() || matches!(*phase, Phase::Fighting | Phase::Drawing { .. } | Phase::Stuck { .. }) {
         return;
     }
@@ -2942,10 +2960,28 @@ fn run_clock(time: Res<Time>, mut game: ResMut<Game>, phase: Res<Phase>, session
     *since -= minutes;
     // The minutes go by unseen; the picture is drawn again only when the light changes.
     let world = &mut game.bypass_change_detection().world;
+    let hour_before = world.clock / 60;
     world.clock = world.clock.saturating_add(minutes as u32);
+    let new_hour = world.clock / 60 != hour_before;
     if world.sync_light() {
         game.set_changed();
         redraw.0 = true;
+    }
+    // An hour gone by in a dangerous place: something may wander in.
+    if new_hour && *phase == Phase::Walking {
+        match game.bypass_change_detection().world.wander(&mut Rng::from_clock()) {
+            Some(world::living::Wandered::Find(text)) => {
+                game.set_changed();
+                game.world.story.say(Speaker::Master, &text);
+                show(Turn { narration: text, options: Vec::new() }, &mut phase, &mut table);
+            }
+            Some(world::living::Wandered::Ambush(_)) => {
+                game.set_changed();
+                redraw.0 = true;
+                table.notices.push(T::SomethingComes.text(*lang).to_string());
+            }
+            None => {}
+        }
     }
 }
 
@@ -3000,6 +3036,15 @@ fn quest_lines(world: &World, lang: Lang) -> Vec<String> {
     }
     for task in &quest.tasks {
         lines.push(format!("{} {}{}", if task.done { "✓" } else { "•" }, task.name, if task.done || task.step.is_empty() { String::new() } else { format!(": {}", task.step) }));
+    }
+    // Those the party has had to do with, and how they regard it.
+    let words: Vec<&str> = T::StandingWords.text(lang).split('|').collect();
+    for faction in world.factions.iter().filter(|f| f.met) {
+        lines.push(format!("⚑ {}: {}", faction.name, words.get((faction.standing + 3).clamp(0, 6) as usize).copied().unwrap_or("")));
+    }
+    // What is heard of things that ripen, with no hour named.
+    for threat in world.threats.iter().filter(|t| !t.rumour.is_empty()) {
+        lines.push(format!("{}: {}", T::Rumours.text(lang), threat.rumour));
     }
     lines
 }

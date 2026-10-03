@@ -176,6 +176,9 @@ pub struct Creature {
     /// The day the wares were laid out.
     #[serde(default)]
     pub shop_day: u32,
+    /// The faction it belongs to, by id; empty for none.
+    #[serde(default)]
+    pub faction: String,
     /// How haggling moved the prices today, in hundredths.
     #[serde(default)]
     pub haggle: i8,
@@ -210,6 +213,15 @@ pub struct Location {
     pub props: Vec<Prop>,
     pub creatures: Vec<Creature>,
     pub exits: Vec<Exit>,
+    /// How dangerous it is to linger here, 0 (safe) to 5.
+    #[serde(default)]
+    pub danger: u8,
+    /// The monsters of the rules that may wander in, by index.
+    #[serde(default)]
+    pub wanderers: Vec<String>,
+    /// Things that may happen here that are not fights, a few lines each, used up one by one.
+    #[serde(default)]
+    pub finds: Vec<String>,
     /// The hour and the light of the place: day, dusk, night or dark. Empty is day.
     #[serde(default)]
     pub light: String,
@@ -384,6 +396,18 @@ pub struct World {
     /// The main quest and the side tasks.
     #[serde(default)]
     pub quest: Quest,
+    /// Those whose regard for the party is kept.
+    #[serde(default)]
+    pub factions: Vec<crate::living::Faction>,
+    /// Deeds that will come back.
+    #[serde(default)]
+    pub threads: Vec<crate::living::Thread>,
+    /// What ripens while the party is busy.
+    #[serde(default)]
+    pub threats: Vec<crate::living::Threat>,
+    /// Tellings so far.
+    #[serde(default)]
+    pub turns: u32,
     /// Those who travel with the party.
     #[serde(default)]
     pub companions: Vec<Companion>,

@@ -263,6 +263,12 @@ impl World {
             }
         }
         let effects = read_effects(&draft.effects, &mut notes);
+        self.turns += 1;
+        // Threats whose time was up were put to the master with this telling.
+        let now = self.clock;
+        for threat in self.threats.iter_mut().filter(|t| now >= t.due) {
+            threat.told = true;
+        }
         self.story.say(Speaker::Player, said);
         self.story.say(Speaker::Master, &draft.narration);
         notes.extend(self.apply(&effects, None));

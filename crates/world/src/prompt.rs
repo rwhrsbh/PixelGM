@@ -8,7 +8,7 @@ use crate::story::{KEPT_LINES, Speaker};
 use std::fmt::Write;
 
 /// How the master says what a creature fights with.
-const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "monster" the index of the D&D 5e SRD monster it is or most resembles (goblin, wolf, bandit, skeleton, giant-spider, ogre, guard, …), or give "stats" of its own: {"ac": 13, "hp": 11, "speed": 30, "attacks": [{"name": "…", "bonus": 4, "damage": "1d6+2", "range": 5}], "xp": 50}. Someone who sells things — a merchant, a smith, an innkeeper, a peddler — gets "shop": a list of 6 to 15 wares, each a thing as in "give" with its "rows" picture, its "kind" and numbers ("heal", "damage", "gear", "bonus", "rarity") and a "price" in coins (a ration 2, a torch 2, a healing potion 50, a common weapon 10 to 50, armour 30 to 400, a rare thing hundreds); the game shows the shop, takes the coins and restocks it daily — never sell through narration or "give". A settled place has at least one shop. Hostile creatures come in packs: put one creature down for the pack and the game brings as many of its kind as make a fair fight for the party there is; give "count" (1 to 8) to set the number yourself — "count": 1 for one that stands alone, a boss or a lone beast. Match the danger to a first-level party unless told otherwise: a first-level hero has about ten hit points, so against one or two heroes a single hit must not average more than five (challenge 1/4 or less: giant-rat, kobold, bandit, giant-centipede — not swarm-of-insects, whose bite takes ten), and nothing hostile stands right where the party walks in."##;
+const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "monster" the index of the D&D 5e SRD monster it is or most resembles (goblin, wolf, bandit, skeleton, giant-spider, ogre, guard, …), or give "stats" of its own: {"ac": 13, "hp": 11, "speed": 30, "attacks": [{"name": "…", "bonus": 4, "damage": "1d6+2", "range": 5}], "xp": 50}. Someone who sells things — a merchant, a smith, an innkeeper, a peddler — gets "shop": a list of 6 to 15 wares, each a thing as in "give" with its "rows" picture, its "kind" and numbers ("heal", "damage", "gear", "bonus", "rarity") and a "price" in coins (a ration 2, a torch 2, a healing potion 50, a common weapon 10 to 50, armour 30 to 400, a rare thing hundreds); the game shows the shop, takes the coins and restocks it daily — never sell through narration or "give". A settled place has at least one shop. Every place has a "danger" from 0 (a town, a camp, a home: nothing ever comes) to 5 (the lair itself). Where it is above 0, the game rolls each hour for something to wander in — one of your "wanderers", or one of your "encounters" — so give both; where you set hostile creatures yourself, or give "danger": 0, it rolls nothing. A creature that belongs to a faction takes "faction": its id. Hostile creatures come in packs: put one creature down for the pack and the game brings as many of its kind as make a fair fight for the party there is; give "count" (1 to 8) to set the number yourself — "count": 1 for one that stands alone, a boss or a lone beast. Match the danger to a first-level party unless told otherwise: a first-level hero has about ten hit points, so against one or two heroes a single hit must not average more than five (challenge 1/4 or less: giant-rat, kobold, bandit, giant-centipede — not swarm-of-insects, whose bite takes ten), and nothing hostile stands right where the party walks in."##;
 
 /// How the master changes the world. Shared by drawing (prepared actions) and by play.
 const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
@@ -24,6 +24,12 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "quest", "goal": "what the players must do next", "advance": true, "done": "won|lost"} — the main quest moves: "goal" changes what the players are told, "advance" goes to the next act, "done" ends it
   {"op": "quest_new", "title": "…", "goal": "…", "acts": ["…"], "ending": "…", "failure": "…"} — a new main quest, when there is none or the last one is over
   {"op": "task", "name": "…", "step": "what to do next", "done": false} — a side task someone gave the party: new, moved on, or done
+  {"op": "faction", "id": "snake_case", "name": "…", "description": "…", "standing": 0} — a people, an order or a gang whose regard for the party is kept: new, or what is known of it changes
+  {"op": "standing", "id": "faction id", "change": -1} — a faction thinks better (+) or worse (-) of the party for what it has just done; from -3, sworn enemies, to 3, allies
+  {"op": "thread", "text": "what was done and who will come back about it"} — a note to yourself: a deed that must have consequences later
+  {"op": "thread_done", "text": "a few words of the thread"} — that thread has come back and is done with
+  {"op": "threat", "name": "…", "what": "what happens when the time is up", "rumour": "what the players hear of it, no hour named", "hours": 48} — something ripens while the party is busy; the same name again moves its hour
+  {"op": "threat_end", "name": "…"} — a threat is averted, or has happened and is done with
   {"op": "join", "id": "creature id"} — someone here joins the party as a companion: they walk with the hero and fight under the player's hand
   {"op": "dismiss", "id": "companion id"} — a companion leaves and stays here
   {"op": "time", "hours": 2} — time passes: a long talk, a search, a wait, a march (the clock also runs by itself, a minute a second)
@@ -49,6 +55,7 @@ Use only ids that exist. Inside an action that belongs to a thing, the id "self"
 SPACE. The party is somewhere on the map and can only touch, take, open, strike or speak softly with what is beside it. To deal with something farther off that can be reached, first "move" the party to a cell beside it, in the same answer, then do the rest. What cannot be reached on foot cannot be touched: say what is in the way. Only what the party carries can be used — no torch, rope or key that is not in their hands.
 VIOLENCE. An attack on a creature is never told as a hit, a wound or a death: make it hostile with "attitude" and add "fight" — the game moves to the fight and the dice decide. The same for anything that would hurt the party.
 TRAVEL. When the party goes to another place — through a way out, down a hole, carried off — add {"op": "travel", "to": "place_id"}: an id from the exits, or a new id with "name" for a place that does not exist yet, which the game will ask you to draw. A choice that leads elsewhere carries its own "travel". The map on the players' screen IS where they are. When the story takes them out of what the map shows — out into space, into a vision or a dream, under the ground, onto a ship — or the place itself becomes another (it burns down, freezes over, collapses), "travel" to a NEW id with "name" and "description", so that the new scene is drawn; never tell of surroundings the map does not show.
+A WORLD THAT ANSWERS. Nothing the party does is forgotten. When it helps or wrongs a faction or one of its people, change the "standing" in the same answer, and let those people treat the party accordingly from then on (enemies attack or refuse, allies help and sell cheap). When it does something that must come back — spares or kills someone who matters, steals, breaks an oath, leaves a job half done — note a "thread". When you are told a thread is due, bring it back in this very telling as something that happens to the party now, then "thread_done". Keep one or two "threat"s alive: enemies with plans of their own that move forward by the clock whether the party looks or not; let the players hear of them as rumours. When you are told a threat has come due, it HAS happened: tell what the party finds or hears, change the world with effects, and if it was the quest's own, end the quest "lost".
 COMPANIONS. Anyone the party meets may be won over to travel with it — talked round (ask for a Charisma check when it is not sure), hired for gold (take it with "gold"), or given as the reward of a task. When they agree, add {"op": "join", "id": …} in the same answer; the game then walks them beside the hero and puts them in fights. They need "monster" or "stats" to fight with. When they leave or are sent away, "dismiss". A companion has a will of its own: it speaks up, and it can refuse.
 THE MAIN QUEST. The acts are yours alone: never tell them to the players, lead the story through them. Every telling leaves a pull towards the goal — a clue, a rumour, someone who needs it done, an enemy who moves first — but the party is free to wander and you never refuse them. When what the act (NOW) calls for has happened, add {"op": "quest", "advance": true, "goal": "what they must do next"} in the same answer. When the last act is resolved, tell the ending and add {"op": "quest", "done": "won"} or "lost" — a quest can be lost, and a lost one is told as honestly as a won one. When someone asks the party for something on the side, add a "task"; when it is done, the same task with "done": true and its reward.
 CHOICES. Offer up to five. At least one must rest on what this very hero is or carries — a skill they are trained in, their class, a thing in their bag — and say so in its label ("as a fighter: …", "with the rope: …"). At least one must be a risk: give it a "check" effect and put the ability and the difficulty in the label ("(Dexterity, DC 14)"). Where it fits, one costs something — a thing, gold, hit points — for a sure gain. Never offer only plain, safe things.
@@ -100,6 +107,9 @@ ACTIONS. Give every prop and creature two or three "actions": things the players
 const LOCATION_SHAPE: &str = r##"{
   "id": "snake_case", "name": "…", "description": "two or three sentences the players read on arrival",
   "palette": {"g": "#rrggbb"},
+  "danger": 0,
+  "wanderers": ["srd monster indices that may wander in here while the party lingers"],
+  "encounters": ["3 or 4 things that may happen here that are not fights, two sentences each: a peddler passing, tracks, a wounded stranger, a find"],
   "light": "day, dusk, night or dark (a cave, a cellar): the hour and the light of the place",
   "weather": "clear, sun, rain, storm, snow or fog; clear indoors and underground",
   "mood": "the music of the place: calm, explore, tense, mystery, horror, sad, tavern, dungeon",
@@ -109,7 +119,7 @@ const LOCATION_SHAPE: &str = r##"{
   "new_tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
   "sprites": [{"id": "…", "rows": ["16 or 32 characters", "… as many rows"]}],
   "props": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "blocking": true, "sprite": "…", "actions": [{"label": "what the players choose", "outcome": "what happens", "effects": []}]}],
-  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "monster": "srd-index or omit", "count": 0, "shop": [], "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
+  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "faction": "", "monster": "srd-index or omit", "count": 0, "shop": [], "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
   "exits": [{"x": 0, "y": 0, "to": "neighbor_id", "label": "what the way out looks like"}],
   "neighbors": [{"id": "neighbor_id", "name": "…", "description": "one sentence: what is there"}]
 }"##;
@@ -118,7 +128,7 @@ const LOCATION_SHAPE: &str = r##"{
 const QUEST_SHAPE: &str = r##"{"title": "the name of the main quest", "goal": "one sentence the players read: what they must do first", "acts": ["3 to 5 turns of the story in order, each one sentence: what must happen for the story to move on — hidden from the players"], "ending": "how it ends if they succeed", "failure": "how it ends if they fail, and what makes them fail"}"##;
 
 pub fn new_world(request: &str, story: bool) -> String {
-    let quest = if story { format!("\n  \"quest\": {QUEST_SHAPE},") } else { String::new() };
+    let quest = if story { format!("\n  \"quest\": {QUEST_SHAPE},\n  \"factions\": [{{\"id\": \"snake_case\", \"name\": \"…\", \"description\": \"who they are and what they want\", \"standing\": 0}}, \"… three to five that matter in this world\"],") } else { String::new() };
     let wish = if request.trim().is_empty() {
         "The host left the choice to you. Pick a setting nobody would expect and make it vivid.".to_string()
     } else {
@@ -206,7 +216,35 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
             let _ = writeln!(text, "SIDE TASKS open: {}", open.join("; "));
         }
     }
+    if !world.factions.is_empty() {
+        let _ = writeln!(text, "\nFACTIONS (standing -3 enemies … 3 allies):");
+        for f in &world.factions {
+            let _ = writeln!(text, "- {} \"{}\": {}{} — {}", f.id, f.name, f.standing, if f.met { "" } else { ", not met yet" }, f.description);
+        }
+    } else {
+        let _ = writeln!(text, "\nFACTIONS: none yet. Name the two or three that matter here with \"faction\" effects.");
+    }
+    if !world.threads.is_empty() {
+        let _ = writeln!(text, "THREADS (yours alone, never told to the players as a list):");
+        for t in &world.threads {
+            let _ = writeln!(text, "- {}", t.text);
+        }
+    }
+    if let Some(thread) = world.thread_due() {
+        let _ = writeln!(text, "A THREAD IS DUE NOW — bring this back in this telling, as something that happens to the party, then \"thread_done\": {}", thread.text);
+    }
     let (day, hour, minute) = world.time();
+    for threat in &world.threats {
+        let left = threat.due.saturating_sub(world.clock);
+        if left == 0 {
+            let _ = writeln!(text, "A THREAT HAS COME DUE — \"{}\": {}. It has happened. Tell what the party sees or hears of it now, change the world, then \"threat_end\".", threat.name, threat.what);
+        } else {
+            let _ = writeln!(text, "THREAT \"{}\" (hidden; the players have heard: {}): {} — in {} h {} min.", threat.name, threat.rumour, threat.what, left / 60, left % 60);
+        }
+    }
+    if world.threats.is_empty() && !world.table.sandbox {
+        let _ = writeln!(text, "THREATS: none is alive. Start one with a \"threat\" effect: who is moving against what the party wants, and when it will be too late.");
+    }
     let _ = writeln!(text, "\nTIME: day {day}, {hour:02}:{minute:02} ({}).{}", world.daylight(), if world.is_night() { " It is night: honest folk sleep, shops are shut, and the dark is more dangerous." } else { "" });
     let _ = writeln!(text, "\nPLACE \"{}\": {}. {}", world.current, here.name, here.description);
     for prop in &here.props {

@@ -103,6 +103,41 @@ pub enum Effect {
         #[serde(default)]
         done: bool,
     },
+    /// A faction is named, or what is known of it changes.
+    Faction {
+        id: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        standing: Option<i64>,
+    },
+    /// A faction thinks better or worse of the party for what it did.
+    Standing {
+        id: String,
+        #[serde(deserialize_with = "lenient_int")]
+        change: i64,
+    },
+    /// A deed that will come back: the master's note to itself.
+    Thread { text: String },
+    /// A thread has come back and is done with.
+    ThreadDone {
+        #[serde(default)]
+        text: String,
+    },
+    /// Something that ripens while the party is busy.
+    Threat {
+        name: String,
+        #[serde(default)]
+        what: String,
+        #[serde(default)]
+        rumour: String,
+        #[serde(default)]
+        hours: Value,
+    },
+    /// A threat is averted, or has happened and is done with.
+    ThreatEnd { name: String },
     /// Someone here joins the party as a companion.
     Join { id: String },
     /// A companion leaves the party and stays where the party is.
@@ -153,6 +188,9 @@ pub enum Effect {
         /// For a creature that keeps a shop: what it sells.
         #[serde(default)]
         shop: Vec<ThingDraft>,
+        /// For a creature: the faction it belongs to.
+        #[serde(default)]
+        faction: String,
         /// For a prop that holds things: what is in it, how hard its lock is, its key.
         #[serde(default)]
         contents: Vec<ThingDraft>,
@@ -544,6 +582,16 @@ impl ThingDraft {
     }
 }
 
+/// A change to the living world, carried out once the effects have been read.
+enum Living {
+    Faction(String, String, String, Option<i64>),
+    Standing(String, i64),
+    Thread(String),
+    ThreadDone(String),
+    Threat(String, String, String, f64),
+    ThreatEnd(String),
+}
+
 impl World {
     /// Holds a thing the master hands over to what the party's level allows: a bonus of one
     /// up to level 4, two up to 10, three after; where the caps are lifted, nothing.
@@ -710,6 +758,7 @@ impl World {
                 _ => 3,
             }
         };
+        let mut living: Vec<Living> = Vec::new();
         let mut joining: Vec<String> = Vec::new();
         let mut leaving: Vec<String> = Vec::new();
         let mut until: Option<String> = None;
@@ -882,7 +931,7 @@ impl World {
                     notes.extend(read_notes);
                     location.secrets.push(crate::model::Secret { x: sx, y: sy, dc: (*dc).clamp(5, 30) as i32, kind: kind.trim().to_lowercase(), note: note.trim().to_string(), effects, found: false });
                 }
-                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, count, shop, contents, lock, key } => {
+                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, count, shop, faction, contents, lock, key } => {
                     let mut id = slug(id);
                     if id.is_empty() {
                         id = "thing".to_string();
@@ -903,7 +952,7 @@ impl World {
                     if kind.trim().eq_ignore_ascii_case("creature") {
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
                         if let Some((cx, cy)) = nearest(wanted, free) {
-                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false });
+                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(faction) });
                         }
                     } else {
                         let chest = (!contents.is_empty() || *lock > 0 || !key.trim().is_empty()).then(|| crate::model::Chest { items: contents.iter().filter_map(ThingDraft::item).collect(), lock: (*lock).clamp(0, 30) as i32, key: key.trim().to_string(), open: false });
@@ -934,6 +983,12 @@ impl World {
                         _ => location.light = light,
                     }
                 }
+                Effect::Faction { id, name, description, standing } => living.push(Living::Faction(id.clone(), name.clone(), description.clone(), *standing)),
+                Effect::Standing { id, change } => living.push(Living::Standing(id.clone(), (*change).clamp(-3, 3))),
+                Effect::Thread { text } => living.push(Living::Thread(text.trim().to_string())),
+                Effect::ThreadDone { text } => living.push(Living::ThreadDone(text.trim().to_lowercase())),
+                Effect::Threat { name, what, rumour, hours } => living.push(Living::Threat(name.trim().to_string(), what.trim().to_string(), rumour.trim().to_string(), hours.as_f64().unwrap_or(24.0).clamp(0.5, 24.0 * 30.0))),
+                Effect::ThreatEnd { name } => living.push(Living::ThreatEnd(name.trim().to_lowercase())),
                 Effect::Join { id } => joining.push(resolve(id)),
                 Effect::Dismiss { id } => leaving.push(resolve(id)),
                 Effect::Time { hours } => passed += (hours.as_f64().unwrap_or(0.0).clamp(0.0, 240.0) * 60.0) as u32,
@@ -1041,6 +1096,48 @@ impl World {
             }
         }
         self.moves.extend(moved);
+        for change in living {
+            match change {
+                Living::Faction(id, name, description, standing) => self.set_faction(&id, &name, &description, standing),
+                Living::Standing(id, by) => {
+                    if !self.change_standing(&id, by) {
+                        notes.push(format!("standing: there is no faction '{id}'"));
+                    }
+                }
+                Living::Thread(text) => {
+                    if !text.is_empty() && self.threads.len() < 12 && !self.threads.iter().any(|t| t.text.eq_ignore_ascii_case(&text)) {
+                        self.threads.push(crate::living::Thread { text, since: self.turns });
+                    }
+                }
+                Living::ThreadDone(text) => {
+                    // The one named, or the oldest: the one the master was told to bring back.
+                    let at = self.threads.iter().position(|t| !text.is_empty() && t.text.to_lowercase().contains(&text)).unwrap_or(0);
+                    if at < self.threads.len() {
+                        self.threads.remove(at);
+                    }
+                }
+                Living::Threat(name, what, rumour, hours) => {
+                    if !name.is_empty() {
+                        let due = self.clock.saturating_add((hours * 60.0) as u32);
+                        let room = self.threats.len() < 6;
+                        match self.threats.iter_mut().find(|t| t.name.eq_ignore_ascii_case(&name)) {
+                            Some(threat) => {
+                                threat.due = due;
+                                if !what.is_empty() {
+                                    threat.what = what;
+                                }
+                                if !rumour.is_empty() {
+                                    threat.rumour = rumour;
+                                }
+                            }
+                            None if room => self.threats.push(crate::living::Threat { name, what, rumour, due, told: false }),
+                            None => {}
+                        }
+                    }
+                }
+                Living::ThreatEnd(name) => self.threats.retain(|t| !t.name.to_lowercase().contains(&name)),
+            }
+        }
         let owner = self.owners.get(acting).cloned().unwrap_or_default();
         for id in joining {
             if let Err(why) = self.join(&id, &owner) {

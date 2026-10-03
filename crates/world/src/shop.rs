@@ -64,10 +64,11 @@ impl World {
         (World::worth(item) as i64 * (100 + keeper.haggle as i64 + self.standing_markup(keeper)) / 100).max(1) as u32
     }
 
-    /// How the keeper's regard for the party moves prices, in hundredths: none until the
+    /// How the keeper's regard for the party moves prices, in hundredths.
     /// world keeps standings.
-    fn standing_markup(&self, _keeper: &Creature) -> i64 {
-        0
+    fn standing_markup(&self, keeper: &Creature) -> i64 {
+        // A fifth off for allies, a fifth on for enemies, by thirds between.
+        -(self.standing_of(keeper) as i64) * 20 / 3
     }
 
     /// What a keeper gives for a thing of the party's: half its worth.

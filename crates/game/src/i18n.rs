@@ -256,6 +256,10 @@ texts! {
     FightItems: "Предметы", "Items";
     SheetSize: "Размер", "Size";
     GoldCount: "Золото:", "Gold:";
+    SomethingComes: "Кто-то приближается…", "Something is coming…";
+    RestBroken: "Отдых прерван: на лагерь напали", "The rest is broken: the camp is attacked";
+    Rumours: "Слухи", "Rumours";
+    StandingWords: "враги|недруги|холодны|равнодушны|приветливы|друзья|союзники", "enemies|hostile|cold|indifferent|warm|friends|allies";
     BagBetter: "к попаданию и урону / к защите", "to hit and damage / to armour";
     Price: "Цена:", "Price:";
     Trade: "Торговать", "Trade";
