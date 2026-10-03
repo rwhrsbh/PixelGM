@@ -23,7 +23,7 @@ const FADE_PER_SECOND: f32 = 0.6;
 /// Pieces of a mood to have on disk before fetching for other moods.
 const ENOUGH: usize = 10;
 /// How much music may be kept, in bytes.
-const KEEP: u64 = 4 * 1024 * 1024 * 1024;
+const KEEP: u64 = 1536 * 1024 * 1024;
 /// After a failed fetch, how long to wait before trying the network again.
 const OFFLINE_SECONDS: f32 = 300.0;
 
@@ -233,7 +233,7 @@ fn wanted(screen: Screen, phase: Option<&Phase>, game: Option<&Game>) -> Mood {
 }
 
 /// Fetches pieces in the background: of the mood wanted first, then of the others.
-fn fetch(time: Res<Time>, settings: Res<Settings>, screen: Res<State<Screen>>, phase: Option<Res<Phase>>, game: Option<Res<Game>>, mut library: ResMut<Library>) {
+fn fetch(time: Res<Time>, settings: Res<Settings>, muted: Res<Muted>, screen: Res<State<Screen>>, phase: Option<Res<Phase>>, game: Option<Res<Game>>, mut library: ResMut<Library>) {
     // What came in.
     let results: Vec<Fetched> = library.fetched.lock().map(|r| r.try_iter().collect()).unwrap_or_default();
     for result in results {
@@ -253,7 +253,8 @@ fn fetch(time: Res<Time>, settings: Res<Settings>, screen: Res<State<Screen>>, p
         }
     }
     library.offline_for = (library.offline_for - time.delta_secs()).max(0.0);
-    if !settings.online_music || library.asked.is_some() || library.offline_for > 0.0 {
+    // Nothing is fetched for a game that makes no sound (a test), or when turned off.
+    if muted.0 || !settings.online_music || library.asked.is_some() || library.offline_for > 0.0 {
         return;
     }
     let now = wanted(*screen.get(), phase.as_deref(), game.as_deref());
