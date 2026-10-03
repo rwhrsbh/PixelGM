@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-msvc]
+# The LLVM linker links the game several times faster than the default one.
+linker = "rust-lld.exe"
