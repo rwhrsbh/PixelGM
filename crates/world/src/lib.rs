@@ -16,7 +16,7 @@ pub mod walk;
 
 pub use build::{LocationDraft, WorldDraft, build_location, build_world, extract_json};
 pub use model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, Palette, Player, Prop, Sprite, Stub, TILE, TileDef, World};
-pub use model::{FeatOffer, TableRules, Token};
+pub use model::{Cue, FeatOffer, Mark, TableRules, Token};
 pub use party::{Checked, FightIntent, FightSummary, PendingCheck, Stats};
 pub use story::{Action, Effect, Item, Line, Speaker, Story};
 pub use party::{Stunt, StuntDraft};

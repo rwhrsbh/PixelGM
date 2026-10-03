@@ -77,6 +77,22 @@ pub fn button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label
 #[derive(Component, Clone, Copy)]
 pub struct EnterPresses;
 
+/// A button whose words wrap onto more lines rather than being cut off: for long choices.
+pub fn wrap_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: String, extra: impl Bundle) {
+    let look = ButtonLook::Idle;
+    parent.spawn((
+        Button,
+        PixelButton { enabled: true, look },
+        extra,
+        AutoDirectionalNavigation::default(),
+        Node { height: Val::Auto, min_height: px(BUTTON_HEIGHT), width: percent(100), padding: UiRect::axes(px(8), px(3)), ..button_node(JustifyContent::FlexStart) },
+        children![
+            (backing(art.button(look), BUTTON_BORDER), ButtonFace),
+            (Node { width: percent(100), ..default() }, Text::new(label), fonts.body(), TextColor(label_color(look)), ButtonLabel),
+        ],
+    ));
+}
+
 pub fn text_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: String, extra: impl Bundle) {
     let look = ButtonLook::Idle;
     parent.spawn((

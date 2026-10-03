@@ -141,7 +141,9 @@ fn actors(time: Res<Time>, mut fx: ResMut<Fx>, mut actors: Query<(&Actor, &mut T
         // From where it was shown towards where it now stands; a far jump is not walked.
         let before = fx.shown.get(&actor.id).copied().unwrap_or(actor.home);
         let way = actor.home.truncate() - before.truncate();
-        let walked = if way.length() > 160.0 || way.length() < 0.5 { actor.home.truncate() } else { before.truncate() + way.clamp_length_max(GLIDE_SPEED * dt) };
+        // A long way is walked faster, so that a creature crossing the place arrives in a couple of seconds.
+        let speed = GLIDE_SPEED.max(way.length() * 1.2);
+        let walked = if way.length() > 1100.0 || way.length() < 0.5 { actor.home.truncate() } else { before.truncate() + way.clamp_length_max(speed * dt) };
         let walking = (walked - actor.home.truncate()).length() > 0.5;
         fx.shown.insert(actor.id.clone(), walked.extend(actor.home.z));
         seen.push(actor.id.clone());

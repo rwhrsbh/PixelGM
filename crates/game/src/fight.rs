@@ -355,6 +355,8 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
             describe(&event, fight, *lang)
         });
         if let Some(line) = line {
+            // Every line of a fight goes to the log file too, so a lost fight can be read back.
+            info!("fight: {line}");
             view.lines.push(line);
             let extra = view.lines.len().saturating_sub(LOG_LINES);
             view.lines.drain(..extra);

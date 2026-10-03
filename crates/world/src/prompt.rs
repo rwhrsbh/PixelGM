@@ -18,6 +18,8 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "describe", "id": "…", "description": "…"} — a thing looks different from now on
   {"op": "light", "light": "day|dusk|night|dark"} — time passes here: the hour and the light change
   {"op": "weather", "weather": "clear|sun|rain|storm|snow|fog"} — the sky over this place changes
+  {"op": "mark", "x": 0, "y": 0, "kind": "blood|dung|puddle|scorch|ash|slime|vomit|wine|paint|rubble|coins|bones", "color": "#rrggbb"} — something is left on the ground of a cell; without x and y it is where the party stands; "id" instead puts it under that thing; "color" is optional
+  {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
   {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
   {"op": "move", "id": "…", "x": 0, "y": 0}
   {"op": "tile", "x": 0, "y": 0, "tile": "tile_id"} — one cell of ground changes (a door opens, a bridge falls)
@@ -31,7 +33,8 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "deed", "hero": "name"} — that character just did something out of the ordinary, clever or brave beyond what the moment asked; the game keeps count
   {"op": "revive", "hero": "name"} — the story brings a dead character back; only when it has truly earned it
 Never roll dice yourself and never decide an uncertain outcome: that is what "check" is for. Nothing may follow a check in the same list except what should happen whichever way it goes.
-Use only ids that exist. Inside an action that belongs to a thing, the id "self" means that thing."##;
+Use only ids that exist. Inside an action that belongs to a thing, the id "self" means that thing.
+THE PICTURE MUST MATCH THE STORY. The players watch a map, not only words. Everything your narration says that one could see must come with the effect that shows it, in the same answer: someone crouches, jumps, strikes, falls or dances — "animate"; a creature comes closer, backs off, circles — "move" it to its new cell (several cells if it runs); it leaves — "remove"; something appears — "spawn"; blood, dung, ash, a spill or a scorch is left — "mark"; a door opens or a wall falls — "tile"; creatures attack — "attitude" hostile and "fight". Never narrate a change on the map without its effect."##;
 
 /// The rules that never change. The answer format is plain JSON so that every model in the
 /// fallback chain can produce it.
@@ -215,7 +218,7 @@ const TURN_SHAPE: &str = r##"{
 }"##;
 
 /// With several players at the table one of them can be told something alone.
-const WHISPERS: &str = r##"Several players sit at this table. When one character alone would notice, know or be told something, add "whispers": [{"to": "that character's name", "text": "…"}] to the object: only that player reads it. Use it rarely; most turns need none."##;
+const WHISPERS: &str = r##"Several players sit at this table, each playing one character. Tell what a character does by that character's name, in the third person — "Bora reaches for it, slips and falls in the muck" — so that every player knows who did what; keep "you" for the whole party together. When one character alone would notice, know or be told something, add "whispers": [{"to": "that character's name", "text": "…"}] to the object: only that player reads it. Use it rarely; most turns need none."##;
 
 fn whispers_note(world: &World) -> &'static str {
     let players = (0..world.party.len()).filter(|i| world.takes_part(*i)).count();
@@ -276,7 +279,7 @@ pub fn stunt(world: &World, said: &str) -> String {
         }
     }
     format!(
-        "{text}\nOn their turn the acting character tries this: «{}»\n\nThe rules have no button for it, so you judge it. Name the check it takes and how hard it is, and say what a success is worth: harm to one of those fighting (\"target\" is its id), or healing, in dice suited to the character's level — or nothing but an advantage in the story. Never roll yourself. Write what it looks like, then one sentence for success and one for failure.\n\nAnswer with this JSON object:\n{{\"narration\": \"the attempt\", \"ability\": \"str|dex|con|int|wis|cha\", \"skill\": \"athletics or null\", \"dc\": 13, \"target\": \"id or empty\", \"damage\": \"1d8 or empty\", \"heal\": \"\", \"success\": \"…\", \"failure\": \"…\"}}",
+        "{text}\nOn their turn the acting character tries this: «{}»\n\nThe rules have no button for it, so you judge it. Name the check it takes and how hard it is, and say what a success is worth: harm to one of those fighting (\"target\" is its id), or healing, in dice suited to the character's level — or nothing but an advantage in the story. Never roll yourself. Write what it looks like, then one sentence for success and one for failure. Whether anyone falls is decided by the dice and the hit points, after your words are read: never write that a creature dies, is destroyed or falls, nor that the character is struck down — describe the blow landing or missing, and the game says who drops.\n\nAnswer with this JSON object:\n{{\"narration\": \"the attempt\", \"ability\": \"str|dex|con|int|wis|cha\", \"skill\": \"athletics or null\", \"dc\": 13, \"target\": \"id or empty\", \"damage\": \"1d8 or empty\", \"heal\": \"\", \"success\": \"…\", \"failure\": \"…\"}}",
         said.trim()
     )
 }

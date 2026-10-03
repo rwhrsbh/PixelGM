@@ -473,7 +473,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     let legend: BTreeMap<char, String> = symbol_of.iter().map(|(tile, symbol)| (*symbol, tile.to_string())).collect();
 
     let name = if draft.name.trim().is_empty() { id.clone() } else { draft.name.trim().to_string() };
-    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase() };
+    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), marks: Vec::new() };
     Ok(Built { id, location, stubs, notes })
 }
 
@@ -507,6 +507,8 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
     let fallback = |text: &str, other: &str| if text.trim().is_empty() { other.to_string() } else { text.trim().to_string() };
     let world = World {
         version: SAVE_VERSION,
+        cues: Vec::new(),
+        cue_seq: 0,
         title: fallback(&draft.title, &built.location.name),
         summary: draft.summary.trim().to_string(),
         tone: draft.tone.trim().to_string(),

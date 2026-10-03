@@ -184,10 +184,17 @@ pub fn world(request: &str) -> String {
 pub fn turn(said: &str) -> String {
     json!({
         "narration": format!("You said: {said}. The hollow listens, and something in it answers."),
-        "effects": [{ "op": "fact", "text": "The party made itself heard." }],
+        "effects": [
+            { "op": "fact", "text": "The party made itself heard." },
+            { "op": "animate", "id": "party", "motion": "crouch" },
+            { "op": "mark", "kind": "dung" },
+            { "op": "move", "id": "cat", "x": 13, "y": 9 },
+            { "op": "animate", "id": "cat", "motion": "jump" }
+        ],
         "options": [
             { "label": "Search the ground", "outcome": "Under the leaves you find a coin, worn smooth.", "effects": [{ "op": "give", "name": "Old coin", "description": "Worn smooth." }] },
-            { "label": "Wait and listen", "outcome": "Nothing comes. The trees creak.", "effects": [] }
+            { "label": "Wait and listen", "outcome": "Nothing comes. The trees creak.", "effects": [] },
+            { "label": "Take a long careful look around the whole clearing, behind every tree and under every stone, before deciding anything at all", "outcome": "Nothing hides here but the wind.", "effects": [] }
         ]
     })
     .to_string()

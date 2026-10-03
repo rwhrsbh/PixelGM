@@ -664,6 +664,84 @@ fn ground_shadow(picture: &mut Pixels, cx: i32, cy: i32, rx: f32, ry: f32, stren
     }
 }
 
+/// The colour of what is left on the ground, by the master's colour or by its kind, and
+/// whether it lies in a heap rather than a splash.
+fn mark_look(mark: &world::Mark) -> (Rgba, bool) {
+    let k = mark.kind.as_str();
+    let has = |words: &[&str]| words.iter().any(|w| k.contains(w));
+    let heap = has(&["dung", "poop", "feces", "shit", "manure", "говн", "дерьм", "навоз", "кал", "куч", "rubble", "щеб", "обломк", "coins", "монет", "bones", "кост", "heap", "pile"]);
+    let by_kind = if has(&["blood", "кров"]) {
+        [128, 18, 22, 255]
+    } else if has(&["dung", "poop", "feces", "shit", "manure", "говн", "дерьм", "навоз", "кал"]) {
+        [96, 62, 30, 255]
+    } else if has(&["scorch", "burn", "ash", "soot", "гар", "пеп", "саж", "ожог"]) {
+        [34, 28, 28, 255]
+    } else if has(&["slime", "ichor", "слиз", "гно"]) {
+        [96, 170, 60, 255]
+    } else if has(&["vomit", "блев", "рвот"]) {
+        [170, 160, 70, 255]
+    } else if has(&["urine", "piss", "моч", "ссан"]) {
+        [214, 196, 70, 255]
+    } else if has(&["wine", "вин"]) {
+        [110, 24, 60, 255]
+    } else if has(&["water", "puddle", "луж", "вод"]) {
+        [70, 110, 160, 255]
+    } else if has(&["coins", "gold", "монет", "золот"]) {
+        [222, 186, 82, 255]
+    } else if has(&["bones", "кост"]) {
+        [226, 220, 196, 255]
+    } else if has(&["rubble", "щеб", "обломк", "stone", "камн"]) {
+        [130, 128, 134, 255]
+    } else {
+        [60, 40, 40, 255]
+    };
+    let given = mark.color.trim().trim_start_matches('#');
+    let color = if given.len() == 6 {
+        u32::from_str_radix(given, 16).map(|v| [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]).unwrap_or(by_kind)
+    } else {
+        by_kind
+    };
+    (color, heap)
+}
+
+/// Leaves a mark on the ground of its cell: a splash with drops around it, or a small heap
+/// with its own light and shade.
+fn leave_mark(picture: &mut Pixels, mark: &world::Mark) {
+    let (color, heap) = mark_look(mark);
+    let seed = (mark.x * 31 + mark.y * 17) as i32;
+    let (cx, cy) = (mark.x as i32 * CELL + CELL / 2, mark.y as i32 * CELL + CELL / 2 - 6);
+    if heap {
+        // A heap: rounded, lit from the upper left, with a dark outline and a soft shadow.
+        ground_shadow(picture, cx + 2, cy + 6, 10.0, 4.0, 0.4);
+        for (dx, dy, r) in [(0, 0, 8.0f32), (-4, -3, 5.5), (4, -2, 5.0), (0, -7, 4.0)] {
+            for y in -9..=9 {
+                for x in -9..=9 {
+                    let d = ((x as f32).powi(2) + (y as f32 * 1.3).powi(2)).sqrt();
+                    if d <= r {
+                        let lit = -(x as f32) * 0.6 - y as f32 * 0.8;
+                        let c = if d > r - 1.0 && lit < 0.0 { shade(color, 0.55) } else if lit > r * 0.5 { mix(color, [255, 255, 255, 255], 0.25) } else if lit < -r * 0.4 { shade(color, 0.75) } else { color };
+                        picture.set(cx + dx + x, cy + dy + y, c);
+                    }
+                }
+            }
+        }
+    } else {
+        // A splash: a ragged blot and a few drops around it, darker at the rim.
+        for y in -13..=13 {
+            for x in -14..=14 {
+                let edge = 9.0 + cloud(cx + x + seed, cy + y, 4, 140) * 5.0;
+                let d = ((x as f32).powi(2) + (y as f32 * 1.4).powi(2)).sqrt();
+                let drop = hash(cx + x, cy + y, 141 + seed as u32) % 61 == 0 && d < 15.0;
+                if d <= edge || drop {
+                    let under = picture.get(cx + x, cy + y);
+                    let c = if d > edge - 1.5 { shade(color, 0.8) } else { color };
+                    picture.set(cx + x, cy + y, mix(under, c, 0.82));
+                }
+            }
+        }
+    }
+}
+
 /// Something that stands on the ground and is drawn in its own right, so that whoever walks
 /// behind it is hidden by it.
 pub struct Standing {
@@ -925,6 +1003,9 @@ pub fn paint(location: &Location, world: &World) -> Scene {
     for picture in &mut ground {
         for (x, y, rx, ry, strength) in &shadows {
             ground_shadow(picture, *x, *y, *rx, *ry, *strength);
+        }
+        for mark in &location.marks {
+            leave_mark(picture, mark);
         }
     }
     let water = (0..MAP_H).flat_map(|y| (0..MAP_W).map(move |x| (x, y))).filter(|(x, y)| painter.cells.at(*x as i32, *y as i32) == Ground::Water).collect();

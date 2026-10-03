@@ -211,6 +211,11 @@ texts! {
     GradeVivid: "сочная", "vivid";
     GradeDream: "сон", "dream";
     GradeCrt: "кинескоп", "CRT";
+    HudFallen: "пал", "fallen";
+    HudAway: "нет", "away";
+    Fold: "Свернуть", "Fold";
+    Unfold: "Развернуть", "Unfold";
+    FoldedHint: "Рассказ свёрнут (H)", "The telling is folded (H)";
     TabLook: "Внешность", "Appearance";
     TabStats: "Способности", "Abilities";
     LookBuild: "Сложение", "Build";

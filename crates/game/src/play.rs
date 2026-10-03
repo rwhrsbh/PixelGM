@@ -175,11 +175,11 @@ struct Background {
 struct InLocation;
 
 #[derive(Component)]
-struct Hero;
+pub struct Hero;
 
 /// Another player's token.
 #[derive(Component)]
-struct Fellow(String);
+pub struct Fellow(pub String);
 
 #[derive(Component)]
 struct Veil;
@@ -459,6 +459,7 @@ fn scene_key(world: &World) -> u64 {
     here.map.hash(&mut hasher);
     here.legend.hash(&mut hasher);
     here.light.hash(&mut hasher);
+    here.marks.hash(&mut hasher);
     for prop in &here.props {
         (&prop.id, prop.x, prop.y, &prop.sprite, &prop.name).hash(&mut hasher);
     }
@@ -1398,6 +1399,8 @@ enum Sheet {
     Writing { table: bool },
     Asking(String),
     Reading(Turn),
+    /// The telling folded away to a strip, so the map can be seen.
+    Folded,
     Refused(String),
     Journal { carried: String, lines: Vec<(Speaker, String)> },
     /// What is being rolled, in words.
@@ -1453,6 +1456,34 @@ struct Extra {
     offer: Vec<String>,
     /// The class this player's hero takes its next levels in; empty with no hero.
     advancing: String,
+    folded: bool,
+}
+
+/// Whether the telling being read is folded away.
+#[derive(Resource, Default)]
+pub struct Folded(pub bool);
+
+/// A button that folds the telling away, or opens it again.
+#[derive(Component, Clone, Copy)]
+struct Fold(bool);
+
+fn on_fold(used: On<Activate>, buttons: Query<&Fold>, mut folded: ResMut<Folded>) {
+    if let Ok(fold) = buttons.get(used.entity) {
+        folded.0 = fold.0;
+    }
+}
+
+/// A new telling opens unfolded; H folds and unfolds it.
+fn fold_keys(keyboard: Res<ButtonInput<KeyCode>>, phase: Res<Phase>, mut folded: ResMut<Folded>) {
+    if !matches!(*phase, Phase::Reading { .. }) {
+        if folded.0 {
+            folded.0 = false;
+        }
+        return;
+    }
+    if keyboard.just_pressed(KeyCode::KeyH) {
+        folded.0 = !folded.0;
+    }
 }
 
 fn others_at_table(world: &World, me: &str) -> Vec<String> {
@@ -1506,7 +1537,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
         }
         Phase::Writing { .. } => Sheet::Writing { table: extra.seat != SeatState::Alone },
         Phase::Asking { said, .. } => Sheet::Asking(said.clone()),
-        Phase::Reading { turn } => Sheet::Reading(turn.clone()),
+        Phase::Reading { turn } => if extra.folded { Sheet::Folded } else { Sheet::Reading(turn.clone()) },
         Phase::Refused { trouble, .. } => Sheet::Refused(trouble_text(trouble, now, lang)),
         Phase::Journal => {
             let carried = world.story.inventory.iter().map(|i| if i.count > 1 { format!("{} ×{}", i.name, i.count) } else { i.name.clone() }).collect::<Vec<_>>().join(", ");
@@ -1547,6 +1578,7 @@ fn overlay(
     table: Res<Table>,
     panel: Res<Panel>,
     settings: Res<Settings>,
+    folded: Res<Folded>,
     mut translator: ResMut<Translator>,
     mut shown: Local<Sheet>,
     old: Query<Entity, With<Overlay>>,
@@ -1564,6 +1596,7 @@ fn overlay(
             .and_then(|hero| rules::srd().class(hero.advancing()))
             .map(|class| tr(*lang == Lang::Ru, &class.name).to_string())
             .unwrap_or_default(),
+        folded: folded.0,
     };
     if *phase == Phase::Master {
         let others = others_at_table(&game.world, &me);
@@ -1598,7 +1631,7 @@ fn overlay(
     let faded = TextColor(color(FADED));
     // Sheets about the story sit at the bottom, where the eye rests while walking; the rest
     // take the middle of the screen.
-    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Rolling(_) | Sheet::Judging(_) | Sheet::Master(_));
+    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Folded | Sheet::Rolling(_) | Sheet::Judging(_) | Sheet::Master(_));
     let full = Node {
         position_type: PositionType::Absolute,
         left: px(0),
@@ -1748,7 +1781,7 @@ fn overlay(
                 sheet.spawn((Text::new(name.clone()), fonts.title(1), ink));
                 sheet.spawn((Text::new(description.clone()), fonts.body(), ink));
                 for (n, label) in actions.iter().enumerate() {
-                    text_button(sheet, &art, &fonts, label.clone(), PlayAction::Do(n));
+                    crate::widgets::wrap_button(sheet, &art, &fonts, label.clone(), PlayAction::Do(n));
                 }
                 sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
                     button(line, &art, &fonts, T::OwnAction, true, PlayAction::Own);
@@ -1792,13 +1825,22 @@ fn overlay(
                     stack.spawn((cell(), Text::default(), Typed(turn.narration.clone()), fonts.body(), ink));
                 });
                 for (n, option) in turn.options.iter().enumerate() {
-                    text_button(sheet, &art, &fonts, option.label.clone(), PlayAction::Choose(n));
+                    crate::widgets::wrap_button(sheet, &art, &fonts, option.label.clone(), PlayAction::Choose(n));
                 }
                 sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
                     if !turn.options.is_empty() {
                         button(line, &art, &fonts, T::OwnAction, true, PlayAction::Own);
                     }
                     button(line, &art, &fonts, T::Onward, true, (PlayAction::Close, EnterPresses));
+                    line.spawn(Node { flex_grow: 1.0, ..default() });
+                    button(line, &art, &fonts, T::Fold, true, Fold(true));
+                });
+            }
+            Sheet::Folded => {
+                sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                    line.spawn((Text::new(T::FoldedHint.text(*lang)), fonts.body(), faded));
+                    line.spawn(Node { flex_grow: 1.0, ..default() });
+                    button(line, &art, &fonts, T::Unfold, true, (Fold(false), EnterPresses));
                 });
             }
             Sheet::Refused(why) => {
@@ -2307,7 +2349,14 @@ fn seated(world: &World) -> Option<&str> {
 /// Applies a turn and tells the table; whispers go only to those they are for. Gives the
 /// telling back when there was something to tell.
 fn carry_out(desk: &mut Desk, said: &str, draft: &TurnDraft) -> Option<Turn> {
+    // What the master said and did, for the log file: the effects tell whether the picture
+    // could follow the story.
+    let ops: Vec<String> = draft.effects.iter().map(|e| e.get("op").and_then(|o| o.as_str()).unwrap_or("?").to_string()).collect();
+    info!("telling: {} | effects: [{}]", draft.narration.chars().take(160).collect::<String>().replace('\n', " "), ops.join(", "));
     let (turn, notes) = desk.game.world.take_turn(said, draft);
+    for note in &notes {
+        info!("telling note: {note}");
+    }
     let told_turn = if turn.narration.is_empty() && turn.options.is_empty() {
         for note in notes {
             info!("turn repaired: {note}");
@@ -2628,6 +2677,8 @@ impl Plugin for PlayPlugin {
             .init_resource::<Toast>()
             .init_resource::<HeroPose>()
             .init_resource::<SceneCache>()
+            .init_resource::<Folded>()
+            .add_observer(on_fold)
             .init_resource::<Dolls>()
             .init_resource::<Background>()
             .init_resource::<Panel>()
@@ -2635,7 +2686,7 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, fold_keys, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_observer(on_activate)
             .add_observer(on_master_activate);

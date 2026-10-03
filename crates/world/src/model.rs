@@ -157,6 +157,31 @@ pub struct Location {
     /// The sky over the place: clear, sun, rain, storm, snow or fog. Empty is clear.
     #[serde(default)]
     pub weather: String,
+    /// What has been left on the ground.
+    #[serde(default)]
+    pub marks: Vec<Mark>,
+}
+
+/// Something left on the ground of a cell.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Hash)]
+pub struct Mark {
+    pub x: usize,
+    pub y: usize,
+    /// What it is, in the master's words: blood, scorch, puddle, dung, ash…
+    pub kind: String,
+    /// A colour the master gave, as #rrggbb; empty to take it from the kind.
+    #[serde(default)]
+    pub color: String,
+}
+
+/// A movement someone makes, for every player to see once.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct Cue {
+    pub seq: u64,
+    pub place: String,
+    /// A creature or prop id, a hero's name, or "party".
+    pub id: String,
+    pub motion: String,
 }
 
 impl Location {
@@ -269,6 +294,11 @@ pub struct World {
     /// The place the fight in progress is in.
     #[serde(default)]
     pub fight_place: String,
+    /// Movements to be shown, newest last, numbered so that each is shown once.
+    #[serde(default)]
+    pub cues: Vec<Cue>,
+    #[serde(default)]
+    pub cue_seq: u64,
     /// The place the check that is waiting was called in.
     #[serde(default)]
     pub pending_place: String,

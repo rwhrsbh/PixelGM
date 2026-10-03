@@ -19,6 +19,10 @@ pub(crate) fn lenient_text<'de, D: Deserializer<'de>>(d: D) -> Result<String, D:
     })
 }
 
+fn nowhere() -> i64 {
+    -1
+}
+
 pub(crate) fn lenient_int<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     Ok(match Value::deserialize(d)? {
         Value::Number(n) => n.as_f64().map_or(0, |f| f.round() as i64),
@@ -100,6 +104,26 @@ pub enum Effect {
     Light { light: String },
     /// The sky changes here: clear, sun, rain, storm, snow or fog.
     Weather { weather: String },
+    /// Something is left on the ground of a cell: blood, a stain, a scorch, a puddle, a heap.
+    /// With no cell it is where the party stands; with an id, under that thing.
+    Mark {
+        #[serde(default)]
+        id: String,
+        #[serde(default = "nowhere", deserialize_with = "lenient_int")]
+        x: i64,
+        #[serde(default = "nowhere", deserialize_with = "lenient_int")]
+        y: i64,
+        #[serde(default)]
+        kind: String,
+        #[serde(default)]
+        color: String,
+    },
+    /// Someone moves their body: jumps, crouches, strikes, falls, dances. Shown to everyone.
+    Animate {
+        #[serde(default)]
+        id: String,
+        motion: String,
+    },
     /// The outcome is uncertain: the party rolls, and one of two prepared branches follows.
     Check {
         ability: String,
@@ -159,7 +183,7 @@ pub struct ActionDraft {
 }
 
 const MAX_ACTIONS: usize = 4;
-const MAX_LABEL: usize = 48;
+const MAX_LABEL: usize = 140;
 
 /// Reads effects one by one, so a single malformed effect does not cost the rest.
 pub fn read_effects(raw: &[Value], notes: &mut Vec<String>) -> Vec<Effect> {
@@ -332,6 +356,11 @@ impl World {
         let mut notes = Vec::new();
         let here = self.current.clone();
         let resolve = |id: &str| if id == "self" { me.unwrap_or("self").to_string() } else { slug(id) };
+        // Where the party stands, for what is left on the ground with no cell given.
+        let party_cell = {
+            let (x, y) = self.player.cell();
+            clamp_cell(x as i64, y as i64)
+        };
         for (n, effect) in effects.iter().enumerate() {
             // Effects on the party itself come first: they need the whole world, not just
             // the place.
@@ -482,6 +511,27 @@ impl World {
                 }
                 Effect::Fact { text } => self.story.remember(text),
                 Effect::Light { light } => location.light = light.trim().to_lowercase(),
+                Effect::Mark { id, x, y, kind, color } => {
+                    let id = resolve(id);
+                    let under = location.props.iter().find(|p| p.id == id).map(|p| (p.x, p.y)).or_else(|| location.creatures.iter().find(|c| c.id == id).map(|c| (c.x, c.y)));
+                    let (cx, cy) = match under {
+                        Some(cell) => cell,
+                        None if *x >= 0 && *y >= 0 => clamp_cell(*x, *y),
+                        None => party_cell,
+                    };
+                    location.marks.retain(|m| (m.x, m.y) != (cx, cy));
+                    location.marks.push(crate::model::Mark { x: cx, y: cy, kind: kind.trim().to_lowercase(), color: color.trim().to_string() });
+                    // A place keeps its newest marks; the oldest wear away.
+                    let extra = location.marks.len().saturating_sub(40);
+                    location.marks.drain(..extra);
+                }
+                Effect::Animate { id, motion } => {
+                    let id = if id.trim().is_empty() { "party".to_string() } else { resolve(id) };
+                    self.cue_seq += 1;
+                    self.cues.push(crate::model::Cue { seq: self.cue_seq, place: here.clone(), id, motion: motion.trim().to_lowercase() });
+                    let extra = self.cues.len().saturating_sub(16);
+                    self.cues.drain(..extra);
+                }
                 Effect::Weather { weather } => location.weather = weather.trim().to_lowercase(),
                 Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight | Effect::Deed { .. } | Effect::Revive { .. } => {}
             }
@@ -543,6 +593,28 @@ mod tests {
     fn world() -> World {
         let draft: WorldDraft = serde_json::from_str(&fake::world("story")).unwrap();
         build_world(&draft, "story", "English").unwrap().0
+    }
+
+    #[test]
+    fn a_mark_lies_where_the_party_stands_or_where_it_is_put_and_replaces_one_there() {
+        let mut w = world();
+        let at = w.player.cell();
+        w.apply(&effects(json!([{ "op": "mark", "kind": "Dung" }])), None);
+        w.apply(&effects(json!([{ "op": "mark", "x": "3", "y": 4, "kind": "blood", "color": "#880000" }])), None);
+        w.apply(&effects(json!([{ "op": "mark", "x": 3, "y": 4, "kind": "ash" }])), None);
+        let marks = &w.here().marks;
+        assert_eq!(marks.len(), 2);
+        assert_eq!((marks[0].x as i32, marks[0].y as i32, marks[0].kind.as_str()), (at.0, at.1, "dung"));
+        assert_eq!((marks[1].x, marks[1].y, marks[1].kind.as_str()), (3, 4, "ash"));
+    }
+
+    #[test]
+    fn movements_are_numbered_so_that_each_is_shown_once() {
+        let mut w = world();
+        w.apply(&effects(json!([{ "op": "animate", "id": "cat", "motion": "Jump" }, { "op": "animate", "motion": "crouch" }])), None);
+        let seen: Vec<_> = w.cues.iter().map(|c| (c.seq, c.id.as_str(), c.motion.as_str())).collect();
+        assert_eq!(seen, [(1, "cat", "jump"), (2, "party", "crouch")]);
+        assert!(w.cues.iter().all(|c| c.place == w.current));
     }
 
     fn effects(value: Value) -> Vec<Effect> {
