@@ -34,6 +34,30 @@ decision changes.
 - Heroes are not drawn by the master: doll.rs builds them from looks (chosen at creation, a tab
   of its own with a live walking figure) and gear — armour, helmet, shield and main weapon show
   on the body. Four directions × four walk frames.
+- The master's own tiles are read by their names (cobble, pier, wall, water…, either language)
+  and painted like the stock grounds; a reading that contradicts the tile's walkability is never
+  taken. Blocking drawn tiles stand up with a face and shadow; Alt (and the first seconds in a
+  place) shows a grid of open, blocked and exit cells.
+- Buildings (walled areas reached only through a door) get roofs that fade while the hero is
+  inside. Things by water are mirrored in it.
+- Weather per place (clear, sun, rain, storm, snow, fog), set and changed by the master; rain
+  rings water, storms flash, fog drifts, sun throws light shafts and cloud shadows.
+- Graphics screen with a live preview: colour grade presets (clean, warm, cold, noir, sepia,
+  vivid, dream, CRT) and each effect on/off (glow, vignette, scan lines, curved glass, weather,
+  dark of night, cell grid). The interface is drawn after the effects. HDR camera; lamps glow.
+- User, after a real game: "the narration says the gargoyles approach but nothing moves". The
+  prompt now demands an effect for every visible change; new effects `mark` (blood, dung, ash…
+  left on a cell) and `animate` (jump, crouch, strike, fall, dance…, numbered cues in the world
+  so every player sees them once). Stunt texts may not declare who falls — the dice decide.
+- Party frames (face, level, HP, AC) top right. Tellings fold away (H); long choices wrap.
+- Bag: the party's shared grid (12×10), items sized by shape, gear wearable in four slots
+  (main, spare, shield, body) with the doll and AC updating; guests' moves go through the host,
+  each player changes only their own hero's gear.
+- At a shared table the master names the acting hero in the third person; players elsewhere
+  read the first sentence of each telling in the chat.
+- Platforms: Windows now. Bevy also builds for Android/iOS natively and for the web (wasm,
+  WebGPU/WebGL2). The web build would need WebSocket/WebRTC instead of TCP and Steam, browser
+  storage instead of files, and no DPAPI; Android needs touch controls and Android Keystore.
 - Shell style: a pixel game-master table (wood, parchment, candles, dice, GM screen). The GM
   picks an accent palette per world and the shell is recoloured to match.
 - Everything is animated in one style: procedural motion (tween, squash, flash, shake,

@@ -1343,6 +1343,41 @@ mod tests {
         assert!(scene.standing.iter().all(|s| s.picture.get(0, 0)[3] == 0), "each has a clear surround");
     }
 
+    /// The test world with one cell of its camp changed.
+    fn with_cell(w: &mut World, x: usize, y: usize, tile: &str) {
+        let current = w.current.clone();
+        let place = w.locations.get_mut(&current).unwrap();
+        let c = *place.legend.iter().find(|(_, id)| id.as_str() == tile).expect("the tile is in the legend").0;
+        let mut row: Vec<char> = place.map[y].chars().collect();
+        row[x] = c;
+        place.map[y] = row.into_iter().collect();
+    }
+
+    #[test]
+    fn a_tree_by_the_water_is_seen_in_it() {
+        let mut w = test_world();
+        with_cell(&mut w, 5, 10, "water");
+        with_cell(&mut w, 5, 11, "water");
+        with_cell(&mut w, 5, 9, "grass");
+        let bare = paint(w.here(), &w);
+        with_cell(&mut w, 5, 9, "tree");
+        let treed = paint(w.here(), &w);
+        let differs = |cx: i32, cy: i32| (0..CELL).flat_map(|y| (0..CELL).map(move |x| (x, y))).filter(|(x, y)| bare.ground[0].get(cx * CELL + x, cy * CELL + y) != treed.ground[0].get(cx * CELL + x, cy * CELL + y)).count();
+        assert!(differs(5, 10) > 40, "the water below the tree shows it");
+        assert!(differs(5, 13) == 0, "far below, nothing");
+    }
+
+    #[test]
+    fn a_walled_hut_with_a_door_gets_a_roof_and_the_open_camp_does_not() {
+        let w = test_world();
+        let scene = paint(w.here(), &w);
+        assert_eq!(scene.roofs.len(), 1);
+        let roof = &scene.roofs[0];
+        assert_eq!(roof.inside.len(), 4 * 3);
+        assert!(roof.inside.contains(&(24, 3)));
+        assert_eq!(roof.at, (22 * CELL, CELL));
+    }
+
     #[test]
     fn the_same_place_is_painted_the_same_every_time() {
         let w = test_world();
