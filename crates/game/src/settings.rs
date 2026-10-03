@@ -219,6 +219,39 @@ fn apply_window_mode(settings: Res<Settings>, mut window: Single<&mut Window, Wi
     }
 }
 
+/// Switching the keyboard layout with Alt+Shift can leave the game thinking Alt or Shift is
+/// still held, and then typing does nothing until the window loses focus. What the system says
+/// is held is taken over what the game believes.
+#[cfg(windows)]
+fn unstick_keys(mut keyboard: ResMut<ButtonInput<KeyCode>>, windows: Query<&Window, With<PrimaryWindow>>, mut released: MessageWriter<bevy::input::keyboard::KeyboardInput>, focused: Query<Entity, With<PrimaryWindow>>) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    if !windows.iter().any(|w| w.focused) {
+        return;
+    }
+    let Ok(window) = focused.single() else { return };
+    for (code, vk, key) in [
+        (KeyCode::AltLeft, 0xA4, bevy::input::keyboard::Key::Alt),
+        (KeyCode::AltRight, 0xA5, bevy::input::keyboard::Key::Alt),
+        (KeyCode::ShiftLeft, 0xA0, bevy::input::keyboard::Key::Shift),
+        (KeyCode::ShiftRight, 0xA1, bevy::input::keyboard::Key::Shift),
+        (KeyCode::ControlLeft, 0xA2, bevy::input::keyboard::Key::Control),
+        (KeyCode::ControlRight, 0xA3, bevy::input::keyboard::Key::Control),
+        // Win+Space switches the layout too.
+        (KeyCode::SuperLeft, 0x5B, bevy::input::keyboard::Key::Super),
+        (KeyCode::SuperRight, 0x5C, bevy::input::keyboard::Key::Super),
+    ] {
+        // SAFETY: GetAsyncKeyState only reads the state of a key.
+        let down = unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000 != 0;
+        if keyboard.pressed(code) && !down {
+            keyboard.release(code);
+            released.write(bevy::input::keyboard::KeyboardInput { key_code: code, logical_key: key, state: bevy::input::ButtonState::Released, text: None, repeat: false, window });
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn unstick_keys() {}
+
 /// F11 and Alt+Enter switch between the window and the whole screen from anywhere.
 fn fullscreen_shortcut(keyboard: Res<ButtonInput<KeyCode>>, mut settings: ResMut<Settings>, store: Res<Store>) {
     let alt = keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
@@ -235,6 +268,7 @@ pub struct SettingsPlugin;
 impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Screen::Settings), spawn_settings)
+            .add_systems(PreUpdate, unstick_keys)
             .add_systems(Update, (fullscreen_shortcut, apply_language, apply_window_mode, show_values).chain())
             .add_observer(on_activate);
     }

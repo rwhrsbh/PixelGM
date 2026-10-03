@@ -627,7 +627,8 @@ fn draw(
         cache.standing = scene.standing.into_iter().map(|s| (images.add(s.picture.into_image()), s.foot)).collect();
         cache.hour = Some(scene.hour);
         cache.water = scene.water.clone();
-        cache.sky = crate::weather::Sky::of(&here.weather);
+        // Indoors and underground there is no sky to rain or cast cloud shadows.
+        cache.sky = if scene.indoors || scene.hour.dark >= 0.8 { crate::weather::Sky::Clear } else { crate::weather::Sky::of(&here.weather) };
         cache.roofs = scene.roofs.into_iter().map(|r| (images.add(r.picture.into_image()), r.at, r.inside)).collect();
         cache.lamps = scene.lamps;
         cache.key = key;
@@ -658,7 +659,7 @@ fn draw(
     if settings.gfx.vignette {
         commands.spawn((InLocation, Sprite::from_image(cache.vignette.clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.7))));
     }
-    let sky = crate::weather::Sky::of(&here.weather);
+    let sky = cache.sky;
     if settings.gfx.weather && sky != crate::weather::Sky::Clear {
         let map = Rect::new(0.0, 0.0, CANVAS.x as f32, CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL);
         let cell = (TILE * crate::scene::PX as u32) as f32;

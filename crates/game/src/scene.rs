@@ -1076,6 +1076,8 @@ impl Roof {
 pub struct Scene {
     /// The ground, once for each beat of the water. A place without water has one.
     pub ground: Vec<Pixels>,
+    /// No sky over it: no grass, earth, sand or water anywhere, only floors and walls.
+    pub indoors: bool,
     pub roofs: Vec<Roof>,
     /// The cells of water, for rain to ring.
     pub water: Vec<(usize, usize)>,
@@ -1193,7 +1195,8 @@ pub fn paint(location: &Location, world: &World) -> Scene {
     let water = (0..MAP_H).flat_map(|y| (0..MAP_W).map(move |x| (x, y))).filter(|(x, y)| painter.cells.at(*x as i32, *y as i32) == Ground::Water).collect();
     let exits: Vec<(usize, usize)> = location.exits.iter().map(|e| (e.x, e.y)).collect();
     let roofs = roofs(&painter.cells, &painter.paint, &exits);
-    Scene { ground, roofs, water, standing, hour: Hour::of(location), lamps: lamps(location) }
+    let indoors = !painter.cells.ground.iter().any(|g| matches!(g, Ground::Grass | Ground::Dirt | Ground::Sand | Ground::Water));
+    Scene { ground, roofs, indoors, water, standing, hour: Hour::of(location), lamps: lamps(location) }
 }
 
 /// One cell of the dark is this many picture pixels a side: the dark falls in small squares.
