@@ -44,6 +44,20 @@ fn cloud(x: i32, y: i32, size: i32, seed: u32) -> f32 {
 }
 
 /// A threshold that turns a smooth value into a pattern of flat pixels.
+/// Smooth noise from 0 to 1 that repeats every `wrap` pixels across, with blobs about
+/// `size` pixels wide: for layers that slide and loop.
+pub fn cloud_noise(x: i32, y: i32, wrap: i32, size: i32) -> f32 {
+    let cells = (wrap / size).max(1);
+    let (gx, gy) = (x.div_euclid(size), y.div_euclid(size));
+    let (fx, fy) = ((x.rem_euclid(size)) as f32 / size as f32, (y.rem_euclid(size)) as f32 / size as f32);
+    let corner = |cx: i32, cy: i32| unit(cx.rem_euclid(cells), cy, 77);
+    let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+    let (sx, sy) = (smooth(fx), smooth(fy));
+    let top = corner(gx, gy) * (1.0 - sx) + corner(gx + 1, gy) * sx;
+    let bottom = corner(gx, gy + 1) * (1.0 - sx) + corner(gx + 1, gy + 1) * sx;
+    top * (1.0 - sy) + bottom * sy
+}
+
 fn dither(x: i32, y: i32) -> f32 {
     (BAYER[(y & 3) as usize][(x & 3) as usize] as f32 + 0.5) / 16.0
 }
@@ -815,6 +829,8 @@ pub fn lamps(location: &Location) -> Vec<Lamp> {
 pub struct Scene {
     /// The ground, once for each beat of the water. A place without water has one.
     pub ground: Vec<Pixels>,
+    /// The cells of water, for rain to ring.
+    pub water: Vec<(usize, usize)>,
     pub standing: Vec<Standing>,
     pub hour: Hour,
     pub lamps: Vec<Lamp>,
@@ -911,7 +927,8 @@ pub fn paint(location: &Location, world: &World) -> Scene {
             ground_shadow(picture, *x, *y, *rx, *ry, *strength);
         }
     }
-    Scene { ground, standing, hour: Hour::of(location), lamps: lamps(location) }
+    let water = (0..MAP_H).flat_map(|y| (0..MAP_W).map(move |x| (x, y))).filter(|(x, y)| painter.cells.at(*x as i32, *y as i32) == Ground::Water).collect();
+    Scene { ground, water, standing, hour: Hour::of(location), lamps: lamps(location) }
 }
 
 /// One cell of the dark is this many picture pixels a side: the dark falls in small squares.

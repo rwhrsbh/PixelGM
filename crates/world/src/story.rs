@@ -96,6 +96,10 @@ pub enum Effect {
     },
     /// Something worth remembering for the rest of the campaign.
     Fact { text: String },
+    /// The hour changes here: day, dusk, night or dark.
+    Light { light: String },
+    /// The sky changes here: clear, sun, rain, storm, snow or fog.
+    Weather { weather: String },
     /// The outcome is uncertain: the party rolls, and one of two prepared branches follows.
     Check {
         ability: String,
@@ -477,6 +481,8 @@ impl World {
                     }
                 }
                 Effect::Fact { text } => self.story.remember(text),
+                Effect::Light { light } => location.light = light.trim().to_lowercase(),
+                Effect::Weather { weather } => location.weather = weather.trim().to_lowercase(),
                 Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight | Effect::Deed { .. } | Effect::Revive { .. } => {}
             }
         }

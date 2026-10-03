@@ -154,6 +154,9 @@ pub struct Location {
     /// The hour and the light of the place: day, dusk, night or dark. Empty is day.
     #[serde(default)]
     pub light: String,
+    /// The sky over the place: clear, sun, rain, storm, snow or fog. Empty is clear.
+    #[serde(default)]
+    pub weather: String,
 }
 
 impl Location {

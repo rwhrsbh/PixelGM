@@ -162,6 +162,7 @@ impl Args {
                         "main" => Some(Screen::Main),
                         "keys" => Some(Screen::Keys),
                         "settings" => Some(Screen::Settings),
+                        "graphics" => Some(Screen::Graphics),
                         "newgame" => Some(Screen::NewGame),
                         "load" => Some(Screen::Load),
                         "lobby" => Some(Screen::Lobby),

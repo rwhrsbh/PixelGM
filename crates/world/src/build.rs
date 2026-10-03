@@ -114,6 +114,7 @@ pub struct LocationDraft {
     pub new_tiles: Vec<TileDraft>,
     pub neighbors: Vec<NeighborDraft>,
     pub light: String,
+    pub weather: String,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -472,7 +473,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     let legend: BTreeMap<char, String> = symbol_of.iter().map(|(tile, symbol)| (*symbol, tile.to_string())).collect();
 
     let name = if draft.name.trim().is_empty() { id.clone() } else { draft.name.trim().to_string() };
-    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase() };
+    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase() };
     Ok(Built { id, location, stubs, notes })
 }
 

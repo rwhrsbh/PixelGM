@@ -257,6 +257,7 @@ pub fn location(id: &str, name: &str, from: &str) -> String {
         "id": id,
         "name": name,
         "description": format!("{name}, drawn by rule. The way back is to the west."),
+        "weather": "rain",
         "legend": legend(),
         "map": clearing(seed, &[back, onward]),
         "spawn": [2, 8],

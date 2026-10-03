@@ -14,6 +14,8 @@ pub enum Screen {
     Main,
     Keys,
     Settings,
+    /// Every effect over the picture, with a preview.
+    Graphics,
     /// The form where the host says what world they want.
     NewGame,
     /// Waiting for the game master to invent and draw the world.

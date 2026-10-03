@@ -13,6 +13,32 @@ use bevy::prelude::*;
 use bevy::render::view::{ColorGrading, ColorGradingGlobal, ColorGradingSection};
 use serde::{Deserialize, Serialize};
 
+/// Each effect over the picture, on or off.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(default)]
+pub struct Gfx {
+    /// What burns and shines glows.
+    pub bloom: bool,
+    /// The corners of the world fall into shadow.
+    pub vignette: bool,
+    /// Lines across the picture like an old screen.
+    pub scan_lines: bool,
+    /// A curved glass with colour fringes at its edges.
+    pub glass: bool,
+    /// Rain, snow, fog, sun and the shadows of clouds.
+    pub weather: bool,
+    /// The dark of dusk and night, and the light of lamps.
+    pub night: bool,
+    /// The grid of where one may walk, for a moment in each new place.
+    pub cell_hint: bool,
+}
+
+impl Default for Gfx {
+    fn default() -> Self {
+        Self { bloom: true, vignette: true, scan_lines: false, glass: false, weather: true, night: true, cell_hint: true }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Grade {
     /// The colours as drawn, nothing over them.
@@ -47,11 +73,6 @@ impl Grade {
     pub fn next(self) -> Self {
         let at = Self::ALL.iter().position(|g| *g == self).unwrap_or(0);
         Self::ALL[(at + 1) % Self::ALL.len()]
-    }
-
-    /// Whether the old-screen lines are laid over the world.
-    pub fn scan_lines(self) -> bool {
-        self == Grade::Crt
     }
 
     fn grading(self) -> ColorGrading {
@@ -91,17 +112,17 @@ impl Plugin for PostPlugin {
 }
 
 /// Puts the chosen look on the camera.
-fn apply(mut commands: Commands, settings: Res<Settings>, cameras: Query<Entity, With<MainCamera>>, mut last: Local<Option<Grade>>) {
-    if *last == Some(settings.grade) {
+fn apply(mut commands: Commands, settings: Res<Settings>, cameras: Query<Entity, With<MainCamera>>, mut last: Local<Option<(Grade, Gfx)>>) {
+    if *last == Some((settings.grade, settings.gfx)) {
         return;
     }
-    *last = Some(settings.grade);
-    let grade = settings.grade;
+    *last = Some((settings.grade, settings.gfx));
+    let (grade, gfx) = (settings.grade, settings.gfx);
     for camera in &cameras {
         let mut camera = commands.entity(camera);
         // The picture is drawn with room above white, so that what burns can glow.
         camera.insert((Hdr, grade.grading(), if grade == Grade::Clean { Tonemapping::None } else { Tonemapping::TonyMcMapface }));
-        match grade.bloom() {
+        match grade.bloom().filter(|_| gfx.bloom) {
             Some((intensity, threshold)) => {
                 camera.insert(Bloom { intensity, prefilter: BloomPrefilter { threshold, threshold_softness: 0.3 }, ..Bloom::NATURAL });
             }
@@ -109,7 +130,7 @@ fn apply(mut commands: Commands, settings: Res<Settings>, cameras: Query<Entity,
                 camera.remove::<Bloom>();
             }
         }
-        if grade == Grade::Crt {
+        if gfx.glass {
             camera.insert((ChromaticAberration { intensity: 0.006, max_samples: 6, ..default() }, LensDistortion { intensity: 0.12, scale: 1.04, ..default() }));
         } else {
             camera.remove::<(ChromaticAberration, LensDistortion)>();

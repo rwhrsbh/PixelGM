@@ -37,6 +37,7 @@ pub struct Settings {
     pub voice: bool,
     /// The colour grade and the effects laid over the picture.
     pub grade: crate::post::Grade,
+    pub gfx: crate::post::Gfx,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -49,7 +50,7 @@ pub enum Initiative {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default() }
+        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default() }
     }
 }
 
@@ -294,7 +295,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt };
+        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() } };
         store.save_settings(&settings).unwrap();
         assert_eq!(store.load_settings(), settings);
     }

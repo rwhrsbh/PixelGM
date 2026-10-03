@@ -16,6 +16,8 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "give", "name": "…", "description": "…"} — the party gains an item
   {"op": "take", "name": "…"} — the party loses an item
   {"op": "describe", "id": "…", "description": "…"} — a thing looks different from now on
+  {"op": "light", "light": "day|dusk|night|dark"} — time passes here: the hour and the light change
+  {"op": "weather", "weather": "clear|sun|rain|storm|snow|fog"} — the sky over this place changes
   {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
   {"op": "move", "id": "…", "x": 0, "y": 0}
   {"op": "tile", "x": 0, "y": 0, "tile": "tile_id"} — one cell of ground changes (a door opens, a bridge falls)
@@ -76,6 +78,7 @@ ACTIONS. Give every prop and creature two or three "actions": things the players
 const LOCATION_SHAPE: &str = r##"{
   "id": "snake_case", "name": "…", "description": "two or three sentences the players read on arrival",
   "light": "day, dusk, night or dark (a cave, a cellar): the hour and the light of the place",
+  "weather": "clear, sun, rain, storm, snow or fog; clear indoors and underground",
   "legend": {".": "grass", "#": "stone_wall", "+": "door"},
   "map": ["30 characters", "… 16 rows in all"],
   "spawn": [x, y],

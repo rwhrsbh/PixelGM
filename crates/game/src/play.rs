@@ -111,6 +111,7 @@ struct SceneCache {
     shadow: Handle<Image>,
     vignette: Handle<Image>,
     grid: Handle<Image>,
+    water: Vec<(usize, usize)>,
     /// Seconds since the place was painted: the grid shows for the first few.
     age: f32,
 }
@@ -502,6 +503,7 @@ fn draw(
         cache.ground = scene.ground.into_iter().map(|picture| images.add(picture.into_image())).collect();
         cache.standing = scene.standing.into_iter().map(|s| (images.add(s.picture.into_image()), s.foot)).collect();
         cache.hour = Some(scene.hour);
+        cache.water = scene.water.clone();
         cache.lamps = scene.lamps;
         cache.key = key;
         if cache.shadow == Handle::default() {
@@ -519,7 +521,7 @@ fn draw(
         commands.spawn((InLocation, Sprite::from_image(image.clone()), Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(*x, *y).extend(depth(*y)))));
     }
     let hour = cache.hour.unwrap_or(crate::scene::Hour { dark: 0.0, tint: [0, 0, 0] });
-    if hour.dark > 0.0 {
+    if hour.dark > 0.0 && settings.gfx.night {
         // The dark over the place, and the warmth around its lamps.
         let map = Vec2::new(CANVAS.x as f32, CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL);
         commands.spawn((InLocation, DarkLayer, Sprite { custom_size: Some(map), ..Sprite::from_image(cache.dark.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.6))));
@@ -527,8 +529,17 @@ fn draw(
             commands.spawn((InLocation, Sprite { color: Color::linear_rgb(1.6, 1.4, 1.1), ..Sprite::from_image(cache.warm.clone()) }, Transform::from_translation(on_screen(lamp.x, lamp.y).extend(1.62))));
         }
     }
-    commands.spawn((InLocation, Sprite::from_image(cache.vignette.clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.7))));
-    if settings.grade.scan_lines() {
+    if settings.gfx.vignette {
+        commands.spawn((InLocation, Sprite::from_image(cache.vignette.clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.7))));
+    }
+    let sky = crate::weather::Sky::of(&here.weather);
+    if settings.gfx.weather && sky != crate::weather::Sky::Clear {
+        let map = Rect::new(0.0, 0.0, CANVAS.x as f32, CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL);
+        let cell = (TILE * crate::scene::PX as u32) as f32;
+        let water = cache.water.iter().map(|(x, y)| Rect::new(*x as f32 * cell, *y as f32 * cell, (*x + 1) as f32 * cell, (*y + 1) as f32 * cell)).collect();
+        commands.spawn((InLocation, crate::weather::Emitter::new(sky, map, water), Transform::default(), Visibility::default()));
+    }
+    if settings.gfx.scan_lines {
         let lines = images.add(crate::post::scan_lines(CANVAS.x, CANVAS.y - (HUD_HEIGHT * crate::screen::UI_PIXEL) as u32).into_image());
         commands.spawn((InLocation, Sprite::from_image(lines), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.72))));
     }
@@ -659,10 +670,10 @@ fn place_fellows(time: Res<Time>, game: Res<Game>, mut redraw: ResMut<Redraw>, m
 }
 
 /// The grid of where one may walk shows while Alt is held, and fades in a new place.
-fn walk_grid(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, phase: Res<Phase>, mut cache: ResMut<SceneCache>, mut grids: Query<&mut Sprite, With<WalkGrid>>) {
+fn walk_grid(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, phase: Res<Phase>, settings: Res<Settings>, mut cache: ResMut<SceneCache>, mut grids: Query<&mut Sprite, With<WalkGrid>>) {
     cache.age += time.delta_secs();
     let held = keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]) && matches!(*phase, Phase::Walking | Phase::Fighting);
-    let fresh = if *phase == Phase::Walking { (1.0 - (cache.age - 3.0) / 1.5).clamp(0.0, 1.0) } else { 0.0 };
+    let fresh = if *phase == Phase::Walking && settings.gfx.cell_hint { (1.0 - (cache.age - 3.0) / 1.5).clamp(0.0, 1.0) } else { 0.0 };
     // In steps, like every other fade.
     let alpha = ((if held { 1.0 } else { fresh }) * 4.0).round() / 4.0;
     for mut sprite in &mut grids {
@@ -689,8 +700,8 @@ fn water(time: Res<Time>, cache: Res<SceneCache>, mut layers: Query<&mut Sprite,
 }
 
 /// The dark is redrawn as the lamps waver and the heroes, who carry a light of their own, walk.
-fn lighting(time: Res<Time>, game: Res<Game>, cache: Res<SceneCache>, mut images: ResMut<Assets<Image>>, mut since: Local<f32>, mut beat: Local<u32>) {
-    let Some(hour) = cache.hour.filter(|h| h.dark > 0.0) else { return };
+fn lighting(time: Res<Time>, game: Res<Game>, settings: Res<Settings>, cache: Res<SceneCache>, mut images: ResMut<Assets<Image>>, mut since: Local<f32>, mut beat: Local<u32>) {
+    let Some(hour) = cache.hour.filter(|h| h.dark > 0.0 && settings.gfx.night) else { return };
     *since += time.delta_secs();
     if *since < 0.1 {
         return;
