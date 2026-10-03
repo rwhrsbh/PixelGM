@@ -236,3 +236,116 @@ decision changes.
 5. Co-op: lobby, sync, split party, save distribution.
 6. Human GM: panel, drafts, library.
 7. Polish: sound, animation, translation, 5.2 beta, multiclass, voice.
+
+## Second arc: a game worth staying in (agreed 2026-10-04)
+
+The first build worked but was dull: nothing to do between the master's answers, no goal,
+a world that did not answer back, and only plain choices. What follows was settled question
+by question with the owner.
+
+### Modes, chosen when a world is made
+
+- **Story mode** (on by default): the master writes a main quest, three to five acts hidden
+  from the player, and an ending. The goal is on screen and in a quest journal. The story can
+  be lost — a bad ending is an ending — and then a new chapter starts with the same hero.
+  Off is the first build's sandbox.
+- **Live mode** (a switch): the master answers in batches and works in the background —
+  people speak and walk, things happen while the party stands, companions comment, a scene
+  is redrawn when it changes, hidden threat clocks run. Speech goes to flash-lite and Gemma.
+- **Difficulty**: casual, honest (default), hardcore.
+
+  |                  | Casual          | Honest            | Hardcore            |
+  |------------------|-----------------|-------------------|---------------------|
+  | Defeat           | wake with 1 hp  | a hero may die    | death is final      |
+  | Saves            | free            | free              | one, automatic      |
+  | Encounter budget | x0.75           | x1                | x1.25               |
+  | Enemy hit points | numbers         | a bar             | a bar               |
+  | Tiredness        | no              | no                | yes                 |
+  | Ration to rest   | no              | yes               | yes                 |
+
+- A provider of one's own, when switched on in the settings, is the whole master in place of
+  Gemini.
+
+### Interface
+
+- A frame in the manner of Baldur's Gate: the map is never covered. Party portraits in a
+  column on the right, the telling in a window below with three heights and the choices under
+  it, then six quick slots and the buttons.
+- Choices on 1–5, quick slots on F1–F6; in a fight the digits are the fight's actions.
+- Text is typed fast and a click shows it all; the voice is off by default.
+- The camera follows the hero; the wheel zooms from about 15×8 cells to the whole map, about
+  20×11 by default. Each player has their own camera. A map of the place on M.
+- In a fight: a strip of who acts when, and a bar over each enemy.
+
+### World and time
+
+- Places up to 60×32: a strong model draws one in a single request, a weak one in four
+  pieces that each see the plan of the whole and the pieces already drawn.
+- The clock always runs, a minute of the game to a second; a fight counts rounds of six
+  seconds. It stops only on Esc alone, and alone when the window is not in front.
+- Night is darker and more dangerous; people sleep, shops are shut. Tiredness only in hardcore.
+- The master gives each place a danger of 0–5. Wandering encounters are rolled once a game
+  hour (danger × 5% by day, × 10% by night); a third are not fights and come from lines the
+  master wrote with the place. Where the master set encounters of its own, or said there are
+  none, the game rolls none.
+- Levers, plates, locks and hidden ways work by the rules, and show to a keen eye.
+
+### Fights
+
+- Enemies come in groups: the game counts them from a budget; the master, model or person,
+  may also set groups itself.
+- The bag opens in a fight: one free handling of a thing each turn, the rest costs the action.
+
+### Things and money
+
+- Gold is a count each hero carries, thrown down as a heap.
+- Shops as in Diablo 2: the master draws the wares and what they do; the stock turns over
+  once a day without a request; one haggle a visit; standing moves prices by a fifth.
+- Rarity and properties come mostly from the master, held to the party's level by the game;
+  properties rolled by the game come later.
+- Level 20 at most; the main quest takes a hero to about 5–7.
+- Short and long rests; a long one needs a safe place and a ration, and may be broken at night.
+
+### Companions
+
+- Someone joins by being talked round, hired, or won by a quest. Two at most alone; five
+  fighters in all at a shared table.
+- Out of a fight a companion walks alongside; in one, whoever won them over plays them. A bag
+  of 4×4, gear can be changed. A monster's numbers, no levels, death is final.
+- Alone, with the hero dead, the player plays the companion until the hero is raised.
+
+### A world that answers
+
+- Three to five factions from the master, and the people who matter, each with a standing
+  shown once met.
+- Threads: the master notes a deed that will come back; the game makes it bring one back
+  every five to eight turns or on entering a place. The player does not see them.
+- Threat clocks are heard of as rumours in the journal.
+- Speech bubbles: six to eight lines for a place in one request, one every 20–40 seconds; a
+  click starts a talk.
+- Choices: up to five, at least one from a skill or a thing the hero has, and one risky with
+  its chance shown.
+
+### The person in the master's seat
+
+A group of enemies by a click, a brush for cells, a bubble spoken for someone, things and
+gold handed out, the clock and the sky, and "draw this for me" by the model.
+
+### Order
+
+0. First the faults: the game checks the master's answer and asks again when the telling
+   names a thing no effect hands over; notices and the acting player's own view for prepared
+   actions and for stunts in a fight.
+1. The frame and the camera.
+2. Story mode: quest, acts, goal, journal.
+3. Groups, encounter budget, the strip of turns, quick slots, the bag in a fight.
+4. Time, night, rest, gold, shops, rarity.
+5. Companions.
+6. Standing, threads, threat clocks, wandering encounters.
+7. Live mode: bubbles, people about their business, batched answers.
+8. Large places.
+9. Mechanisms and puzzles.
+10. The master's tools.
+
+Along the way: "draw this place again" for the host, the name and picture of a worn thing of
+the master's, Steam with two accounts.
