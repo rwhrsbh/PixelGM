@@ -730,6 +730,40 @@ fn cues(mut background: ResMut<Background>, mut fx: ResMut<Fx>, game: Res<Game>)
 
 #[allow(clippy::too_many_arguments)]
 fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>, session: Res<Session>, mut table: ResMut<Table>) {
+    // Orders from a test script, whatever the screen shows.
+    for order in std::mem::take(&mut warp.1) {
+        let (what, amount) = order.split_once('=').map_or((order.as_str(), 0), |(what, n)| (what, n.trim().parse::<i32>().unwrap_or(0)));
+        let world = &mut game.world;
+        match what {
+            "xp" => {
+                for hero in &mut world.party {
+                    let ups = hero.gain_xp(amount.max(0) as u32);
+                    world.level_ups.extend(ups.into_iter().map(|up| (hero.name.clone(), up)));
+                }
+            }
+            "hurt" => world.party.iter_mut().for_each(|hero| hero.take_damage(amount)),
+            "kill" => world.party.iter_mut().for_each(|hero| {
+                hero.hp = 0;
+                hero.dead = true;
+            }),
+            "deed" => world.secrets_due.push(0),
+            // `win`: every enemy in the fight falls, so that its end can be tested.
+            "win" => {
+                if let Some(fight) = world.fight.as_mut() {
+                    for c in fight.combatants.iter_mut().filter(|c| c.side != Side::Party) {
+                        c.hp = 0;
+                        c.dead = true;
+                    }
+                }
+            }
+            // `give=Name` puts a thing in the bag, the way the master would.
+            "give" => {
+                let name = order.split_once('=').map_or("", |(_, n)| n).to_string();
+                world.apply(&[world::Effect::Give { name, description: "Given by a test.".into() }], None);
+            }
+            _ => {}
+        }
+    }
     if *phase != Phase::Walking {
         pose.moving = false;
         return;
@@ -759,31 +793,6 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
     }
     if let Some((x, y)) = warp.0.take() {
         game.world.player = world::Player::in_cell(x.min(world::MAP_W - 1), y.min(world::MAP_H - 1));
-    }
-    // Orders from a test script.
-    for order in std::mem::take(&mut warp.1) {
-        let (what, amount) = order.split_once('=').map_or((order.as_str(), 0), |(what, n)| (what, n.trim().parse::<i32>().unwrap_or(0)));
-        let world = &mut game.world;
-        match what {
-            "xp" => {
-                for hero in &mut world.party {
-                    let ups = hero.gain_xp(amount.max(0) as u32);
-                    world.level_ups.extend(ups.into_iter().map(|up| (hero.name.clone(), up)));
-                }
-            }
-            "hurt" => world.party.iter_mut().for_each(|hero| hero.take_damage(amount)),
-            "kill" => world.party.iter_mut().for_each(|hero| {
-                hero.hp = 0;
-                hero.dead = true;
-            }),
-            "deed" => world.secrets_due.push(0),
-            // `give=Name` puts a thing in the bag, the way the master would.
-            "give" => {
-                let name = order.split_once('=').map_or("", |(_, n)| n).to_string();
-                world.apply(&[world::Effect::Give { name, description: "Given by a test.".into() }], None);
-            }
-            _ => {}
-        }
     }
     if !session.is_client()
         && let Some(exit) = game.world.exit_here()
