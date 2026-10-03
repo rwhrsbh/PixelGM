@@ -13,6 +13,8 @@ pub struct TurnDraft {
     pub narration: String,
     pub effects: Vec<Value>,
     pub sprites: Vec<SpriteDraft>,
+    /// Kinds of ground the master draws for this turn: a bridge, ice, rubble.
+    pub tiles: Vec<crate::build::TileDraft>,
     pub options: Vec<ActionDraft>,
     /// What only one character learns.
     pub whispers: Vec<Whisper>,
@@ -157,6 +159,16 @@ impl World {
                     self.sprites.insert(id, picture);
                 }
                 _ => notes.push(format!("sprite '{}' had no usable picture and was skipped", sprite.id)),
+            }
+        }
+        for tile in &draft.tiles {
+            let id = slug(&tile.id);
+            match crate::build::tile_from(&tile.rows, self.palette.len()) {
+                Some(sprite) if !id.is_empty() => {
+                    let name = if tile.name.trim().is_empty() { id.clone() } else { tile.name.trim().to_string() };
+                    self.tiles.insert(id, crate::model::TileDef { name, walkable: tile.walkable, sprite });
+                }
+                _ => notes.push(format!("tile '{}' had no usable picture and was skipped", tile.id)),
             }
         }
         let effects = read_effects(&draft.effects, &mut notes);

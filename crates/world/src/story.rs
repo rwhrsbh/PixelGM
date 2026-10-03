@@ -76,6 +76,9 @@ pub enum Effect {
         #[serde(deserialize_with = "lenient_int")]
         y: i64,
         tile: String,
+        /// The far corner, when a whole line or block of cells changes: [x, y].
+        #[serde(default)]
+        to: Vec<i64>,
     },
     /// Something new appears. `kind` is `prop` or `creature`.
     Spawn {
@@ -163,6 +166,9 @@ pub enum Effect {
         /// The heroes who go, by name; everyone here when empty.
         #[serde(default)]
         who: Vec<String>,
+        /// What a new place looks like, for the drawing of it.
+        #[serde(default)]
+        description: String,
     },
     /// What was left on a cell is taken up or washed away; with no cell, where the party stands.
     Clean {
@@ -553,6 +559,7 @@ impl World {
         let bag_of = |to: &str| names.iter().position(|n| !to.trim().is_empty() && *n == slug(to)).unwrap_or(acting);
         let mut moved: Vec<(usize, (usize, usize))> = Vec::new();
         let mut travel: Option<(String, String, Vec<usize>)> = None;
+        let mut travel_look = String::new();
         // The heroes in this scene: those the word "party" means here.
         let present: Vec<usize> = (0..self.party.len()).filter(|i| !self.party[*i].dead && self.takes_part(*i) && self.hero_place(*i) == here).collect();
         let present = if present.is_empty() { (0..self.party.len().min(1)).collect() } else { present };
@@ -683,13 +690,25 @@ impl World {
                         notes.push(format!("move: nothing called '{id}' is here"));
                     }
                 }
-                Effect::Tile { x, y, tile } => {
+                Effect::Tile { x, y, tile, to } => {
                     let tile = slug(tile);
                     let (x, y) = clamp_cell(*x, *y);
+                    let (x2, y2) = match to.as_slice() {
+                        [x2, y2, ..] => clamp_cell(*x2, *y2),
+                        _ => (x, y),
+                    };
                     if !tiles.contains_key(&tile) {
                         notes.push(format!("tile: there is no tile '{tile}'"));
-                    } else if !location.set_tile(x, y, &tile) {
-                        notes.push("tile: the place cannot hold another kind of tile".to_string());
+                    } else {
+                        // Every cell from one corner to the other: a bridge, a wall, a flood.
+                        'cells: for cy in y.min(y2)..=y.max(y2) {
+                            for cx in x.min(x2)..=x.max(x2) {
+                                if !location.set_tile(cx, cy, &tile) {
+                                    notes.push("tile: the place cannot hold another kind of tile".to_string());
+                                    break 'cells;
+                                }
+                            }
+                        }
                     }
                 }
                 Effect::Secret { x, y, dc, kind, note, effects } => {
@@ -756,7 +775,8 @@ impl World {
                         location.marks.remove(at);
                     }
                 }
-                Effect::Travel { to, name, who } => {
+                Effect::Travel { to, name, who, description } => {
+                    travel_look = description.trim().to_string();
                     let to = slug(to);
                     if !to.is_empty() && to != here {
                         let heroes: Vec<usize> = if who.is_empty() { present.clone() } else { who.iter().flat_map(|w| heroes_named(&slug(w))).collect() };
@@ -799,7 +819,7 @@ impl World {
             // A place nobody has heard of yet is named now and drawn when the party arrives.
             if !self.locations.contains_key(&to) && !self.stubs.contains_key(&to) {
                 let name = if name.is_empty() { to.replace('_', " ") } else { name };
-                self.stubs.insert(to.clone(), crate::model::Stub { name, description: String::new() });
+                self.stubs.insert(to.clone(), crate::model::Stub { name, description: travel_look });
             }
             self.travel = Some((to, heroes));
         }
@@ -903,6 +923,16 @@ mod tests {
         w.apply(&effects(json!([{ "op": "travel", "to": "far_hills", "name": "Far Hills", "who": ["Ann"] }])), None);
         assert_eq!(w.travel, Some(("far_hills".to_string(), vec![0])));
         assert!(w.stubs.contains_key("far_hills"));
+    }
+
+    #[test]
+    fn a_stretch_of_ground_changes_at_once_and_a_new_place_keeps_its_look() {
+        let mut w = world();
+        let notes = w.apply(&effects(json!([{ "op": "tile", "x": 3, "y": 5, "to": [7, 5], "tile": "wood_floor" }])), None);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!((3..=7).all(|x| w.here().tile_id(x, 5) == Some("wood_floor")));
+        w.apply(&effects(json!([{ "op": "travel", "to": "open_space", "name": "Open Space", "description": "Stars and a frozen world below." }])), None);
+        assert_eq!(w.stubs["open_space"].description, "Stars and a frozen world below.");
     }
 
     #[test]

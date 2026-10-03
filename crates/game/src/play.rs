@@ -2413,7 +2413,7 @@ fn overlay(
                 if !offer.is_empty() {
                     sheet.spawn((Text::default(), T::FeatChoose, fonts.body(), TextColor(color(WAX_DARK))));
                     for (n, line) in offer.iter().enumerate() {
-                        text_button(sheet, &art, &fonts, line.clone(), PlayAction::Feat(n));
+                        crate::widgets::wrap_button(sheet, &art, &fonts, line.clone(), PlayAction::Feat(n));
                     }
                 }
                 if *points {

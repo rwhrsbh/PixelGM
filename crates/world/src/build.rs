@@ -38,7 +38,7 @@ pub struct SpriteDraft {
     pub rows: Vec<String>,
 }
 
-#[derive(Deserialize, Default, Debug, Clone)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct TileDraft {
     pub id: String,
@@ -246,7 +246,7 @@ pub(crate) fn sprite_from(rows: &[String], palette_len: usize) -> Option<Sprite>
 }
 
 /// A tile must cover its cell, so holes are filled with the colour it uses most.
-fn tile_from(rows: &[String], palette_len: usize) -> Option<Sprite> {
+pub(crate) fn tile_from(rows: &[String], palette_len: usize) -> Option<Sprite> {
     if !has_pixels(rows) {
         return None;
     }

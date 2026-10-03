@@ -21,11 +21,11 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "mark", "x": 0, "y": 0, "kind": "blood|dung|puddle|scorch|ash|slime|vomit|wine|paint|rubble|coins|bones", "color": "#rrggbb"} — something is left on the ground of a cell; without x and y it is where the party stands; "id" instead puts it under that thing; "color" is optional
   {"op": "music", "mood": "calm|explore|tense|battle|boss|mystery|horror|sad|tavern|triumph|dungeon"} — the music of this place changes with what happens: dread creeping in, a celebration, grief
   {"op": "clean", "x": 0, "y": 0} — what was left on a cell is picked up or washed away (with "give" when the party takes it)
-  {"op": "travel", "to": "place_id", "name": "for a new place", "who": ["hero name"]} — heroes go to another place; "who" lists those who go, everyone here when left out
+  {"op": "travel", "to": "place_id", "name": "for a new place", "description": "what a new place looks like", "who": ["hero name"]} — heroes go to another place; "who" lists those who go, everyone here when left out
   {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
   {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
   {"op": "move", "id": "…", "x": 0, "y": 0}
-  {"op": "tile", "x": 0, "y": 0, "tile": "tile_id"} — one cell of ground changes (a door opens, a bridge falls)
+  {"op": "tile", "x": 0, "y": 0, "tile": "tile_id", "to": [0, 0]} — the ground changes, anywhere on the map: one cell, or with "to" every cell from (x, y) to that far corner — a line or a block (a door opens, a bridge is laid across water, a wall falls, a pit opens, a room floods). Whether the cell can then be walked on is the tile's own: a walkable tile over water makes a crossing, a solid one closes a way. Use a tile from TILES THAT EXIST or one you draw in this answer's "tiles"
   {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral"} — a creature that might fight also takes "monster" or "stats"; a prop that holds things (a chest, a crate, a purse) takes "contents": [things as in "give"], and "lock": 15 with "key": "key name" when it is locked — the game handles opening, picking and forcing it
   {"op": "secret", "x": 0, "y": 0, "dc": 14, "kind": "hidden|trap", "note": "a loose stone in the wall", "effects": []} — something hidden: when a hero with a sharp enough eye comes near it is found and its effects happen (a hidden door: a "tile" to a door; a cache: "give"); a trap goes off with its effects ("damage") when stepped on unnoticed
   {"op": "exit", "x": 0, "y": 0, "to": "place_id", "label": "…"} — a way out appears
@@ -40,7 +40,8 @@ Never roll dice yourself and never decide an uncertain outcome: that is what "ch
 Use only ids that exist. Inside an action that belongs to a thing, the id "self" means that thing.
 SPACE. The party is somewhere on the map and can only touch, take, open, strike or speak softly with what is beside it. To deal with something farther off that can be reached, first "move" the party to a cell beside it, in the same answer, then do the rest. What cannot be reached on foot cannot be touched: say what is in the way. Only what the party carries can be used — no torch, rope or key that is not in their hands.
 VIOLENCE. An attack on a creature is never told as a hit, a wound or a death: make it hostile with "attitude" and add "fight" — the game moves to the fight and the dice decide. The same for anything that would hurt the party.
-TRAVEL. When the party goes to another place — through a way out, down a hole, carried off — add {"op": "travel", "to": "place_id"}: an id from the exits, or a new id with "name" for a place that does not exist yet, which the game will ask you to draw. A choice that leads elsewhere carries its own "travel".
+TRAVEL. When the party goes to another place — through a way out, down a hole, carried off — add {"op": "travel", "to": "place_id"}: an id from the exits, or a new id with "name" for a place that does not exist yet, which the game will ask you to draw. A choice that leads elsewhere carries its own "travel". The map on the players' screen IS where they are. When the story takes them out of what the map shows — out into space, into a vision or a dream, under the ground, onto a ship — or the place itself becomes another (it burns down, freezes over, collapses), "travel" to a NEW id with "name" and "description", so that the new scene is drawn; never tell of surroundings the map does not show.
+WHERE THE PARTY IS. The party stands exactly on the cell marked @ and has not moved since, whatever was planned or told before: read the map before you write. It is on the far side of water, a wall or a chasm only if @ is there. To put it somewhere else in this place — across a bridge, up a ledge, through a gap — add {"op": "move", "id": "party", "x": …, "y": …} to a walkable cell there, in the same answer; with no "move" the party is still where @ is, and your narration must say so. A crossing must be laid on the very cells that are in the way (the solid cells between the party and the far side, by their coordinates from the map), not under the party's feet.
 THE PICTURE MUST MATCH THE STORY. The players watch a map, not only words. Everything your narration says that one could see must come with the effect that shows it, in the same answer: someone crouches, jumps, strikes, falls or dances — "animate"; a creature comes closer, backs off, circles — "move" it to its new cell (several cells if it runs); it leaves — "remove"; something appears — "spawn"; blood, dung, ash, a spill or a scorch is left — "mark"; a door opens or a wall falls — "tile"; creatures attack — "attitude" hostile and "fight". Never narrate a change on the map without its effect. Every "id" in an effect must be one listed in PLACE, WHAT IS WHERE or THE PARTY (or a thing you spawn in the same answer); an id that is not there does nothing — to bring someone new in, "spawn" them first. The same goes for the bag: every thing a narration or an outcome says a hero gets, finds, takes or is handed needs a "give" of its own in the same effects (two things named — two "give"), and every thing lost or spent a "take"; never name a thing that no effect hands over. A chest, crate or purse holds its things in "contents", not in an action of its own."##;
 
 /// The rules that never change. The answer format is plain JSON so that every model in the
@@ -186,10 +187,12 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     let (x, y) = world.player.cell();
     let _ = writeln!(text, "The party stands at ({x}, {y}).");
     // The map itself, so that walls between the party and anything are known.
-    let _ = writeln!(text, "MAP of this place (x across, y down; the party is @):");
+    let _ = writeln!(text, "MAP of this place (x across, y down; the party is @). The two lines above it count x, the number before each row is y:");
+    let _ = writeln!(text, "      {}", (0..MAP_W).map(|c| if c % 10 == 0 { char::from_digit((c / 10) as u32, 10).unwrap_or(' ') } else { ' ' }).collect::<String>());
+    let _ = writeln!(text, "      {}", (0..MAP_W).map(|c| char::from_digit((c % 10) as u32, 10).unwrap_or(' ')).collect::<String>());
     for (row, line) in here.map.iter().enumerate() {
         let shown: String = line.chars().enumerate().map(|(col, c)| if (col as i32, row as i32) == (x, y) { '@' } else { c }).collect();
-        let _ = writeln!(text, "  {shown}");
+        let _ = writeln!(text, "  {row:>2}  {shown}");
     }
     let legend: Vec<String> = here.legend.iter().map(|(c, id)| format!("{c} {id}{}", if world.tiles.get(id).is_some_and(|t| t.walkable) { "" } else { " (solid)" })).collect();
     let _ = writeln!(text, "LEGEND: {}", legend.join(", "));
@@ -216,6 +219,21 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     }
     for creature in &here.creatures {
         let _ = writeln!(text, "- {} ({}): {}", creature.id, creature.name, walk((creature.x, creature.y)));
+    }
+    for exit in &here.exits {
+        let on_foot = match far[exit.y][exit.x] {
+            Some(0) => "the party stands on it".to_string(),
+            Some(n) => format!("{n} steps away on foot"),
+            None => "cannot be reached on foot from here".to_string(),
+        };
+        let _ = writeln!(text, "- the way out to {} at ({}, {}): {on_foot}", world.place_name(&exit.to), exit.x, exit.y);
+    }
+    // Ground the party cannot get to from where it stands: what a bridge would be for.
+    let cut_off = (0..MAP_H).flat_map(|cy| (0..MAP_W).map(move |cx| (cx, cy))).filter(|(cx, cy)| far[*cy][*cx].is_none() && !here.blocked(*cx as i32, *cy as i32, &world.tiles)).count();
+    if cut_off > 0 {
+        let _ = writeln!(text, "- {cut_off} walkable cells of this place cannot be reached on foot from where the party stands.");
+    } else {
+        let _ = writeln!(text, "- Every walkable cell of this place can be reached on foot from where the party stands: nothing has to be bridged or broken through to get anywhere here.");
     }
     let _ = write!(text, "\nSPRITES THAT EXIST:");
     for sprite_id in world.sprites.keys() {
@@ -261,6 +279,7 @@ const TURN_SHAPE: &str = r##"{
   "narration": "what happens, told to the players",
   "effects": [],
   "sprites": [{"id": "…", "rows": ["…"]}],
+  "tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
   "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": [], "near": ""}]
 }
 An option that needs the party beside someone or something (talk to them, take it, open it) gives that thing's id as "near": the game lets the party choose it only once they have walked up to it, and keeps it on the thing to be found there. Every other option must be something the party can do from where it stands now."##;
