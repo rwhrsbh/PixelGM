@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true };
+        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt };
         store.save_settings(&settings).unwrap();
         assert_eq!(store.load_settings(), settings);
     }
