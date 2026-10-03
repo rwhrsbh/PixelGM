@@ -294,7 +294,19 @@ fn build(
     let placed: Vec<(usize, (u8, u8), (u8, u8), Handle<Image>)> = bag(world, h).iter().enumerate().filter_map(|(i, item)| item.at.map(|at| (i, at, item.size(), icon_of(item, &mut state)))).collect();
     let hero = hero_index.and_then(|h| world.party.get(h));
     let mut worn_icons: Vec<(Slot, Handle<Image>)> = hero
-        .map(|hero| Slot::ALL.iter().filter_map(|slot| worn(hero, *slot).map(|index| (*slot, icon_of(&Item { name: gear_name(&index, false), gear: Some(index), count: 1, ..default() }, &mut state)))).collect())
+        .map(|hero| {
+            Slot::ALL
+                .iter()
+                .filter_map(|slot| {
+                    worn(hero, *slot).map(|index| {
+                        // A thing of the master's own keeps its own picture while worn.
+                        let own = world.story.bags.get(h).and_then(|b| b.worn_as.iter().find(|i| i.gear.as_deref() == Some(index.as_str()))).cloned();
+                        let shown = own.unwrap_or(Item { name: gear_name(&index, false), gear: Some(index), count: 1, ..default() });
+                        (*slot, icon_of(&shown, &mut state))
+                    })
+                })
+                .collect()
+        })
         .unwrap_or_default();
     // A light in the off hand shows where a shield would.
     if let Some(light) = world.held_light(h).cloned() {
@@ -740,8 +752,14 @@ fn hover(
                 if let (Slot::Shield, Some(light)) = (slot, world.held_light(hero)) {
                     lines.extend(item_lines(light, *lang));
                 } else if let Some(index) = world.party.get(hero).and_then(|h| worn(h, slot)) {
-                    lines.push((gear_name(&index, *lang == Lang::Ru), BRASS_LIGHT));
-                    lines.extend(gear_lines(&index, *lang));
+                    // A thing of the master's own is called by its own name, with what it is.
+                    match world.story.bags.get(hero).and_then(|b| b.worn_as.iter().find(|i| i.gear.as_deref() == Some(index.as_str()))) {
+                        Some(own) => lines.extend(item_lines(own, *lang)),
+                        None => {
+                            lines.push((gear_name(&index, *lang == Lang::Ru), BRASS_LIGHT));
+                            lines.extend(gear_lines(&index, *lang));
+                        }
+                    }
                 } else {
                     lines.push((T::BagEmptySlot.text(*lang).to_string(), FADED));
                 }
