@@ -86,7 +86,7 @@ impl World {
             let op = text(effect, "op");
             let id = slug(&text(effect, "id"));
             match op.as_str() {
-                "remove" | "move" | "animate" | "attitude" if !known(&id) => faults.push(format!("\"{op}\" names \"{id}\", which is not in this place: use an id from PLACE or WHAT IS WHERE, or \"spawn\" it first")),
+                "remove" | "move" | "animate" | "attitude" | "join" if !known(&id) => faults.push(format!("\"{op}\" names \"{id}\", which is not in this place: use an id from PLACE or WHAT IS WHERE, or \"spawn\" it first")),
                 "tile" => {
                     let tile = slug(&text(effect, "tile"));
                     if !self.tiles.contains_key(&tile) && !drawn_tiles.contains(&tile) {

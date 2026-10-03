@@ -103,6 +103,10 @@ pub enum Effect {
         #[serde(default)]
         done: bool,
     },
+    /// Someone here joins the party as a companion.
+    Join { id: String },
+    /// A companion leaves the party and stays where the party is.
+    Dismiss { id: String },
     /// Time passes: so many hours.
     Time {
         #[serde(default)]
@@ -706,6 +710,8 @@ impl World {
                 _ => 3,
             }
         };
+        let mut joining: Vec<String> = Vec::new();
+        let mut leaving: Vec<String> = Vec::new();
         let mut until: Option<String> = None;
         let mut passed = 0u32;
         let mut gold: Vec<(usize, i64)> = Vec::new();
@@ -928,6 +934,8 @@ impl World {
                         _ => location.light = light,
                     }
                 }
+                Effect::Join { id } => joining.push(resolve(id)),
+                Effect::Dismiss { id } => leaving.push(resolve(id)),
                 Effect::Time { hours } => passed += (hours.as_f64().unwrap_or(0.0).clamp(0.0, 240.0) * 60.0) as u32,
                 Effect::Gold { amount, to } => {
                     let hero = if to.trim().is_empty() { acting } else { bag_of(to) };
@@ -1033,6 +1041,17 @@ impl World {
             }
         }
         self.moves.extend(moved);
+        let owner = self.owners.get(acting).cloned().unwrap_or_default();
+        for id in joining {
+            if let Err(why) = self.join(&id, &owner) {
+                notes.push(format!("join: {why}"));
+            }
+        }
+        for id in leaving {
+            if !self.dismiss(&id) {
+                notes.push(format!("dismiss: nobody called '{id}' travels with the party"));
+            }
+        }
         if passed > 0 {
             self.pass(passed);
         }

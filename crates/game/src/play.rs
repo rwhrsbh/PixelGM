@@ -671,6 +671,7 @@ fn scene_key(world: &World) -> u64 {
     here.map.hash(&mut hasher);
     here.legend.hash(&mut hasher);
     here.light.hash(&mut hasher);
+    world.companions.len().hash(&mut hasher);
     here.marks.hash(&mut hasher);
     for prop in &here.props {
         (&prop.id, prop.x, prop.y, &prop.sprite, &prop.name).hash(&mut hasher);
@@ -849,12 +850,23 @@ fn draw(
                 .with_children(|me| shadow_under(me, &cache.shadow));
         }
     }
+    // The pictures of those who travel with the party, made before the heroes' own.
+    let ally_images: Vec<Option<Handle<Image>>> = world.companions.iter().map(|c| picture(&c.creature.sprite)).collect();
     let frames_of = |index: Option<usize>, dolls: &mut Dolls, images: &mut Assets<Image>| index.and_then(|i| world.party.get(i).map(|hero| dolls.of(hero, world.held_light(i).is_some(), images)));
     match world.fight.as_ref().filter(|_| world.fight_here()) {
         // In a fight every hero stands in a cell of its own; the fallen are darkened.
         Some(fight) => {
             for c in fight.combatants.iter().filter(|c| c.side == Side::Party && !c.dead) {
                 let (x, y) = foot(c.x.max(0) as usize, c.y.max(0) as usize);
+                // A companion is drawn as the creature it is.
+                if let Some(ally) = c.id.strip_prefix("ally_").and_then(|n| n.parse::<usize>().ok()).filter(|n| *n < world.companions.len()) {
+                    if let Some(image) = ally_images[ally].clone() {
+                        let tint = if c.hp > 0 { Color::WHITE } else { Color::srgb(0.35, 0.3, 0.3) };
+                        let home = on_screen(x, y).extend(depth(y));
+                        commands.spawn((InLocation, Actor { id: c.id.clone(), home, tint, bob: None }, Sprite { color: tint, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(home))).with_children(|me| shadow_under(me, &cache.shadow));
+                    }
+                    continue;
+                }
                 let hero = c.id.strip_prefix("hero_").and_then(|n| n.parse::<usize>().ok());
                 let Some(frames) = frames_of(hero, &mut dolls, &mut images) else { continue };
                 let tint = if c.hp > 0 { Color::WHITE } else { Color::srgb(0.35, 0.3, 0.3) };
@@ -869,6 +881,13 @@ fn draw(
             }
         }
         None => {
+            // Those who travel with the heroes walk a step behind them.
+            for n in world.companions_here() {
+                let companion = &world.companions[n];
+                if let Some(image) = ally_images[n].clone() {
+                    commands.spawn((InLocation, Ally { owner: companion.owner.clone(), rank: world.companions.iter().take(n).filter(|c| c.owner == companion.owner).count() }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::default())).with_children(|me| shadow_under(me, &cache.shadow));
+                }
+            }
             for other in world.tokens_here() {
                 let owner = world.owners.iter().position(|o| *o == other.name);
                 let frames = frames_of(owner, &mut dolls, &mut images).unwrap_or_default();
@@ -881,6 +900,38 @@ fn draw(
                 let first = frames[0].clone();
                 commands.spawn((InLocation, Hero, Frames(frames), Sprite::from_image(first), Anchor::BOTTOM_CENTER, Transform::default())).with_children(|me| shadow_under(me, &cache.shadow));
             }
+        }
+    }
+}
+
+/// A companion's figure: whose it is, and which of that player's companions.
+#[derive(Component)]
+struct Ally {
+    owner: String,
+    rank: usize,
+}
+
+/// Companions keep a step behind the hero they follow, each in a place of its own.
+fn place_allies(time: Res<Time>, game: Res<Game>, settings: Res<Settings>, mut allies: Query<(&Ally, &mut Transform, &mut Sprite)>) {
+    let world = &game.world;
+    let me = player_name(&settings);
+    for (ally, mut transform, mut sprite) in &mut allies {
+        // The one they follow: this player's own hero, or another player's token.
+        let leader = if ally.owner.is_empty() || ally.owner == me { Some((world.player.x, world.player.y)) } else { world.tokens_here().find(|t| t.name == ally.owner).map(|t| (t.x, t.y)) };
+        let Some((lx, ly)) = leader else { continue };
+        let back = 14.0 + ally.rank as f32 * 11.0;
+        let side = if ally.rank % 2 == 0 { 5.0 } else { -3.0 };
+        let feet = ly + FEET.1 + side;
+        let goal = on_screen(lx - back, feet);
+        let wanted = Vec3::new(goal.x, goal.y, depth(feet));
+        let now = transform.translation;
+        // Just appeared, or left far behind: beside the leader at once.
+        let next = if now == Vec3::ZERO || now.truncate().distance(wanted.truncate()) > 160.0 { wanted } else { now.truncate().lerp(wanted.truncate(), 1.0 - (-time.delta_secs() * 5.0).exp()).extend(wanted.z) };
+        if (next.x - now.x).abs() > 0.3 {
+            sprite.flip_x = next.x < now.x;
+        }
+        if transform.translation != next {
+            transform.translation = next;
         }
     }
 }
@@ -1110,6 +1161,12 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
                 hero.dead = true;
             }),
             "deed" => world.secrets_due.push(0),
+            // `join`: whoever is here first joins the party, so companions can be tested.
+            "join" => {
+                if let Some(id) = world.here().creatures.first().map(|c| c.id.clone()) {
+                    let _ = world.join(&id, "");
+                }
+            }
             // `fight`: everything alive here turns on the party, so a fight can be tested.
             "fight" => {
                 let here = world.current.clone();
@@ -3635,6 +3692,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Approach>()
             .init_resource::<UseFor>()
             .add_observer(on_resize)
+            .add_systems(Update, place_allies.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (run_clock, clock_face).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, goal_line.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, number_keys.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))

@@ -459,6 +459,63 @@ impl World {
         solid || here.props.iter().any(|p| p.blocking && (p.x, p.y) == (ux, uy)) || here.creatures.iter().any(|c| (c.x, c.y) == (ux, uy) && !fighting(&c.id))
     }
 
+    /// The place a companion is in: where the hero of its player is.
+    pub fn companion_place(&self, companion: &crate::model::Companion) -> &str {
+        if companion.owner.is_empty() { self.host_place() } else { self.place_of(&companion.owner) }
+    }
+
+    /// The companions in the place being looked at, by their number.
+    pub fn companions_here(&self) -> Vec<usize> {
+        (0..self.companions.len()).filter(|n| self.companion_place(&self.companions[*n]) == self.current).collect()
+    }
+
+    /// How many may still join: two beside a lone hero, five fighters in all at a shared table.
+    pub fn room_for_companions(&self) -> usize {
+        let heroes = self.party.iter().filter(|h| !h.dead).count();
+        let most = if heroes <= 1 { 2 } else { 5usize.saturating_sub(heroes) };
+        most.saturating_sub(self.companions.len())
+    }
+
+    /// Someone here joins the party, under the hand of `owner`.
+    pub fn join(&mut self, id: &str, owner: &str) -> Result<(), String> {
+        if self.room_for_companions() == 0 {
+            return Err("the party has no room for another companion".to_string());
+        }
+        let here = self.current.clone();
+        let at = self.here().creatures.iter().position(|c| c.id == id).ok_or(format!("nobody called '{id}' is here"))?;
+        let mut creature = self.locations.get_mut(&here).expect("the party is somewhere").creatures.remove(at);
+        creature.attitude = Attitude::Friendly;
+        creature.actions.clear();
+        creature.stock.clear();
+        creature.wares.clear();
+        let max_hp = self.combatant_for(&creature).max_hp.max(1);
+        // The id must stay its own among the companions.
+        if self.companions.iter().any(|c| c.creature.id == creature.id) {
+            creature.id = format!("{}_{}", creature.id, self.companions.len() + 1);
+        }
+        self.companions.push(crate::model::Companion { creature, hp: max_hp, max_hp, owner: owner.to_string() });
+        Ok(())
+    }
+
+    /// A companion leaves the party and stays in the place it is in.
+    pub fn dismiss(&mut self, id: &str) -> bool {
+        let wanted = id.to_lowercase();
+        let Some(n) = self.companions.iter().position(|c| c.creature.id == id || c.creature.name.to_lowercase() == wanted) else { return false };
+        let place = self.companion_place(&self.companions[n]).to_string();
+        let mut gone = self.companions.remove(n).creature;
+        let (px, py) = self.player.cell();
+        if let Some(location) = self.locations.get(&place) {
+            let free = |(x, y): (usize, usize)| !location.blocked(x as i32, y as i32, &self.tiles) && location.exit_at(x, y).is_none() && (x as i32, y as i32) != (px, py);
+            let near = (px.clamp(0, MAP_W as i32 - 1) as usize, py.clamp(0, MAP_H as i32 - 1) as usize);
+            (gone.x, gone.y) = nearest(near, free).unwrap_or(near);
+        }
+        gone.mustered = true;
+        if let Some(location) = self.locations.get_mut(&place) {
+            location.creatures.push(gone);
+        }
+        true
+    }
+
     /// What a fight here may cost: the experience the book calls a hard encounter for the
     /// heroes taking part, more or less by the difficulty of the world.
     pub fn encounter_budget(&self) -> u32 {
@@ -540,6 +597,19 @@ impl World {
             taken.push(cell);
             combatants.push(Combatant::hero(hero, &hero_id(i), (cell.0 as i32, cell.1 as i32)));
         }
+        // Those who travel with the heroes here fight beside them.
+        for n in self.companions_here() {
+            let companion = &self.companions[n];
+            let free = |c: (usize, usize)| !here.blocked(c.0 as i32, c.1 as i32, &self.tiles) && !taken.contains(&c);
+            let cell = nearest(leader, free).unwrap_or(leader);
+            taken.push(cell);
+            let mut ally = self.combatant_for(&companion.creature);
+            ally.id = format!("ally_{n}");
+            ally.side = Side::Party;
+            ally.hp = companion.hp.min(ally.max_hp);
+            (ally.x, ally.y) = (cell.0 as i32, cell.1 as i32);
+            combatants.push(ally);
+        }
         combatants.extend(enemies);
         self.fight = Some(Encounter::start(combatants, rng).0);
         self.fight_place = self.current.clone();
@@ -586,6 +656,17 @@ impl World {
                     if let (Some(feat), Some(left)) = (strike.feat.and_then(|f| hero.feats.get_mut(f)), strike.uses_left) {
                         feat.used = feat.uses.saturating_sub(left);
                     }
+                }
+            }
+        }
+        // Companions keep their wounds; the dead are gone for good.
+        for n in (0..self.companions.len()).rev() {
+            if let Some(c) = fight.combatants.iter().find(|c| c.id == format!("ally_{n}")) {
+                if c.dead {
+                    let name = self.companions.remove(n).creature.name;
+                    self.story.remember(&format!("{name}, who travelled with the party, died in {place}."));
+                } else {
+                    self.companions[n].hp = c.hp.max(1);
                 }
             }
         }
@@ -646,6 +727,9 @@ impl World {
         for hero in &mut self.party {
             hero.long_rest();
         }
+        for companion in &mut self.companions {
+            companion.hp = companion.max_hp;
+        }
     }
 }
 
@@ -676,7 +760,12 @@ impl World {
 
     pub fn acting_owner(&self) -> Option<&str> {
         let fight = self.fight.as_ref()?;
-        let index: usize = fight.actor().id.strip_prefix("hero_")?.parse().ok()?;
+        let id = fight.actor().id.as_str();
+        // A companion is played by whoever took it on.
+        if let Some(n) = id.strip_prefix("ally_").and_then(|n| n.parse::<usize>().ok()) {
+            return self.companions.get(n).map(|c| c.owner.as_str()).filter(|o| !o.is_empty());
+        }
+        let index: usize = id.strip_prefix("hero_")?.parse().ok()?;
         self.owners.get(index).map(String::as_str).filter(|o| !o.is_empty())
     }
 
@@ -891,6 +980,33 @@ mod tests {
         assert_eq!(fight.combatants.len(), 2);
         assert_eq!(fight.combatants[0].id, "hero_0");
         assert!(!w.start_fight(Rng::seeded(1)), "one fight at a time");
+    }
+
+    #[test]
+    fn someone_joins_fights_beside_the_party_and_can_be_sent_away() {
+        let mut w = world();
+        apply(&mut w, json!([{ "op": "spawn", "kind": "creature", "id": "guard", "name": "Old guard", "x": 6, "y": 6, "sprite": "cat", "attitude": "friendly", "monster": "guard" }]));
+        let notes = apply(&mut w, json!([{ "op": "join", "id": "guard" }]));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(w.companions.len(), 1);
+        assert!(w.here().creatures.iter().all(|c| c.id != "guard"));
+        assert_eq!((w.room_for_companions(), w.companions_here()), (1, vec![0]));
+        // In a fight the guard is on the party's side and is the lone player's to move.
+        apply(&mut w, json!([{ "op": "attitude", "id": "cat", "attitude": "hostile" }]));
+        assert!(w.start_fight(Rng::seeded(4)));
+        let fight = w.fight.as_ref().unwrap();
+        let ally = fight.combatants.iter().find(|c| c.id == "ally_0").unwrap();
+        assert_eq!((ally.side, ally.name.as_str()), (Side::Party, "Old guard"));
+        // A wound taken is kept; then the guard is sent away and stands in the place again.
+        w.fight.as_mut().unwrap().combatants.iter_mut().find(|c| c.id == "ally_0").unwrap().hp = 3;
+        for c in w.fight.as_mut().unwrap().combatants.iter_mut().filter(|c| c.side == Side::Enemy) {
+            c.hp = 0;
+            c.dead = true;
+        }
+        w.end_fight();
+        assert_eq!(w.companions[0].hp, 3);
+        apply(&mut w, json!([{ "op": "dismiss", "id": "guard" }]));
+        assert!(w.companions.is_empty() && w.here().creatures.iter().any(|c| c.id == "guard"));
     }
 
     #[test]

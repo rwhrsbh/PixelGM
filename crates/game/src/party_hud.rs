@@ -52,7 +52,7 @@ fn build(
     let print = format!(
         "{mine:?}|{acting:?}|{:?}|{:?}",
         world.party.iter().enumerate().map(|(i, h)| (&h.name, hp_of(i, h), h.max_hp, h.ac(), h.level, h.dead, h.look, &h.armor, h.shield, h.weapons.first())).collect::<Vec<_>>(),
-        (&world.owners, &world.present, *lang)
+        (&world.owners, &world.present, *lang, world.companions.iter().enumerate().map(|(n, c)| (&c.creature.name, world.fight.as_ref().and_then(|f| f.combatants.iter().find(|f| f.id == format!("ally_{n}"))).map_or(c.hp, |f| f.hp), c.max_hp)).collect::<Vec<_>>())
     );
     if *built == print {
         return;
@@ -105,6 +105,23 @@ fn build(
                     let state = if hero.dead { T::HudFallen.text(*lang).to_string() } else if away { T::HudAway.text(*lang).to_string() } else { format!("{}/{}", hp.max(0), hero.max_hp) };
                     frame.spawn((Text::new(state), fonts.body(), TextColor(color(TALLOW)), TextLayout::no_wrap()));
                     frame.spawn((Text::new(format!("{} {}", T::ArmorClass.text(*lang), hero.ac())), fonts.body(), TextColor(color(PARCHMENT_SHADE)), TextLayout::no_wrap()));
+                });
+        }
+        // Those who travel with the party, smaller: a name and a bar.
+        for (n, companion) in world.companions.iter().enumerate() {
+            let fighter = world.fight.as_ref().and_then(|f| f.combatants.iter().find(|c| c.id == format!("ally_{n}")));
+            let hp = fighter.map_or(companion.hp, |c| c.hp);
+            let turn = acting.as_deref() == Some(format!("ally_{n}").as_str());
+            column
+                .spawn((Node { width: percent(100), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: px(1), padding: UiRect::all(px(1)), border: UiRect::all(px(1)), ..default() }, BackgroundColor(Color::srgba(0.08, 0.06, 0.05, 0.9)), BorderColor::all(color(if turn { BRASS_LIGHT } else { WOOD_DARK }))))
+                .with_children(|frame| {
+                    let name: String = companion.creature.name.chars().take(7).collect();
+                    frame.spawn((Text::new(name), fonts.body(), TextColor(color(PARCHMENT)), TextLayout::no_wrap()));
+                    let share = (hp.max(0) as f32 / companion.max_hp.max(1) as f32).clamp(0.0, 1.0);
+                    frame.spawn((Node { width: px(36), height: px(3), flex_shrink: 0.0, ..default() }, BackgroundColor(color(INK)))).with_children(|back| {
+                        back.spawn((Node { width: px((36.0 * share).round()), height: px(3), ..default() }, BackgroundColor(color([0x5c, 0xb0, 0x4a, 0xff]))));
+                    });
+                    frame.spawn((Text::new(format!("{}/{}", hp.max(0), companion.max_hp)), fonts.body(), TextColor(color(TALLOW)), TextLayout::no_wrap()));
                 });
         }
     });

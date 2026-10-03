@@ -384,6 +384,9 @@ pub struct World {
     /// The main quest and the side tasks.
     #[serde(default)]
     pub quest: Quest,
+    /// Those who travel with the party.
+    #[serde(default)]
+    pub companions: Vec<Companion>,
     /// Minutes since midnight of the first day. It runs a minute to a second of play.
     #[serde(default = "morning")]
     pub clock: u32,
@@ -426,6 +429,19 @@ pub struct World {
 
 fn yes() -> bool {
     true
+}
+
+/// Someone who travels with the party: talked round, hired, or won by a quest. They walk
+/// beside the hero of the player who took them on and fight on the party's side under that
+/// player's hand, with a monster's numbers. Death is final for them.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Companion {
+    pub creature: Creature,
+    pub hp: i32,
+    pub max_hp: i32,
+    /// The player who took them on; empty alone.
+    #[serde(default)]
+    pub owner: String,
 }
 
 /// A world begins at eight in the morning of its first day.
