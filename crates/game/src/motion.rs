@@ -154,7 +154,7 @@ fn start(
         }
         targets.extend(actors.iter().filter(|(_, a)| a.id == id).map(|(e, _)| e));
         for entity in targets {
-            commands.entity(entity).insert(Moving { motion, age: 0.0 });
+            commands.entity(entity).try_insert(Moving { motion, age: 0.0 });
         }
     }
     *seen = world.cue_seq;
@@ -167,7 +167,7 @@ fn perform(time: Res<Time>, mut commands: Commands, mut figures: Query<(Entity, 
         if moving.age >= moving.motion.seconds() {
             transform.scale = Vec3::ONE;
             transform.rotation = Quat::IDENTITY;
-            commands.entity(entity).remove::<Moving>();
+            commands.entity(entity).try_remove::<Moving>();
             continue;
         }
         let (offset, squash, lean, flip) = moving.motion.pose(moving.age);

@@ -468,6 +468,8 @@ enum PlayAction {
     Do(usize),
     /// Open, pick or force the container being looked at.
     Chest(world::bag::Opening),
+    /// Walk up to what a choice needs, then take it.
+    Approach(usize),
     /// Open the field for the party's own words.
     Own,
     Send,
@@ -1348,6 +1350,97 @@ fn far_from(world: &World, id: &str) -> Option<String> {
     (distance > THING_REACH * 1.6).then_some(name)
 }
 
+/// A walk the hero is taking to do what a choice needs.
+pub struct Walking {
+    path: Vec<(usize, usize)>,
+    option: world::Action,
+    index: usize,
+    turn: Turn,
+}
+
+/// The walk under way, if any.
+#[derive(Resource, Default)]
+pub struct Approach(Option<Walking>);
+
+/// The cells to walk to stand beside a thing here.
+fn way_to(world: &World, id: &str) -> Option<Vec<(usize, usize)>> {
+    let here = world.here();
+    let target = here.props.iter().find(|p| p.id == id).map(|p| (p.x, p.y)).or_else(|| here.creatures.iter().find(|c| c.id == id).map(|c| (c.x, c.y)))?;
+    let (px, py) = world.player.cell();
+    let start = (px.clamp(0, world::MAP_W as i32 - 1) as usize, py.clamp(0, world::MAP_H as i32 - 1) as usize);
+    let beside = |(x, y): (usize, usize)| x.abs_diff(target.0) + y.abs_diff(target.1) == 1;
+    world::path::route(start, beside, |(x, y)| here.blocked(x as i32, y as i32, &world.tiles) || here.exit_at(x, y).is_some())
+}
+
+/// Walks the hero along the way to what a choice needs, and takes the choice on arriving. A
+/// key pressed to walk elsewhere calls the walk off.
+#[allow(clippy::too_many_arguments)]
+fn approach_work(
+    time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut approach: ResMut<Approach>,
+    mut game: ResMut<Game>,
+    mut phase: ResMut<Phase>,
+    mut pose: ResMut<HeroPose>,
+    mut redraw: ResMut<Redraw>,
+    mut background: ResMut<Background>,
+    mut table: ResMut<Table>,
+    session: Res<Session>,
+    settings: Res<Settings>,
+    store: Res<Store>,
+    gm: Res<Gm>,
+    master: Res<Master>,
+) {
+    if approach.0.is_none() || *phase != Phase::Walking {
+        return;
+    }
+    let steering = [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::ArrowLeft, KeyCode::ArrowRight];
+    if keyboard.any_pressed(steering) {
+        approach.0 = None;
+        return;
+    }
+    let Some(walking) = approach.0.as_mut() else { return };
+    if let Some(&(cx, cy)) = walking.path.first() {
+        let goal = world::Player::in_cell(cx, cy);
+        let world = &mut game.world;
+        let way = Vec2::new(goal.x - world.player.x, goal.y - world.player.y);
+        if way.length() < 1.0 {
+            world.player = goal;
+            walking.path.remove(0);
+            return;
+        }
+        let step = way.clamp_length_max(SPEED * time.delta_secs());
+        if let Some(facing) = crate::doll::Facing::of(step.x, step.y) {
+            pose.facing = facing;
+        }
+        // Stuck on a corner, the hero is set down at the next cell.
+        if !world.walk(step.x, step.y) {
+            world.player = goal;
+        }
+        pose.moving = true;
+        pose.clock += time.delta_secs();
+        return;
+    }
+    // Arrived: the choice is taken as if it had been clicked beside the thing.
+    let Some(Walking { option, index, turn, .. }) = approach.0.take() else { return };
+    pose.moving = false;
+    if session.is_client() {
+        session.intend(Intent::Choose(index));
+        *phase = Phase::Asking { said: option.label.clone(), near: None };
+        return;
+    }
+    let _ = turn;
+    let outcome = game.world.choose(&option);
+    redraw.0 = true;
+    autosave(&store, &game);
+    table.going_on = Some(outcome.clone());
+    let next = send(format!("{} {}", option.label, world::prompt::GO_ON), None, &game, &gm, &store, &settings, &master, &session, &table);
+    *phase = match next {
+        Phase::Reading { .. } => told(Turn { narration: outcome, options: Vec::new() }, Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table),
+        other => other,
+    };
+}
+
 /// What came of going at a container, in words.
 fn chest_words(result: &world::bag::Opened, lang: Lang) -> String {
     match result {
@@ -1776,7 +1869,7 @@ fn chat_log(time: Res<Time>, mut table: ResMut<Table>, mut logs: Query<(&mut Tex
 
 /// Which sheet, if any, lies over the game, with everything it shows: when this value
 /// changes the sheet is rebuilt.
-#[derive(Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default, Debug)]
 enum Sheet {
     #[default]
     None,
@@ -1825,7 +1918,7 @@ fn seat_state(world: &World, session: &Session, me: &str) -> SeatState {
 }
 
 /// The master's panel as it is drawn.
-#[derive(Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default, Debug)]
 struct PanelView {
     typed: String,
     /// Who a whisper would go to.
@@ -2236,9 +2329,8 @@ fn overlay(
                     // A choice that needs the party beside something far off waits for it there.
                     let far = option.near.as_deref().and_then(|id| far_from(&game.world, id));
                     match far {
-                        Some(name) => {
-                            sheet.spawn((Text::new(format!("{} — {} {name}", option.label, T::WalkUpTo.text(*lang))), fonts.body(), faded));
-                        }
+                        // Too far: the hero walks there first, and then does it.
+                        Some(name) => crate::widgets::wrap_button(sheet, &art, &fonts, format!("{} ({} {name})", option.label, T::WalkUpTo.text(*lang)), PlayAction::Approach(n)),
                         None => crate::widgets::wrap_button(sheet, &art, &fonts, option.label.clone(), PlayAction::Choose(n)),
                     }
                 }
@@ -2380,7 +2472,7 @@ fn on_activate(
     settings: Res<Settings>,
     master: Res<Master>,
     mut session: ResMut<Session>,
-    mut table: ResMut<Table>,
+    (mut table, mut approach): (ResMut<Table>, ResMut<Approach>),
 ) {
     // This observer hears every button in the game; outside a game there is nothing to act on.
     let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
@@ -2558,6 +2650,17 @@ fn on_activate(
                 *phase = send(input.value().to_string(), near, &game, &gm, &store, &settings, &master, &session, &table);
             }
         }
+        (PlayAction::Approach(index), Phase::Reading { turn }) => {
+            if let Some(option) = turn.options.get(index) {
+                match way_to(&game.world, option.near.as_deref().unwrap_or_default()) {
+                    Some(path) => {
+                        approach.0 = Some(Walking { path, option: option.clone(), index, turn: turn.clone() });
+                        *phase = Phase::Walking;
+                    }
+                    None => *phase = Phase::Reading { turn: Turn { narration: format!("{}\n\n{}", turn.narration, T::CannotReach.text(settings.lang)), options: turn.options.clone() } },
+                }
+            }
+        }
         (PlayAction::Choose(index), Phase::Reading { turn }) => {
             if let Some(option) = turn.options.get(index) {
                 // The outcome happens at once; the master is asked what follows it.
@@ -2568,7 +2671,7 @@ fn on_activate(
                 let next = send(format!("{} {}", option.label, world::prompt::GO_ON), None, &game, &gm, &store, &settings, &master, &session, &table);
                 *phase = match next {
                     // The master is busy: the outcome is told on its own.
-                    Phase::Reading { .. } => told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table),
+                    Phase::Reading { .. } => told(Turn { narration: outcome, options: Vec::new() }, Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table),
                     other => other,
                 };
             }
@@ -3144,6 +3247,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Folded>()
             .init_resource::<Leave>()
             .init_resource::<Pick>()
+            .init_resource::<Approach>()
             .add_observer(on_fold)
             .init_resource::<Dolls>()
             .init_resource::<Background>()
@@ -3152,7 +3256,7 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, approach_work, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on, notice, relocate).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)

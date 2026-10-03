@@ -32,6 +32,34 @@ pub fn steps(start: Cell, blocked: impl Fn(Cell) -> bool) -> Vec<Vec<Option<u32>
     far
 }
 
+/// The cells to walk through, after `start`, to the nearest cell where `goal` holds; none
+/// when no such cell can be reached.
+pub fn route(start: Cell, goal: impl Fn(Cell) -> bool, blocked: impl Fn(Cell) -> bool) -> Option<Vec<Cell>> {
+    let mut came: Vec<Vec<Option<Cell>>> = vec![vec![None; MAP_W]; MAP_H];
+    came[start.1][start.0] = Some(start);
+    let mut queue = VecDeque::from([start]);
+    while let Some(cell) = queue.pop_front() {
+        if goal(cell) {
+            let mut way = vec![cell];
+            let mut at = cell;
+            while at != start {
+                at = came[at.1][at.0].expect("every cell queued was reached from another");
+                way.push(at);
+            }
+            way.pop();
+            way.reverse();
+            return Some(way);
+        }
+        for next in neighbours(cell) {
+            if came[next.1][next.0].is_none() && !blocked(next) {
+                came[next.1][next.0] = Some(cell);
+                queue.push_back(next);
+            }
+        }
+    }
+    None
+}
+
 /// Every cell that can be walked to from `start`, moving up, down, left and right.
 pub fn reachable(start: Cell, blocked: impl Fn(Cell) -> bool) -> Vec<Vec<bool>> {
     let mut seen = vec![vec![false; MAP_W]; MAP_H];
@@ -94,6 +122,18 @@ pub fn elbow(a: Cell, b: Cell) -> Vec<Cell> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_route_goes_round_a_wall_to_beside_its_goal() {
+        // A wall down column 5 from the top, with a gap at the bottom row.
+        let blocked = |(x, y): Cell| x == 5 && y < MAP_H - 1;
+        let way = route((2, 2), |(x, y)| (x, y) == (8, 2), blocked).unwrap();
+        assert_eq!(way.last(), Some(&(8, 2)));
+        assert!(way.iter().all(|c| !blocked(*c)));
+        assert!(way.contains(&(5, MAP_H - 1)), "through the gap");
+        assert_eq!(route((2, 2), |c| c == (2, 2), blocked), Some(vec![]));
+        assert_eq!(route((2, 2), |(x, _)| x == 5, |(x, _)| x == 4), None);
+    }
 
     #[test]
     fn a_wall_across_the_map_splits_it() {

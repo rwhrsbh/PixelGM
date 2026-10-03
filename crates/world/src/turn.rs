@@ -216,7 +216,7 @@ mod tests {
         assert!(turn.narration.contains("I shout into the trees"));
         assert_eq!(w.story.log.len(), 2);
         assert_eq!(w.story.facts, ["The party made itself heard."]);
-        assert_eq!(turn.options.len(), 3);
+        assert_eq!(turn.options.len(), 4);
 
         let outcome = w.choose(&turn.options[0]);
         assert_eq!(outcome, turn.options[0].outcome);

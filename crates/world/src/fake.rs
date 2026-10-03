@@ -229,6 +229,7 @@ pub fn turn(said: &str) -> String {
         "options": [
             { "label": "Search the ground", "outcome": "Under the leaves you find a coin, worn smooth.", "effects": [{ "op": "give", "name": "Old coin", "description": "Worn smooth." }] },
             { "label": "Wait and listen", "outcome": "Nothing comes. The trees creak.", "effects": [] },
+            { "label": "Pet the cat", "near": "cat", "outcome": "The cat leans into your hand and purrs.", "effects": [{ "op": "animate", "id": "cat", "motion": "nod" }] },
             { "label": "Take a long careful look around the whole clearing, behind every tree and under every stone, before deciding anything at all", "outcome": "Nothing hides here but the wind.", "effects": [] }
         ]
     })

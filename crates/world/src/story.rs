@@ -779,6 +779,11 @@ impl World {
                 }
                 Effect::Animate { id, motion } => {
                     let id = if id.trim().is_empty() { "party".to_string() } else { resolve(id) };
+                    // Someone who is not here cannot move: the cue is dropped.
+                    let known = matches!(id.as_str(), "party" | "hero" | "heroes" | "player" | "players" | "everyone" | "all") || !heroes_named(&id).is_empty() || location.creatures.iter().any(|c| c.id == id) || location.props.iter().any(|p| p.id == id);
+                    if !known {
+                        continue;
+                    }
                     self.cue_seq += 1;
                     self.cues.push(crate::model::Cue { seq: self.cue_seq, place: here.clone(), id, motion: motion.trim().to_lowercase() });
                     let extra = self.cues.len().saturating_sub(16);

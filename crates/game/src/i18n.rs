@@ -211,7 +211,8 @@ texts! {
     GradeCrt: "кинескоп", "CRT";
     HudFallen: "пал", "fallen";
     HudAway: "нет", "away";
-    WalkUpTo: "подойдите к:", "walk up to";
+    WalkUpTo: "подойти к:", "walk up to";
+    CannotReach: "Туда не пройти.", "There is no way there.";
     BagHeals: "лечит", "heals";
     BagLight: "свет, клеток:", "light, cells:";
     BagUseHint: "ПКМ — применить, клик за сумкой — бросить", "Right click: use; click outside: drop";

@@ -207,9 +207,12 @@ fn style_buttons(
     }
 }
 
-fn click_activates(click: On<Pointer<Click>>, buttons: Query<&PixelButton>, mut commands: Commands) {
-    if buttons.get(click.entity).is_ok_and(|b| b.enabled) {
-        commands.trigger(Activate { entity: click.entity });
+/// A button acts when pressed. Bevy's click checks the release against what was under the
+/// pointer the frame before, so a mouse moved onto a button and clicked within one slow frame
+/// lost the click; the press is checked against what is under the pointer now.
+fn press_activates(press: On<Pointer<Press>>, buttons: Query<&PixelButton>, mut commands: Commands) {
+    if press.button == PointerButton::Primary && buttons.get(press.entity).is_ok_and(|b| b.enabled) {
+        commands.trigger(Activate { entity: press.entity });
     }
 }
 
@@ -217,6 +220,6 @@ pub struct WidgetsPlugin;
 
 impl Plugin for WidgetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (style_buttons, wheel_scrolls, focus_scrolls_into_view)).add_observer(click_activates);
+        app.add_systems(Update, (style_buttons, wheel_scrolls, focus_scrolls_into_view)).add_observer(press_activates);
     }
 }

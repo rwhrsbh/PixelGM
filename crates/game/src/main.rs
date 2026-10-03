@@ -45,6 +45,9 @@ fn main() -> AppExit {
     let store = store::Store::at(store::home());
     let settings = store.load_settings();
     let mut app = App::new();
+    // A command meant for something already gone (a figure redrawn the same frame it was
+    // told to move) is written down, not a crash.
+    app.set_error_handler(bevy::ecs::error::warn);
     app.add_plugins(
         DefaultPlugins
             .set(ImagePlugin::default_nearest())
