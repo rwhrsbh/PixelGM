@@ -127,18 +127,28 @@ fn clearing(seed: u32, gaps: &[(usize, usize)]) -> Vec<String> {
 }
 
 fn legend() -> Value {
-    json!({ ".": "grass", ",": "dirt", "T": "tree", "~": "water", "r": "rock", "m": "moss", "#": "ruin" })
+    json!({ ".": "grass", ",": "dirt", "T": "tree", "~": "water", "r": "rock", "m": "moss", "#": "ruin", "W": "wood_wall", "f": "wood_floor", "+": "door" })
 }
 
 /// A short broken wall north of the camp, so that every test world has a drawn tile that
-/// blocks the way.
+/// blocks the way, and a hut with a door, so that every test world has a roof.
 fn with_ruin(mut map: Vec<String>) -> Vec<String> {
-    let row = &mut map[4];
-    let mut cells: Vec<char> = row.chars().collect();
+    let mut put = |x: usize, y: usize, c: char| {
+        let mut cells: Vec<char> = map[y].chars().collect();
+        cells[x] = c;
+        map[y] = cells.into_iter().collect();
+    };
     for x in 4..9 {
-        cells[x] = '#';
+        put(x, 4, '#');
     }
-    *row = cells.into_iter().collect();
+    for y in 1..6 {
+        for x in 22..28 {
+            let wall = y == 1 || y == 5 || x == 22 || x == 27;
+            put(x, y, if wall { 'W' } else { 'f' });
+        }
+    }
+    put(24, 5, '+');
+    put(24, 6, ',');
     map
 }
 

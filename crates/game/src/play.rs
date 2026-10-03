@@ -112,12 +112,33 @@ struct SceneCache {
     vignette: Handle<Image>,
     grid: Handle<Image>,
     water: Vec<(usize, usize)>,
+    roofs: Vec<(Handle<Image>, (i32, i32), Vec<(usize, usize)>)>,
     /// Seconds since the place was painted: the grid shows for the first few.
     age: f32,
 }
 
 #[derive(Component)]
 struct WalkGrid;
+
+/// The roof of a building, by its number in the place.
+#[derive(Component)]
+struct RoofOver(usize);
+
+/// A roof fades away while the hero is under it, and comes back when the hero leaves.
+fn roofs(time: Res<Time>, game: Res<Game>, cache: Res<SceneCache>, mut roofs: Query<(&RoofOver, &mut Sprite)>) {
+    let (x, y) = game.world.player.cell();
+    let feet = ((game.world.player.x + FEET.0) / TILE as f32, (game.world.player.y + FEET.1) / TILE as f32);
+    let cells = [(x.max(0) as usize, y.max(0) as usize), (feet.0.max(0.0) as usize, feet.1.max(0.0) as usize)];
+    for (roof, mut sprite) in &mut roofs {
+        let under = cache.roofs.get(roof.0).is_some_and(|(_, _, inside)| cells.iter().any(|c| inside.contains(c)));
+        let wanted = if under { 0.18 } else { 1.0 };
+        let now = sprite.color.alpha();
+        let next = if (now - wanted).abs() < 0.05 { wanted } else { now + (wanted - now).signum() * time.delta_secs() * 3.0 };
+        if (now - next).abs() > f32::EPSILON {
+            sprite.color = Color::srgba(1.0, 1.0, 1.0, next);
+        }
+    }
+}
 
 /// The frames of every hero drawn so far, by what shows on the hero.
 #[derive(Resource, Default)]
@@ -505,6 +526,7 @@ fn draw(
         cache.standing = scene.standing.into_iter().map(|s| (images.add(s.picture.into_image()), s.foot)).collect();
         cache.hour = Some(scene.hour);
         cache.water = scene.water.clone();
+        cache.roofs = scene.roofs.into_iter().map(|r| (images.add(r.picture.into_image()), r.at, r.inside)).collect();
         cache.lamps = scene.lamps;
         cache.key = key;
         if cache.shadow == Handle::default() {
@@ -539,6 +561,10 @@ fn draw(
         let cell = (TILE * crate::scene::PX as u32) as f32;
         let water = cache.water.iter().map(|(x, y)| Rect::new(*x as f32 * cell, *y as f32 * cell, (*x + 1) as f32 * cell, (*y + 1) as f32 * cell)).collect();
         commands.spawn((InLocation, crate::weather::Emitter::new(sky, map, water), Transform::default(), Visibility::default()));
+    }
+    for (n, (image, (x, y), _)) in cache.roofs.iter().enumerate() {
+        let at = Vec3::new(*x as f32 - CANVAS.x as f32 / 2.0, CANVAS.y as f32 / 2.0 - *y as f32, 1.5);
+        commands.spawn((InLocation, RoofOver(n), Sprite::from_image(image.clone()), Anchor::TOP_LEFT, Transform::from_translation(at)));
     }
     if settings.gfx.scan_lines {
         let lines = images.add(crate::post::scan_lines(CANVAS.x, CANVAS.y - (HUD_HEIGHT * crate::screen::UI_PIXEL) as u32).into_image());
@@ -992,6 +1018,14 @@ fn settle(draft: Result<Box<LocationDraft>, Trouble>, id: &str, from: &str, game
     }
 }
 
+/// The first sentence or so of a telling, for players who are somewhere else.
+fn gist(narration: &str) -> String {
+    let text = narration.trim();
+    let end = text.char_indices().find(|(i, c)| matches!(c, '.' | '!' | '?' | '…') && *i > 20).map_or(text.len(), |(i, c)| i + c.len_utf8());
+    let first: String = text[..end].chars().take(160).collect();
+    if first.chars().count() < text[..end].chars().count() { format!("{first}…") } else { first }
+}
+
 /// The master told something: it is shown, the picture is brought up to date, the game saved.
 #[allow(clippy::too_many_arguments)]
 fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redraw: &mut Redraw, background: &mut Background, session: &Session, table: &mut Table) -> Phase {
@@ -1009,10 +1043,18 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     // Everyone in the place reads what the master tells, and may take up the choices it
     // offers. A party that has split up is told scene by scene.
     let place = game.world.current.clone();
+    // Those elsewhere read a line of it in the chat, so everyone knows what the others are up to.
+    let gist = gist(&turn.narration);
+    let where_ = game.world.place_name(&place).to_string();
     for player in session.players() {
         if game.world.place_of(&player) == place {
             session.send_to(&player, &Down::Told(turn.clone()));
+        } else if !gist.is_empty() {
+            session.send_to(&player, &Down::Chat { from: where_.clone(), text: gist.clone() });
         }
+    }
+    if table.elsewhere && !gist.is_empty() {
+        table.heard(&where_, &gist);
     }
     table.options.insert(place, turn.options.clone());
     Phase::Reading { turn }
@@ -2686,7 +2728,7 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, fold_keys, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, fold_keys, roofs, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_observer(on_activate)
             .add_observer(on_master_activate);
@@ -2696,6 +2738,13 @@ impl Plugin for PlayPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn players_elsewhere_read_the_first_sentence_of_a_telling() {
+        assert_eq!(gist("Бора тянется за кучей, поскальзывается и падает. Гаргулья смеётся."), "Бора тянется за кучей, поскальзывается и падает.");
+        assert_eq!(gist("Ok. Then the door opens slowly and a cold wind comes in."), "Ok. Then the door opens slowly and a cold wind comes in.");
+        assert!(gist(&"a".repeat(400)).ends_with('…'));
+    }
 
     fn world() -> World {
         let draft: world::WorldDraft = serde_json::from_str(&fake::world("play")).unwrap();

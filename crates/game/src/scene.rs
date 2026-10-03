@@ -664,6 +664,157 @@ fn ground_shadow(picture: &mut Pixels, cx: i32, cy: i32, rx: f32, ry: f32, stren
     }
 }
 
+/// A thing standing at `foot` mirrored into the water below it, blended in where there is
+/// water, wavering a pixel with the beats of the water.
+fn reflect(picture: &mut Pixels, cells: &Cells, thing: &Pixels, foot: (i32, i32), beat: usize) {
+    let (w, h) = (thing.w as i32, thing.h as i32);
+    let left = foot.0 - w / 2;
+    for y in 0..h {
+        // Every fourth row is broken, as on moving water.
+        if y % 4 == 3 {
+            continue;
+        }
+        for x in 0..w {
+            let c = thing.get(x, h - 1 - y);
+            if c[3] == 0 {
+                continue;
+            }
+            let wobble = if (y / 3 + beat as i32) % 4 == 0 { PX as i32 / 2 } else { 0 };
+            let (tx, ty) = (left + x + wobble, foot.1 + y);
+            if ty >= MAP_H as i32 * CELL || cells.at(tx.div_euclid(CELL), ty.div_euclid(CELL)) != Ground::Water {
+                continue;
+            }
+            let strength = 0.42 * (1.0 - y as f32 / h as f32 * 0.6);
+            let under = picture.get(tx, ty);
+            picture.set(tx, ty, mix(under, mix(c, [60, 90, 150, 255], 0.35), strength));
+        }
+    }
+}
+
+/// The roofs of the buildings in a place: every walled area that cannot be walked into from
+/// the edge of the map without going through a door. A place that is mostly one building has
+/// no roof: the party is already inside it.
+fn roofs(cells: &Cells, p: &Paint) -> Vec<Roof> {
+    let (w, h) = (MAP_W as i32, MAP_H as i32);
+    let blocks = |x: i32, y: i32| cells.at(x, y).wall() || cells.at(x, y) == Ground::Door;
+    // Everything reached from the edge, around walls and doors, is outside.
+    let mut outside = vec![false; (w * h) as usize];
+    let mut queue: Vec<(i32, i32)> = (0..w).flat_map(|x| [(x, 0), (x, h - 1)]).chain((0..h).flat_map(|y| [(0, y), (w - 1, y)])).filter(|(x, y)| !blocks(*x, *y)).collect();
+    for (x, y) in &queue {
+        outside[(y * w + x) as usize] = true;
+    }
+    while let Some((x, y)) = queue.pop() {
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let (nx, ny) = (x + dx, y + dy);
+            if nx < 0 || ny < 0 || nx >= w || ny >= h || outside[(ny * w + nx) as usize] || blocks(nx, ny) {
+                continue;
+            }
+            outside[(ny * w + nx) as usize] = true;
+            queue.push((nx, ny));
+        }
+    }
+    // The rest falls into buildings: each open area inside, with its doors and walls.
+    let mut taken = vec![false; (w * h) as usize];
+    let mut found = Vec::new();
+    for sy in 0..h {
+        for sx in 0..w {
+            let i = (sy * w + sx) as usize;
+            if outside[i] || taken[i] || blocks(sx, sy) {
+                continue;
+            }
+            let mut inside = Vec::new();
+            let mut stack = vec![(sx, sy)];
+            taken[i] = true;
+            while let Some((x, y)) = stack.pop() {
+                inside.push((x, y));
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w || ny >= h {
+                        continue;
+                    }
+                    let j = (ny * w + nx) as usize;
+                    if !outside[j] && !taken[j] && !blocks(nx, ny) {
+                        taken[j] = true;
+                        stack.push((nx, ny));
+                    }
+                }
+            }
+            if inside.len() as i32 * 10 > w * h * 4 || inside.len() < 2 {
+                continue;
+            }
+            // The roof covers the inside and the walls and doors around it.
+            let mut covered: Vec<(i32, i32)> = inside.clone();
+            for (x, y) in &inside {
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let (nx, ny) = (x + dx, y + dy);
+                        if nx >= 0 && ny >= 0 && nx < w && ny < h && blocks(nx, ny) && !covered.contains(&(nx, ny)) {
+                            covered.push((nx, ny));
+                        }
+                    }
+                }
+            }
+            found.push(roof(&covered, inside.iter().map(|(x, y)| (*x as usize, *y as usize)).collect(), p));
+        }
+    }
+    found
+}
+
+/// Paints a roof of shingles over some cells: two slopes meeting at a ridge along the longer
+/// side, the slope facing the light paler, the eaves dark, a shadow cast below.
+fn roof(covered: &[(i32, i32)], inside: Vec<(usize, usize)>, p: &Paint) -> Roof {
+    let (x0, x1) = (covered.iter().map(|c| c.0).min().unwrap_or(0), covered.iter().map(|c| c.0).max().unwrap_or(0) + 1);
+    let (y0, y1) = (covered.iter().map(|c| c.1).min().unwrap_or(0), covered.iter().map(|c| c.1).max().unwrap_or(0) + 1);
+    let (w, h) = ((x1 - x0) * CELL, (y1 - y0) * CELL + 8);
+    let body = h - 8;
+    let mut picture = Pixels::new(w as u32, h as u32, CLEAR);
+    let along_x = x1 - x0 >= y1 - y0;
+    let tile = mix(p.wood_dark, p.accent, 0.35);
+    let has = |px: i32, py: i32| px >= 0 && py >= 0 && py < body && covered.contains(&(x0 + px.div_euclid(CELL), y0 + py.div_euclid(CELL)));
+    for y in 0..body {
+        for x in 0..w {
+            if !has(x, y) {
+                continue;
+            }
+            // How far up the slope, from 0 at the eaves to 1 at the ridge, and which slope.
+            let (along, across, size) = if along_x { (x, y, body) } else { (y, x, w) };
+            let half = size as f32 / 2.0;
+            let rise = 1.0 - ((across as f32 + 0.5 - half).abs() / half);
+            let near_side = (across as f32) < half;
+            let row = across.div_euclid(6);
+            let shift = if row % 2 == 0 { 0 } else { 5 };
+            let seam = (along + shift).rem_euclid(10) == 0 || across % 6 == 0;
+            let mut c = if near_side { mix(tile, p.light, 0.18) } else { shade(tile, 0.78) };
+            c = mix(c, if near_side { p.light } else { p.outline }, (rise * 0.15).min(0.15));
+            if seam {
+                c = shade(c, 0.7);
+            }
+            if hash(x / 2, y / 2, 401) % 37 == 0 {
+                c = mix(c, p.plant_dark, 0.4);
+            }
+            // The ridge, and the eaves all round.
+            if rise > 0.94 {
+                c = shade(tile, 0.55);
+            }
+            if !has(x - 2, y) || !has(x + 2, y) || !has(x, y - 2) || !has(x, y + 2) {
+                c = mix(c, p.outline, 0.55);
+            }
+            picture.set(x, y, c);
+        }
+    }
+    // The shadow the roof throws on the ground below its southern eaves.
+    for x in 0..w {
+        if let Some(bottom) = (0..body).rev().find(|y| picture.get(x, *y)[3] != 0) {
+            for d in 1..=8 {
+                if picture.get(x, bottom + d)[3] == 0 && (x + d) % 2 == 0 {
+                    picture.set(x, bottom + d, [0, 0, 0, 70]);
+                }
+            }
+        }
+    }
+    Roof { picture, at: (x0 * CELL, y0 * CELL), inside }
+}
+
 /// The colour of what is left on the ground, by the master's colour or by its kind, and
 /// whether it lies in a heap rather than a splash.
 fn mark_look(mark: &world::Mark) -> (Rgba, bool) {
@@ -904,9 +1055,20 @@ pub fn lamps(location: &Location) -> Vec<Lamp> {
         .collect()
 }
 
+/// The roof over a building: drawn over everything inside it, and seen through when the
+/// hero walks in.
+pub struct Roof {
+    pub picture: Pixels,
+    /// Its top left corner, in canvas pixels.
+    pub at: (i32, i32),
+    /// The cells under it that one can stand in.
+    pub inside: Vec<(usize, usize)>,
+}
+
 pub struct Scene {
     /// The ground, once for each beat of the water. A place without water has one.
     pub ground: Vec<Pixels>,
+    pub roofs: Vec<Roof>,
     /// The cells of water, for rain to ring.
     pub water: Vec<(usize, usize)>,
     pub standing: Vec<Standing>,
@@ -1008,8 +1170,21 @@ pub fn paint(location: &Location, world: &World) -> Scene {
             leave_mark(picture, mark);
         }
     }
+    // What stands by the water is seen again in it, upside down and a little blue.
+    let mut seen: Vec<(Pixels, (i32, i32))> = standing.iter().map(|s| (s.picture.clone(), ((s.foot.0 * PX as f32) as i32, (s.foot.1 * PX as f32) as i32))).collect();
+    for prop in &location.props {
+        if let Some(picture) = world.sprites.get(&prop.sprite) {
+            seen.push((sprite(picture, &world.palette), ((prop.x as i32 * CELL) + CELL / 2, (prop.y as i32 + 1) * CELL)));
+        }
+    }
+    for (n, picture) in ground.iter_mut().enumerate() {
+        for (thing, foot) in &seen {
+            reflect(picture, &painter.cells, thing, *foot, n);
+        }
+    }
     let water = (0..MAP_H).flat_map(|y| (0..MAP_W).map(move |x| (x, y))).filter(|(x, y)| painter.cells.at(*x as i32, *y as i32) == Ground::Water).collect();
-    Scene { ground, water, standing, hour: Hour::of(location), lamps: lamps(location) }
+    let roofs = roofs(&painter.cells, &painter.paint);
+    Scene { ground, roofs, water, standing, hour: Hour::of(location), lamps: lamps(location) }
 }
 
 /// One cell of the dark is this many picture pixels a side: the dark falls in small squares.
