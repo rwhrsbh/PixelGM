@@ -262,6 +262,8 @@ texts! {
     FightItems: "Предметы", "Items";
     SheetSize: "Размер", "Size";
     GoldCount: "Золото:", "Gold:";
+    RedrawPlace: "Перерисовать это место", "Draw this place again";
+    RedrawNoWay: "Некуда отступить: рядом нет нарисованных мест", "No drawn place beside this one to walk in from";
     SomethingComes: "Кто-то приближается…", "Something is coming…";
     RestBroken: "Отдых прерван: на лагерь напали", "The rest is broken: the camp is attacked";
     Rumours: "Слухи", "Rumours";

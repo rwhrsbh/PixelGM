@@ -83,7 +83,7 @@ impl Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 1, zoom: 2, online_music: true, custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new() }
+        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 2, zoom: 2, online_music: true, custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new() }
     }
 }
 

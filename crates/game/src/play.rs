@@ -525,6 +525,8 @@ enum PlayAction {
     Approach(usize),
     /// See what the one being looked at has to sell.
     Trade,
+    /// Have the master draw the place the party is in once more.
+    RedrawPlace,
     /// Open the field for the party's own words.
     Own,
     Send,
@@ -1909,6 +1911,22 @@ fn receive(
                     // Drawn ahead with the best models only, and they refused. Now that the
                     // party is at the door the request is made in earnest.
                     master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(game.world.clone()), id: id.clone(), from, ahead: false });
+                } else if waited_for && id == game.world.current {
+                    // The place the party stands in, drawn afresh: it takes the old one's
+                    // place, and the party stands where it would have walked in.
+                    match draft.and_then(|d| game.world.add_location(&d, &id, Some(&from)).map_err(Trouble::Unreadable)) {
+                        Ok(_) => {
+                            let (x, y) = game.world.arrival_cell(&id, &from);
+                            game.world.player = world::Player::in_cell(x, y);
+                            redraw.0 = true;
+                            autosave(&store, &game);
+                            *phase = Phase::Walking;
+                        }
+                        Err(trouble) => {
+                            info!("place '{id}' was not drawn again: {trouble:?}");
+                            *phase = Phase::Refused { trouble, said: String::new(), near: None };
+                        }
+                    }
                 } else if waited_for {
                     *phase = settle(draft, &id, &from, &mut game, &store, &mut redraw, &mut arrival);
                 } else if game.world.stubs.contains_key(&id) {
@@ -2650,6 +2668,10 @@ fn overlay(
                 }
                 button(sheet, &art, &fonts, T::LongRest, !game.world.party.is_empty(), PlayAction::Rest);
                 button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
+                // The host may have the place drawn afresh: when it came out wrong.
+                if !session.is_client() {
+                    button(sheet, &art, &fonts, T::RedrawPlace, game.world.fight.is_none(), PlayAction::RedrawPlace);
+                }
                 button(sheet, &art, &fonts, T::Report, true, PlayAction::Report);
                 button(sheet, &art, &fonts, T::ToMainMenu, true, PlayAction::MainMenu);
             }
@@ -3088,6 +3110,27 @@ fn on_activate(
             let hero = my_hero(&game.world, &player_name(&settings), matches!(*session, Session::Solo)).unwrap_or(0);
             if let Some(result) = game.world.open_chest(hero, &thing, how, &mut Rng::from_clock()) {
                 *phase = told(outcome_of(chest_words(&result, settings.lang)), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
+            }
+        }
+        (PlayAction::RedrawPlace, _) => {
+            // The master is shown the world without this place, as if it were still only a
+            // name, and asked to draw it as walked into from a neighbour that exists.
+            let id = game.world.current.clone();
+            let from = game.world.here().exits.iter().map(|e| e.to.clone()).find(|to| game.world.locations.contains_key(to));
+            match from {
+                Some(from) => {
+                    let mut seen = game.world.clone();
+                    if let Some(old) = seen.locations.remove(&id) {
+                        seen.stubs.insert(id.clone(), world::Stub { name: old.name, description: old.description });
+                    }
+                    seen.current = from.clone();
+                    master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(seen), id: id.clone(), from, ahead: false });
+                    *phase = Phase::Drawing { to: id };
+                }
+                None => {
+                    *toast = Toast { text: Some(T::RedrawNoWay), left: 4.0 };
+                    *phase = Phase::Walking;
+                }
             }
         }
         (PlayAction::Trade, Phase::Looking { thing }) => {
