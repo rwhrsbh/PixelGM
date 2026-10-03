@@ -118,6 +118,19 @@ pub enum Effect {
         #[serde(default)]
         color: String,
     },
+    /// The party goes to another place; a new one is drawn when reached.
+    Travel {
+        to: String,
+        #[serde(default)]
+        name: String,
+    },
+    /// What was left on a cell is taken up or washed away; with no cell, where the party stands.
+    Clean {
+        #[serde(default = "nowhere", deserialize_with = "lenient_int")]
+        x: i64,
+        #[serde(default = "nowhere", deserialize_with = "lenient_int")]
+        y: i64,
+    },
     /// Someone moves their body: jumps, crouches, strikes, falls, dances. Shown to everyone.
     Animate {
         #[serde(default)]
@@ -387,6 +400,7 @@ impl World {
         let here = self.current.clone();
         let resolve = |id: &str| if id == "self" { me.unwrap_or("self").to_string() } else { slug(id) };
         let mut moved_party: Option<(usize, usize)> = None;
+        let mut travel: Option<(String, String)> = None;
         // Where the party stands, for what is left on the ground with no cell given.
         let party_cell = {
             let (x, y) = self.player.cell();
@@ -486,6 +500,10 @@ impl World {
                             (c.x, c.y) = cell;
                         }
                     } else if matches!(id.as_str(), "party" | "hero" | "heroes" | "player") || self.party.iter().any(|h| slug(&h.name) == id) {
+                        // Onto a way out, the party takes it.
+                        if let Some(exit) = location.exit_at(wanted.0, wanted.1) {
+                            travel = Some((exit.to.clone(), String::new()));
+                        }
                         // The party is carried, pushed or walks where the story says.
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
                         if let Some((cx, cy)) = nearest(wanted, free) {
@@ -548,6 +566,24 @@ impl World {
                 }
                 Effect::Fact { text } => self.story.remember(text),
                 Effect::Light { light } => location.light = light.trim().to_lowercase(),
+                Effect::Clean { x, y } => {
+                    let cell = if *x >= 0 && *y >= 0 { clamp_cell(*x, *y) } else { party_cell };
+                    // Beside the party counts too: what one picks up is rarely exactly underfoot.
+                    let near = |m: &crate::model::Mark| m.x.abs_diff(cell.0) <= 1 && m.y.abs_diff(cell.1) <= 1;
+                    if !location.marks.iter().any(near) {
+                        notes.push(format!("clean: nothing lies at {cell:?}"));
+                    }
+                    let first = location.marks.iter().position(|m| (m.x, m.y) == cell).or_else(|| location.marks.iter().position(near));
+                    if let Some(at) = first {
+                        location.marks.remove(at);
+                    }
+                }
+                Effect::Travel { to, name } => {
+                    let to = slug(to);
+                    if !to.is_empty() && to != here {
+                        travel = Some((to, name.trim().to_string()));
+                    }
+                }
                 Effect::Mark { id, x, y, kind, color } => {
                     let id = resolve(id);
                     let under = location.props.iter().find(|p| p.id == id).map(|p| (p.x, p.y)).or_else(|| location.creatures.iter().find(|c| c.id == id).map(|c| (c.x, c.y)));
@@ -575,6 +611,14 @@ impl World {
         }
         if let Some((x, y)) = moved_party {
             self.player = Player::in_cell(x, y);
+        }
+        if let Some((to, name)) = travel {
+            // A place nobody has heard of yet is named now and drawn when the party arrives.
+            if !self.locations.contains_key(&to) && !self.stubs.contains_key(&to) {
+                let name = if name.is_empty() { to.replace('_', " ") } else { name };
+                self.stubs.insert(to.clone(), crate::model::Stub { name, description: String::new() });
+            }
+            self.travel = Some(to);
         }
         // Whatever changed, the party must not end up inside something.
         let (px, py) = self.player.cell();

@@ -36,6 +36,7 @@ struct Painted {
     dark: [Handle<Image>; 4],
     /// The pond, on the canvas.
     water: Vec<Rect>,
+    place: world::Location,
 }
 
 const HOURS: [(&str, &str, &str); 4] = [("day", "день", "day"), ("dusk", "сумерки", "dusk"), ("night", "ночь", "night"), ("dark", "подземелье", "underground")];
@@ -128,6 +129,7 @@ fn paint(images: &mut Assets<Image>) -> Painted {
     let cell = (world::TILE * crate::scene::PX as u32) as f32;
     let water = scene.water.iter().map(|(x, y)| Rect::new(*x as f32 * cell, *y as f32 * cell, (*x + 1) as f32 * cell, (*y + 1) as f32 * cell)).map(|r| Rect { min: r.min - CROP.min + AT, max: r.max - CROP.min + AT }).collect();
     Painted {
+        place: here.clone(),
         water,
         ground: scene.ground.into_iter().map(|g| images.add(g.into_image())).collect(),
         standing: scene.standing.into_iter().map(|s| (images.add(s.picture.into_image()), s.foot)).collect(),
@@ -207,6 +209,16 @@ fn build(
     }
     if gfx.scan_lines {
         commands.spawn((PreviewThing, Sprite::from_image(p.lines.clone()), Anchor::TOP_LEFT, Transform::from_translation(corner(1.72))));
+    }
+    if gfx.weather && crate::weather::Sky::ALL[preview.weather % crate::weather::Sky::ALL.len()] == crate::weather::Sky::Fog {
+        let mut place = world::Location { light: HOURS[preview.hour].0.to_string(), ..p.place.clone() };
+        place.seen.clear();
+        let hour = crate::scene::Hour::of(&place);
+        let lamp = crate::scene::Lamp { x: p.fire.1.0, y: p.fire.1.1 - 8.0, reach: 4.2 };
+        let hero = crate::scene::Lamp { x: p.fire.1.0 - 32.0, y: p.fire.1.1 - 8.0, reach: 2.4 };
+        let fogged = images.add(crate::scene::darkness_seen(hour, &[lamp, hero], 0, None, Some(3.0)).into_image());
+        let block = crate::scene::DARK_BLOCK as f32;
+        commands.spawn((PreviewThing, Sprite { rect: Some(Rect { min: CROP.min / block, max: CROP.max / block }), custom_size: Some(size), ..Sprite::from_image(fogged) }, Anchor::TOP_LEFT, Transform::from_translation(corner(1.61))));
     }
     crate::weather::preview(&mut commands, preview.weather, gfx.weather, Rect { min: AT, max: AT + size }, p.water.clone(), PreviewThing);
 

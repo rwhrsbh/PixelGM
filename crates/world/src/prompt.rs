@@ -19,6 +19,8 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "light", "light": "day|dusk|night|dark"} — time passes here: the hour and the light change
   {"op": "weather", "weather": "clear|sun|rain|storm|snow|fog"} — the sky over this place changes
   {"op": "mark", "x": 0, "y": 0, "kind": "blood|dung|puddle|scorch|ash|slime|vomit|wine|paint|rubble|coins|bones", "color": "#rrggbb"} — something is left on the ground of a cell; without x and y it is where the party stands; "id" instead puts it under that thing; "color" is optional
+  {"op": "clean", "x": 0, "y": 0} — what was left on a cell is picked up or washed away (with "give" when the party takes it)
+  {"op": "travel", "to": "place_id", "name": "for a new place"} — the party goes to another place
   {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
   {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
   {"op": "move", "id": "…", "x": 0, "y": 0}
@@ -34,6 +36,9 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "revive", "hero": "name"} — the story brings a dead character back; only when it has truly earned it
 Never roll dice yourself and never decide an uncertain outcome: that is what "check" is for. Nothing may follow a check in the same list except what should happen whichever way it goes.
 Use only ids that exist. Inside an action that belongs to a thing, the id "self" means that thing.
+SPACE. The party is somewhere on the map and can only touch, take, open, strike or speak softly with what is beside it. To deal with something farther off that can be reached, first "move" the party to a cell beside it, in the same answer, then do the rest. What cannot be reached on foot cannot be touched: say what is in the way. Only what the party carries can be used — no torch, rope or key that is not in their hands.
+VIOLENCE. An attack on a creature is never told as a hit, a wound or a death: make it hostile with "attitude" and add "fight" — the game moves to the fight and the dice decide. The same for anything that would hurt the party.
+TRAVEL. When the party goes to another place — through a way out, down a hole, carried off — add {"op": "travel", "to": "place_id"}: an id from the exits, or a new id with "name" for a place that does not exist yet, which the game will ask you to draw. A choice that leads elsewhere carries its own "travel".
 THE PICTURE MUST MATCH THE STORY. The players watch a map, not only words. Everything your narration says that one could see must come with the effect that shows it, in the same answer: someone crouches, jumps, strikes, falls or dances — "animate"; a creature comes closer, backs off, circles — "move" it to its new cell (several cells if it runs); it leaves — "remove"; something appears — "spawn"; blood, dung, ash, a spill or a scorch is left — "mark"; a door opens or a wall falls — "tile"; creatures attack — "attitude" hostile and "fight". Never narrate a change on the map without its effect."##;
 
 /// The rules that never change. The answer format is plain JSON so that every model in the
@@ -176,6 +181,35 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     }
     let (x, y) = world.player.cell();
     let _ = writeln!(text, "The party stands at ({x}, {y}).");
+    // The map itself, so that walls between the party and anything are known.
+    let _ = writeln!(text, "MAP of this place (x across, y down; the party is @):");
+    for (row, line) in here.map.iter().enumerate() {
+        let shown: String = line.chars().enumerate().map(|(col, c)| if (col as i32, row as i32) == (x, y) { '@' } else { c }).collect();
+        let _ = writeln!(text, "  {shown}");
+    }
+    let legend: Vec<String> = here.legend.iter().map(|(c, id)| format!("{c} {id}{}", if world.tiles.get(id).is_some_and(|t| t.walkable) { "" } else { " (solid)" })).collect();
+    let _ = writeln!(text, "LEGEND: {}", legend.join(", "));
+    // How far everything is on foot, around walls.
+    let start = (x.clamp(0, MAP_W as i32 - 1) as usize, y.clamp(0, MAP_H as i32 - 1) as usize);
+    let far = crate::path::steps(start, |(cx, cy)| here.blocked(cx as i32, cy as i32, &world.tiles));
+    let walk = |(tx, ty): (usize, usize)| {
+        let beside = [(0i32, -1i32), (1, 0), (0, 1), (-1, 0)].iter().filter_map(|(dx, dy)| {
+            let (nx, ny) = (tx as i32 + dx, ty as i32 + dy);
+            ((0..MAP_W as i32).contains(&nx) && (0..MAP_H as i32).contains(&ny)).then(|| far[ny as usize][nx as usize]).flatten()
+        });
+        match beside.min() {
+            Some(0) => "beside the party".to_string(),
+            Some(n) => format!("{n} steps away on foot"),
+            None => "cannot be reached on foot from here".to_string(),
+        }
+    };
+    let _ = writeln!(text, "WHAT IS WHERE FROM THE PARTY:");
+    for prop in &here.props {
+        let _ = writeln!(text, "- {} ({}): {}", prop.id, prop.name, walk((prop.x, prop.y)));
+    }
+    for creature in &here.creatures {
+        let _ = writeln!(text, "- {} ({}): {}", creature.id, creature.name, walk((creature.x, creature.y)));
+    }
     let _ = write!(text, "\nSPRITES THAT EXIST:");
     for sprite_id in world.sprites.keys() {
         let _ = write!(text, " {sprite_id}");
@@ -189,7 +223,8 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
         // Those who are here: a party that has split up is told about scene by scene.
         for hero in world.party.iter().enumerate().filter(|(i, _)| !world.is_away(*i) && world.hero_place(*i) == world.current).map(|(_, h)| h) {
             let state = if hero.dead { " (dead)".to_string() } else { format!(", {} of {} hit points", hero.hp, hero.max_hp) };
-            let _ = writeln!(text, "- {}, {} {} of level {}{state}. Trained in: {}. {}", hero.name, hero.race, hero.class, hero.level, hero.skills.join(", "), hero.description);
+            let gear = [hero.weapons.join(", "), hero.armor.clone().unwrap_or_default(), if hero.shield { "shield".to_string() } else { String::new() }].into_iter().filter(|g| !g.is_empty()).collect::<Vec<_>>().join("; ");
+            let _ = writeln!(text, "- {}, {} {} of level {}{state}. Trained in: {}. Carries: {gear}. {}", hero.name, hero.race, hero.class, hero.level, hero.skills.join(", "), hero.description);
         }
     }
     let _ = write!(text, "\nTHE PARTY CARRIES:");

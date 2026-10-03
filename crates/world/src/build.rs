@@ -567,6 +567,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         version: SAVE_VERSION,
         cues: Vec::new(),
         cue_seq: 0,
+        travel: None,
         title: fallback(&draft.title, &built.location.name),
         summary: draft.summary.trim().to_string(),
         tone: draft.tone.trim().to_string(),

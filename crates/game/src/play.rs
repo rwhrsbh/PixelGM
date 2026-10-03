@@ -848,7 +848,7 @@ fn lighting(time: Res<Time>, mut game: ResMut<Game>, settings: Res<Settings>, ca
         let seen = exploring.then(|| world.here().seen.as_slice());
         // Fog hides in grey what darkness hides in black.
         let hour = if foggy && hour.dark < 0.8 { crate::scene::Hour { dark: if settings.gfx.night { hour.dark } else { 0.0 }, tint: [150, 152, 162] } } else { hour };
-        *image = crate::scene::darkness_seen(hour, &lights, beat, seen).into_image();
+        *image = crate::scene::darkness_seen(hour, &lights, beat, seen, foggy.then(|| time.elapsed_secs())).into_image();
     }
 }
 
@@ -934,10 +934,14 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         let held = |keys: [KeyCode; 2]| keyboard.any_pressed(keys) as i32;
         (held([KeyCode::KeyD, KeyCode::ArrowRight]) - held([KeyCode::KeyA, KeyCode::ArrowLeft]), held([KeyCode::KeyS, KeyCode::ArrowDown]) - held([KeyCode::KeyW, KeyCode::ArrowUp]))
     };
-    let stepping_out = game.world.exit_here().filter(|e| {
-        (e.x == 0 && pushing.0 < 0) || (e.x == world::MAP_W - 1 && pushing.0 > 0) || (e.y == 0 && pushing.1 < 0) || (e.y == world::MAP_H - 1 && pushing.1 > 0)
-    });
-    let taken = stepping_out.map(|e| e.to.clone()).or(wished);
+    let stepping_out = game
+        .world
+        .exit_here()
+        .filter(|e| (e.x == 0 && pushing.0 < 0) || (e.x == world::MAP_W - 1 && pushing.0 > 0) || (e.y == 0 && pushing.1 < 0) || (e.y == world::MAP_H - 1 && pushing.1 > 0))
+        .map(|e| e.to.clone());
+    // Or the story sent the party somewhere.
+    let sent = if session.is_client() { None } else { game.world.travel.take() };
+    let taken = stepping_out.or(wished).or(sent);
     if session.is_client() {
         if let Some(to) = taken.clone() {
             session.intend(Intent::Exit { to: to.clone() });

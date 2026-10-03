@@ -298,6 +298,9 @@ pub struct World {
     /// The place the fight in progress is in.
     #[serde(default)]
     pub fight_place: String,
+    /// A place the story sent the party to, to be gone to once the telling is read.
+    #[serde(skip)]
+    pub travel: Option<String>,
     /// Movements to be shown, newest last, numbered so that each is shown once.
     #[serde(default)]
     pub cues: Vec<Cue>,

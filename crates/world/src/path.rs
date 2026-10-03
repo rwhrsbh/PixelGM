@@ -14,6 +14,24 @@ fn neighbours((x, y): Cell) -> impl Iterator<Item = Cell> {
     })
 }
 
+/// How many steps it takes to walk from `start` to every cell, or none where it cannot be
+/// reached.
+pub fn steps(start: Cell, blocked: impl Fn(Cell) -> bool) -> Vec<Vec<Option<u32>>> {
+    let mut far = vec![vec![None; MAP_W]; MAP_H];
+    far[start.1][start.0] = Some(0);
+    let mut queue = VecDeque::from([start]);
+    while let Some(cell) = queue.pop_front() {
+        let here = far[cell.1][cell.0].unwrap_or(0);
+        for next in neighbours(cell) {
+            if far[next.1][next.0].is_none() && !blocked(next) {
+                far[next.1][next.0] = Some(here + 1);
+                queue.push_back(next);
+            }
+        }
+    }
+    far
+}
+
 /// Every cell that can be walked to from `start`, moving up, down, left and right.
 pub fn reachable(start: Cell, blocked: impl Fn(Cell) -> bool) -> Vec<Vec<bool>> {
     let mut seen = vec![vec![false; MAP_W]; MAP_H];

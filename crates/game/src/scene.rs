@@ -1202,11 +1202,12 @@ pub const DARK_BLOCK: i32 = 4;
 /// The dark over a place, and the holes the lamps make in it. `lights` are in the world's
 /// own pixels with a reach in cells; `beat` makes flames waver.
 pub fn darkness(hour: Hour, lights: &[Lamp], beat: u32) -> Pixels {
-    darkness_seen(hour, lights, beat, None)
+    darkness_seen(hour, lights, beat, None, None)
 }
 
-/// The dark, with what the party never saw of the place left wholly black.
-pub fn darkness_seen(hour: Hour, lights: &[Lamp], beat: u32, seen: Option<&[u32]>) -> Pixels {
+/// The dark, with what the party never saw of the place left wholly black; and fog, when
+/// `fog` gives the seconds it has drifted: thick in the distance, thin where there is light.
+pub fn darkness_seen(hour: Hour, lights: &[Lamp], beat: u32, seen: Option<&[u32]>, fog: Option<f32>) -> Pixels {
     let (w, h) = (MAP_W as i32 * CELL / DARK_BLOCK, MAP_H as i32 * CELL / DARK_BLOCK);
     let mut dark = Pixels::new(w as u32, h as u32, CLEAR);
     let per_block = DARK_BLOCK as f32 / PX as f32;
@@ -1225,6 +1226,20 @@ pub fn darkness_seen(hour: Hour, lights: &[Lamp], beat: u32, seen: Option<&[u32]
                 // Black in the dark; a thick grey where the hour is light and fog hides it.
                 let unseen = if hour.dark >= 0.5 { [hour.tint[0] / 3, hour.tint[1] / 3, hour.tint[2] / 3, 255] } else { [hour.tint[0], hour.tint[1], hour.tint[2], 235] };
                 dark.set(x, y, unseen);
+                continue;
+            }
+            if let Some(t) = fog {
+                // Drifting thicker and thinner, cleared around every light, its grey darkened
+                // by the hour; where the night is darker than the fog, the night shows.
+                let drift = cloud_noise(x + (t * 2.0) as i32, y, w, 14) * 0.6 + cloud_noise(x - (t * 1.3) as i32, y + 7, w, 6) * 0.4;
+                let thick = ((0.42 + drift * 0.45) * (1.0 - lit * 1.2)).clamp(0.0, 0.85);
+                let night = hour.dark * (1.0 - lit);
+                let shade = 1.0 - hour.dark * 0.8;
+                let colour = if night > thick { hour.tint } else { [(176.0 * shade) as u8, (178.0 * shade) as u8, (188.0 * shade) as u8] };
+                let steps = ((thick.max(night) * 12.0) + dither(x, y) - 0.5).round().clamp(0.0, 12.0) / 12.0;
+                if steps > 0.0 {
+                    dark.set(x, y, [colour[0], colour[1], colour[2], (steps * 255.0) as u8]);
+                }
                 continue;
             }
             // Flat steps of dark, broken up into a pattern rather than banded.

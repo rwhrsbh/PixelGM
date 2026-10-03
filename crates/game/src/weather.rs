@@ -184,12 +184,12 @@ fn layer(kind: u8, w: u32, h: u32) -> Pixels {
             // Cloud shadows: soft dark blobs with clear sky between.
             1 => {
                 let a = ((n - 0.5) * 2.5).clamp(0.0, 1.0);
-                [12, 18, 34, (a * 80.0) as u8]
+                [12, 18, 34, (a * 48.0) as u8]
             }
             // Sun: shafts of light across the picture, on a slant.
             _ => {
                 let band = (((x as f32 * 0.7 + y as f32) / 70.0).sin() * 0.5 + 0.5).powf(3.0);
-                [255, 236, 170, (band * n * 70.0) as u8]
+                [255, 236, 170, (band * n * 34.0) as u8]
             }
         }
     })
@@ -207,10 +207,8 @@ fn start_layers(mut commands: Commands, new: Query<(Entity, &Emitter), Added<Emi
                 layers.push((1, 0.95, 9.0, 0.0, 1.0));
                 layers.push((2, 1.56, 4.0, 0.25, 0.8));
             }
-            Sky::Fog => {
-                layers.push((0, 1.55, 7.0, 0.08, 0.5));
-                layers.push((0, 1.57, -4.0, 0.1, 0.35));
-            }
+            // Fog is drawn with the dark, where the light can clear it.
+            Sky::Fog => {}
             Sky::Rain | Sky::Storm => layers.push((1, 0.95, 16.0, 0.0, 0.7)),
             Sky::Snow => layers.push((0, 1.55, 3.0, 0.0, 0.35)),
             Sky::Clear => {}
