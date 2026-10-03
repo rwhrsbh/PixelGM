@@ -121,7 +121,13 @@ impl Held {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Up {
     Hello { name: String, version: u32 },
-    Position { x: f32, y: f32 },
+    Position {
+        x: f32,
+        y: f32,
+        /// Which way the hero looks, so the master knows what is in front of this player.
+        #[serde(default)]
+        facing: (i32, i32),
+    },
     Intent(Intent),
     Hero(Box<Character>),
     /// Take a hero whose player is away.
@@ -172,7 +178,7 @@ pub enum Down {
 pub struct Hosting {
     net: Host<Up, Down>,
     names: HashMap<PeerId, String>,
-    tokens: HashMap<PeerId, (f32, f32)>,
+    tokens: HashMap<PeerId, (f32, f32, (i32, i32))>,
     /// The world as last sent to each guest, to tell when it has changed. Each guest is
     /// sent the world as seen from the place that guest is in.
     sent: HashMap<PeerId, String>,
@@ -263,6 +269,8 @@ impl Session {
 /// last offered, tellings waiting to be read, and what the guests asked for.
 #[derive(Resource, Default)]
 pub struct Table {
+    /// What other players have just set about, a line each, shown in the corner for a while.
+    pub notices: Vec<String>,
     /// The outcome of a choice, shown while the master works out what follows it.
     pub going_on: Option<String>,
     /// What the master was last asked on a guest's behalf and has not answered yet.
@@ -456,8 +464,8 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                 hosting.names.insert(peer, unique);
                 // The world itself follows from the pump below, as seen from this guest's place.
             }
-            HostEvent::Message(peer, Up::Position { x, y }) => {
-                hosting.tokens.insert(peer, (x, y));
+            HostEvent::Message(peer, Up::Position { x, y, facing }) => {
+                hosting.tokens.insert(peer, (x, y, facing));
             }
             HostEvent::Message(peer, Up::Hero(hero)) => {
                 let (Some(game), Some(name)) = (&mut game, hosting.names.get(&peer)) else { continue };
@@ -526,10 +534,10 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
             game.world.places.insert(name.clone(), here);
         }
     }
-    let mut tokens: Vec<Token> = hosting.tokens.iter().filter_map(|(peer, (x, y))| {
+    let mut tokens: Vec<Token> = hosting.tokens.iter().filter_map(|(peer, (x, y, facing))| {
         let name = hosting.names.get(peer)?.clone();
         let place = game.world.place_of(&name).to_string();
-        Some(Token { name, x: *x, y: *y, place })
+        Some(Token { name, x: *x, y: *y, place, facing: *facing })
     }).collect();
     tokens.sort_by(|a, b| a.name.cmp(&b.name));
     if game.world.others != tokens {
@@ -544,7 +552,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
     hosting.since_positions += time.delta_secs();
     if playing && hosting.since_positions >= 0.1 {
         hosting.since_positions = 0.0;
-        tokens.push(Token { name: player_name(&settings), x: game.world.player.x, y: game.world.player.y, place: game.world.current.clone() });
+        tokens.push(Token { name: player_name(&settings), x: game.world.player.x, y: game.world.player.y, place: game.world.current.clone(), facing: game.world.facing });
         hosting.net.broadcast(&Down::Positions(tokens));
     }
     hosting.since_world += time.delta_secs();
@@ -671,7 +679,7 @@ fn client_pump(
             joined.since_position += time.delta_secs();
             if let (true, Some(game)) = (joined.since_position >= 0.1 && *screen.get() == Screen::Play, &game) {
                 joined.since_position = 0.0;
-                joined.net.send(&Up::Position { x: game.world.player.x, y: game.world.player.y });
+                joined.net.send(&Up::Position { x: game.world.player.x, y: game.world.player.y, facing: game.world.facing });
             }
             for (id, result) in std::mem::take(&mut *joined.served.lock().unwrap()) {
                 joined.net.send(&Up::Answer { id, result });
@@ -705,7 +713,12 @@ fn client_pump(
                 play::show(turn, &mut phase, &mut table);
                 redraw.0 = true;
             }
-            ClientEvent::Message(Down::Thinking(_)) => {}
+            ClientEvent::Message(Down::Thinking(said)) => {
+                // What a fellow player does is seen by all; one's own words are on the sheet.
+                if !matches!(&*phase, Phase::Asking { said: mine, .. } if said.ends_with(mine.as_str())) {
+                    table.notices.push(said);
+                }
+            }
             ClientEvent::Message(Down::Trouble(_)) => {
                 if matches!(*phase, Phase::Asking { .. } | Phase::Drawing { .. }) {
                     *phase = Phase::Walking;
@@ -1041,7 +1054,7 @@ mod tests {
     #[test]
     fn a_snapshot_leaves_out_what_is_only_the_hosts() {
         let mut w = world_with(&[]);
-        w.others.push(Token { name: "Bob".into(), x: 1.0, y: 2.0, place: String::new() });
+        w.others.push(Token { name: "Bob".into(), x: 1.0, y: 2.0, place: String::new(), facing: (0, 0) });
         assert!(snapshot(&w).others.is_empty());
     }
 

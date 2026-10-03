@@ -202,7 +202,7 @@ fn forget_going_on(phase: Res<Phase>, mut table: ResMut<Table>) {
 #[derive(Component)]
 struct FeedLine(f32);
 
-fn feed(mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut seen: Local<Option<std::collections::BTreeMap<String, i64>>>, mut lines: Query<(Entity, &mut FeedLine, &mut TextColor, &mut Node)>) {
+fn feed(mut table: ResMut<Table>, mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut seen: Local<Option<std::collections::BTreeMap<String, i64>>>, mut lines: Query<(Entity, &mut FeedLine, &mut TextColor, &mut Node)>) {
     let me = player_name(&settings);
     let hero = my_hero(&game.world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
     let now: std::collections::BTreeMap<String, i64> = game.world.story.bags.get(hero).map(|b| {
@@ -231,7 +231,7 @@ fn feed(mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<S
             commands.spawn((
                 DespawnOnExit(Screen::Play),
                 FeedLine(-(n as f32) * 0.15),
-                Node { position_type: PositionType::Absolute, right: px(6), bottom: px(HUD_HEIGHT + 6.0), padding: UiRect::axes(px(4), px(1)), ..default() },
+                Node { position_type: PositionType::Absolute, left: px(6), bottom: px(HUD_HEIGHT + 6.0), padding: UiRect::axes(px(4), px(1)), ..default() },
                 BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.8)),
                 Text::new(format!("{sign} {name}{count}")),
                 fonts.body(),
@@ -241,6 +241,21 @@ fn feed(mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<S
         }
     }
     *seen = Some(now);
+    // What fellow players have set about, in the same corner.
+    for (n, said) in std::mem::take(&mut table.notices).into_iter().enumerate() {
+        let said = said.replace(world::prompt::GO_ON, "");
+        let short: String = said.trim().chars().take(90).collect();
+        commands.spawn((
+            DespawnOnExit(Screen::Play),
+            FeedLine(-2.5 - n as f32 * 0.15),
+            Node { position_type: PositionType::Absolute, left: px(6), bottom: px(HUD_HEIGHT + 6.0), padding: UiRect::axes(px(4), px(1)), max_width: px(300), ..default() },
+            BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.8)),
+            Text::new(format!("» {short}")),
+            fonts.body(),
+            TextColor(color(BRASS_LIGHT)),
+            GlobalZIndex(9),
+        ));
+    }
     // The newest at the bottom; each rises and fades.
     let mut all: Vec<_> = lines.iter_mut().collect();
     all.sort_by(|a, b| a.1.0.total_cmp(&b.1.0));
@@ -1158,13 +1173,6 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         *phase = Phase::Leaving { to, t: 0.0 };
         return;
     }
-    // Which way the hero looks goes with the world, for the master to know what is in front.
-    game.world.facing = match pose.facing {
-        crate::doll::Facing::Up => (0, -1),
-        crate::doll::Facing::Down => (0, 1),
-        crate::doll::Facing::Left => (-1, 0),
-        crate::doll::Facing::Right => (1, 0),
-    };
     // Something hostile close by does not wait to be spoken to. With guests at the table
     // any of their tokens can be the one that is noticed.
     let noticed = game.world.fight.is_none() && (game.world.hostile_near(NOTICE_CELLS) || game.world.tokens_here().any(|t| hostile_near_token(&game.world, t.x, t.y)));
@@ -1372,6 +1380,20 @@ pub fn sheet_on_top(world: &World) -> bool {
             rows.iter().filter(|y| **y >= LOW_ROW).count() * 2 > rows.len()
         }
         None => world.player.cell().1 >= LOW_ROW,
+    }
+}
+
+/// Which way the hero on this screen looks goes with the world, every frame and whatever
+/// sheet is open: the master is told what is in front, and a guest's host is told it too.
+fn keep_facing(mut game: ResMut<Game>, pose: Res<HeroPose>) {
+    let facing = match pose.facing {
+        crate::doll::Facing::Up => (0, -1),
+        crate::doll::Facing::Down => (0, 1),
+        crate::doll::Facing::Left => (-1, 0),
+        crate::doll::Facing::Right => (1, 0),
+    };
+    if game.world.facing != facing {
+        game.bypass_change_detection().world.facing = facing;
     }
 }
 
@@ -2476,6 +2498,10 @@ fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store,
         _ => said,
     };
     master.ask(gm, store, settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near: near.clone(), direction: None });
+    // The guests see what the host has set about.
+    if session.is_host() {
+        session.broadcast(&Down::Thinking(said.clone()));
+    }
     Phase::Asking { said, near }
 }
 
@@ -2765,6 +2791,7 @@ fn guests(
                     let said = format!("{}: {} {}", hero_of(&game.world, &player).unwrap_or(&player), option.label, world::prompt::GO_ON);
                     master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near: None, direction: None });
                     session.broadcast(&Down::Thinking(said.clone()));
+                    table.notices.push(said.clone());
                     table.busy = Some(said);
                     table.busy_for = Some(player.clone());
                 }
@@ -2794,6 +2821,7 @@ fn guests(
                     };
                     master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None });
                     session.broadcast(&Down::Thinking(said.clone()));
+                    table.notices.push(said.clone());
                     table.busy = Some(said);
                     table.busy_for = Some(player.clone());
                 }
@@ -2948,6 +2976,10 @@ fn enter_scene(game: &mut Game, table: &mut Table, player: &str) -> (String, wor
     let place = game.world.place_of(player).to_string();
     let at = game.world.others.iter().find(|t| t.name == player).map_or(game.world.player, |t| world::Player { x: t.x, y: t.y });
     table.elsewhere = place != game.world.current;
+    // The master is told what is in front of the one who acts, not of the host.
+    if let Some(token) = game.world.others.iter().find(|t| t.name == player) {
+        game.world.facing = token.facing;
+    }
     game.world.enter(&place, at)
 }
 
@@ -3299,6 +3331,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Pick>()
             .init_resource::<Approach>()
             .init_resource::<UseFor>()
+            .add_systems(Update, keep_facing.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_fold)
             .init_resource::<Dolls>()
             .init_resource::<Background>()

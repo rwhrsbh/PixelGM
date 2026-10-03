@@ -293,6 +293,9 @@ pub struct Token {
     /// The place the token is in. Empty means wherever the host is.
     #[serde(default)]
     pub place: String,
+    /// Which way that player's hero looks: a step along x or y.
+    #[serde(default)]
+    pub facing: (i32, i32),
 }
 
 pub const SAVE_VERSION: u32 = 1;

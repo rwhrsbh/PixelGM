@@ -305,7 +305,7 @@ impl Master {
             match &ask {
                 Ask::NewWorld { .. } => "a new world".to_string(),
                 Ask::Location { id, ahead, .. } => format!("the place '{id}'{}", if *ahead { " (ahead)" } else { "" }),
-                Ask::Turn { said, direction, .. } => format!("a turn, {} characters said{}", said.chars().count(), if direction.is_some() { ", directed" } else { "" }),
+                Ask::Turn { world, said, direction, .. } => format!("a turn, {} characters said{}, from {:?} in '{}' facing {:?}", said.chars().count(), if direction.is_some() { ", directed" } else { "" }, world.player.cell(), world.current, world.facing),
                 Ask::Event { .. } => "an event of its own".to_string(),
                 Ask::Chapter { .. } => "a chapter".to_string(),
                 Ask::Feats { hero, secret, .. } => format!("abilities for hero {hero}{}", if *secret { " (secret)" } else { "" }),
