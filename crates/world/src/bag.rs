@@ -144,6 +144,9 @@ pub fn gear_like(name: &str, kind: &str, named: &str) -> Option<String> {
     (guess == "shield" || data.weapons.contains_key(guess) || data.armors.contains_key(guess)).then(|| guess.to_string())
 }
 
+/// Things kept at hand, a key each.
+pub const QUICK_SLOTS: usize = 6;
+
 const WORDS_1X1: [&str; 30] = [
     "potion", "vial", "flask", "coin", "ring", "key", "gem", "jewel", "amulet", "hair", "tooth", "fang", "seed", "stone", "pebble", "зель", "флакон", "монет", "кольц", "ключ",
     "самоцвет", "камен", "камуш", "амулет", "шерст", "клык", "зуб", "семя", "перо", "feather",
@@ -523,9 +526,50 @@ impl World {
         if matches!(held, Held::Worn(h, _) if !own(*h)) || matches!(to, Spot::Worn(h, _) if !own(h)) || bag >= self.story.bags.len() {
             return false;
         }
+        // In a fight a hero changes gear only on their own turn: one thing for free, a
+        // second for the action; armour takes too long to put on between blows.
+        let gear = matches!(held, Held::Worn(..)) || matches!(to, Spot::Worn(..));
+        let id = format!("hero_{bag}");
+        let fighting = self.fight.as_ref().is_some_and(|f| f.index_of(&id).is_some());
+        if fighting && gear {
+            let armour = matches!(held, Held::Worn(_, Slot::Body)) || matches!(to, Spot::Worn(_, Slot::Body));
+            let allowed = self.fight.as_ref().is_some_and(|f| f.actor().id == id && f.can_handle());
+            if armour || !allowed {
+                return false;
+            }
+        }
         let party = &mut self.party;
         let story = &mut self.story.bags[bag];
-        arrange_in(party, story, held, to)
+        let done = arrange_in(party, story, held, to);
+        if done && fighting && gear {
+            if let (Some(fight), Some(hero)) = (self.fight.as_mut(), self.party.get(bag)) {
+                fight.handle();
+                fight.refit(&id, hero);
+            }
+        }
+        done
+    }
+
+    /// Puts a thing of a hero's bag on a quick slot, by its name; an empty name clears it.
+    pub fn set_quick(&mut self, hero: usize, slot: usize, name: &str) {
+        self.ensure_bags();
+        let Some(bag) = self.story.bags.get_mut(hero) else { return };
+        if slot >= QUICK_SLOTS {
+            return;
+        }
+        bag.quick.resize(QUICK_SLOTS, String::new());
+        // A thing sits on one slot only.
+        for other in bag.quick.iter_mut().filter(|q| q.as_str() == name) {
+            other.clear();
+        }
+        bag.quick[slot] = name.trim().to_string();
+    }
+
+    /// The thing on a quick slot, as its place in the bag, if the hero still has one.
+    pub fn quick_item(&self, hero: usize, slot: usize) -> Option<usize> {
+        let bag = self.story.bags.get(hero)?;
+        let name = bag.quick.get(slot).filter(|n| !n.is_empty())?;
+        bag.inventory.iter().position(|i| &i.name == name)
     }
 
     /// Heroes carry two weapons in reach; what else they started with goes into their bag.
@@ -731,6 +775,34 @@ mod tests {
         let free = w.story.bags[0].free_spot((1, 3), None).unwrap();
         assert!(w.arrange(0, &Held::Worn(0, Slot::Main), Spot::Bag(free.0, free.1)));
         assert!(w.story.bags[0].inventory.iter().any(|i| i.name == "Керамический меч Стража"));
+    }
+
+    #[test]
+    fn in_a_fight_one_thing_is_handled_for_free_and_armour_stays_on() {
+        let mut w = world();
+        w.apply(&crate::story::read_effects(&[serde_json::json!({ "op": "attitude", "id": "cat", "attitude": "hostile" })], &mut Vec::new()), None);
+        w.start_fight(rules::Rng::seeded(1));
+        let fight = w.fight.as_mut().unwrap();
+        fight.turn = fight.order.iter().position(|i| *i == 0).unwrap();
+        fight.combatants[0].action_left = true;
+        fight.combatants[0].handled = false;
+        // The two weapons change hands for free; the fighter's first strike follows.
+        let second = w.party[0].weapons[1].clone();
+        let free = w.story.bags[0].free_spot((1, 3), None).unwrap();
+        assert!(w.arrange(0, &Held::Worn(0, Slot::Main), Spot::Bag(free.0, free.1)));
+        let fight = w.fight.as_ref().unwrap();
+        assert!(fight.combatants[0].handled && fight.combatants[0].action_left);
+        assert_eq!(w.party[0].weapons[0], second);
+        // A second handling takes the action; a third cannot be done; armour not at all.
+        let i = w.story.bags[0].inventory.iter().position(|i| i.gear.is_some()).unwrap();
+        assert!(w.arrange(0, &Held::Item(i), Spot::Worn(0, Slot::Spare)));
+        assert!(!w.fight.as_ref().unwrap().combatants[0].action_left);
+        let free = w.story.bags[0].free_spot((1, 3), None).unwrap();
+        assert!(!w.arrange(0, &Held::Worn(0, Slot::Main), Spot::Bag(free.0, free.1)));
+        assert!(!w.arrange(0, &Held::Worn(0, Slot::Body), Spot::Bag(0, 5)));
+        // A quick slot holds a thing by name.
+        w.set_quick(0, 2, "Potion");
+        assert_eq!(w.quick_item(0, 2), None);
     }
 
     #[test]

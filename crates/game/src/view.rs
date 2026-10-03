@@ -75,10 +75,7 @@ pub struct Slot;
 
 fn measure(mut view: ResMut<View>, slots: Query<&ComputedNode, With<Slot>>, phase: Res<Phase>) {
     let tallest = slots.iter().map(|node| node.size().y * node.inverse_scale_factor()).fold(0.0f32, f32::max);
-    // A sheet in the middle of the screen (the bag, the journal) leaves the frame as it was.
-    if tallest == 0.0 && !matches!(*phase, Phase::Walking | Phase::Fighting) {
-        return;
-    }
+    let _ = &phase;
     let bottom = HUD_HEIGHT + tallest.round();
     if view.bottom != bottom {
         view.bottom = bottom;

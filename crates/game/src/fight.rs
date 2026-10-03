@@ -442,6 +442,7 @@ fn input(
     mut redraw: ResMut<Redraw>,
     session: Res<Session>,
     settings: Res<Settings>,
+    (gm, store, master, lang): (Res<Gm>, Res<Store>, Res<Master>, Res<Lang>),
 ) {
     if *phase != Phase::Fighting || !view.queue.is_empty() || view.over.is_some() || view.asking {
         return;
@@ -452,6 +453,20 @@ fn input(
         return;
     }
     let pressed = |codes: &[KeyCode]| keyboard.any_just_pressed(codes.iter().copied());
+    // A thing kept at hand: drunk or eaten for the action, or tried on the master.
+    if let (Mode::Menu, true, Some(slot)) = (&view.mode, view.queue.is_empty(), crate::bag_ui::QUICK_KEYS.iter().position(|key| keyboard.just_pressed(*key))) {
+        let hero = hero_index(&fight.actor().id).unwrap_or(0);
+        if let Some(i) = world.quick_item(hero, slot) {
+            let item = &world.story.bags[hero].inventory[i];
+            if !item.heal.trim().is_empty() {
+                act(FightIntent::UseItem(i), world, &mut view, &session, &mut redraw);
+            } else {
+                let said = format!("{} {} {}", fight.actor().name, T::UsesThing.text(*lang), item.name);
+                ask_stunt(said, None, world, &mut view, &session, &gm, &store, &settings, &master);
+            }
+        }
+        return;
+    }
     let confirm = pressed(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space]);
     let clicked = mouse.just_pressed(MouseButton::Left).then(|| cell_under_cursor(&window, &frame)).flatten();
     if pressed(&[KeyCode::Escape]) && view.mode != Mode::Menu {
@@ -558,6 +573,8 @@ struct Shown {
     uses: Vec<Option<u8>>,
     /// How tall the sheet is, in its slot under the map.
     height: f32,
+    /// Who acts when, from whoever acts now: name, side, hit points and the most they can be.
+    strip: Vec<(String, bool, i32, i32)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -577,6 +594,9 @@ fn sheet(mut frame: ResMut<crate::view::View>, mut commands: Commands, phase: Re
         asking: view.asking,
         uses: fight.map(|f| f.actor().strikes.iter().map(|s| s.uses_left).collect()).unwrap_or_default(),
         height: crate::view::HEIGHTS[settings.narration.min(2) as usize],
+        strip: fight
+            .map(|f| (0..f.order.len()).map(|step| &f.combatants[f.order[(f.turn + step) % f.order.len()]]).filter(|c| !c.dead).map(|c| (c.name.clone(), c.side == Side::Party, c.hp.max(0), c.max_hp)).collect())
+            .unwrap_or_default(),
     });
     let _ = &mut frame;
     if *shown == wanted && (wanted.is_none() || !old.is_empty()) {
@@ -592,6 +612,26 @@ fn sheet(mut frame: ResMut<crate::view::View>, mut commands: Commands, phase: Re
     let ru = *lang == Lang::Ru;
     // Under the map, beside the party: the fight is never covered.
     let root = Node { position_type: PositionType::Absolute, left: px(0), bottom: px(HUD_HEIGHT), width: px(crate::screen::UI.x as f32 - crate::view::COLUMN), max_height: px(wanted.height), ..default() };
+    // Who acts when, along the top of the map: the one acting first, then the rest in turn.
+    if wanted.over.is_none() && !wanted.strip.is_empty() {
+        let width = crate::screen::UI.x as f32 - crate::view::COLUMN;
+        let strip = Node { position_type: PositionType::Absolute, left: px(0), top: px(16), width: px(width), justify_content: JustifyContent::Center, column_gap: px(2), ..default() };
+        commands.spawn((FightSheet, DespawnOnExit(Screen::Play), strip, GlobalZIndex(7), Pickable::IGNORE)).with_children(|row| {
+            for (n, (name, ours, hp, most)) in wanted.strip.iter().take(10).enumerate() {
+                let edge = if n == 0 { BRASS_LIGHT } else if *ours { MOSS } else { WAX };
+                row.spawn((Node { width: px(38), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, padding: UiRect::all(px(1)), border: UiRect::all(px(1)), row_gap: px(1), ..default() }, BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.82)), BorderColor::all(color(edge)), Pickable::IGNORE))
+                    .with_children(|cell| {
+                        let short: String = name.chars().take(6).collect();
+                        cell.spawn((Text::new(short), fonts.body(), TextColor(color(if n == 0 { BRASS_LIGHT } else { PARCHMENT })), TextLayout::no_wrap(), Pickable::IGNORE));
+                        let share = (*hp as f32 / (*most).max(1) as f32).clamp(0.0, 1.0);
+                        let bar = if *ours { [0x5c, 0xb0, 0x4a, 0xff] } else { WAX };
+                        cell.spawn((Node { width: px(32), height: px(3), ..default() }, BackgroundColor(color(INK)), Pickable::IGNORE)).with_children(|back| {
+                            back.spawn((Node { width: px((32.0 * share).round()), height: px(3), ..default() }, BackgroundColor(color(bar)), Pickable::IGNORE));
+                        });
+                    });
+            }
+        });
+    }
     commands.spawn((FightSheet, crate::view::Slot, DespawnOnExit(Screen::Play), root, GlobalZIndex(10))).with_children(|root| {
         spawn_panel(root, &art, Node { width: percent(100), flex_direction: FlexDirection::Column, row_gap: px(2), overflow: Overflow::clip(), ..default() }, |sheet| {
             for line in &wanted.lines {

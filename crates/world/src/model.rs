@@ -160,6 +160,13 @@ pub struct Creature {
     /// Fighting numbers of its own, for creatures the SRD does not have.
     #[serde(default)]
     pub stats: Option<Stats>,
+    /// How many of them the master said there are; 0 leaves the number to the game, which
+    /// matches a hostile pack to the party.
+    #[serde(default)]
+    pub count: u8,
+    /// The pack has been counted out: the others of its kind already stand here.
+    #[serde(default)]
+    pub mustered: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]

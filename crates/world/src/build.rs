@@ -96,6 +96,8 @@ pub struct CreatureDraft {
     pub actions: Vec<ActionDraft>,
     pub monster: String,
     pub stats: Option<Stats>,
+    #[serde(deserialize_with = "lenient_int")]
+    pub count: i64,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -428,7 +430,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             "hostile" => Attitude::Hostile,
             _ => Attitude::Neutral,
         };
-        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone() });
+        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone(), count: c.count.clamp(0, 8) as u8, mustered: false });
     }
 
     let id = forced_id.map(str::to_string).unwrap_or_else(|| {

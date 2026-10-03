@@ -459,12 +459,72 @@ impl World {
         solid || here.props.iter().any(|p| p.blocking && (p.x, p.y) == (ux, uy)) || here.creatures.iter().any(|c| (c.x, c.y) == (ux, uy) && !fighting(&c.id))
     }
 
+    /// What a fight here may cost: the experience the book calls a hard encounter for the
+    /// heroes taking part, more or less by the difficulty of the world.
+    pub fn encounter_budget(&self) -> u32 {
+        const HARD: [u32; 20] = [75, 150, 225, 375, 750, 900, 1100, 1400, 1600, 1900, 2400, 3000, 3400, 3800, 4300, 4800, 5900, 6300, 7300, 8500];
+        let sum: u32 = self.party.iter().enumerate().filter(|(i, h)| self.takes_part(*i) && !h.is_down()).map(|(_, h)| HARD[(h.level.clamp(1, 20) - 1) as usize]).sum();
+        let factor = match self.table.difficulty {
+            crate::model::Difficulty::Casual => 3,
+            crate::model::Difficulty::Honest => 4,
+            crate::model::Difficulty::Hardcore => 5,
+        };
+        sum * factor / 4
+    }
+
+    /// How many of a monster worth `xp` each make a fair pack for this party: the book
+    /// counts two as half as much again and three or more as double.
+    pub fn pack_size(&self, xp: u32) -> u8 {
+        let budget = self.encounter_budget();
+        let cost = |n: u32| xp.max(1) * n * if n >= 3 { 4 } else if n == 2 { 3 } else { 2 } / 2;
+        (1..=6u32).rev().find(|n| cost(*n) <= budget).unwrap_or(1) as u8
+    }
+
+    /// Counts out the packs of hostile creatures here: each one the master set down stands
+    /// for as many as the master said, or as many as make a fair fight. The others take the
+    /// nearest free cells. `true` when anyone was added.
+    pub fn muster(&mut self) -> bool {
+        if !(0..self.party.len()).any(|i| self.takes_part(i)) {
+            return false;
+        }
+        let waiting: Vec<usize> = self.here().creatures.iter().enumerate().filter(|(_, c)| c.attitude == Attitude::Hostile && !c.mustered).map(|(n, _)| n).collect();
+        if waiting.is_empty() {
+            return false;
+        }
+        let mut added = false;
+        for n in waiting {
+            let leader = self.here().creatures[n].clone();
+            let wanted = match (leader.count, leader.monster.as_deref().and_then(|m| srd().monsters.get(m))) {
+                (count @ 1.., _) => count,
+                (0, Some(monster)) => self.pack_size(monster.xp),
+                // Numbers of its own, and no count: the master meant one.
+                (0, None) => 1,
+            };
+            let here = self.current.clone();
+            let (px, py) = self.player.cell();
+            for k in 2..=wanted {
+                let location = &self.locations[&here];
+                let free = |(x, y): (usize, usize)| !location.blocked(x as i32, y as i32, &self.tiles) && location.exit_at(x, y).is_none() && (x as i32, y as i32) != (px, py);
+                let Some((x, y)) = nearest((leader.x, leader.y), free) else { break };
+                let fellow = Creature { id: format!("{}_{k}", leader.id), x, y, actions: Vec::new(), count: 1, mustered: true, ..leader.clone() };
+                self.locations.get_mut(&here).expect("the party is somewhere").creatures.push(fellow);
+                added = true;
+            }
+            if let Some(c) = self.locations.get_mut(&here).and_then(|l| l.creatures.get_mut(n)) {
+                c.mustered = true;
+            }
+        }
+        added
+    }
+
     /// Starts a fight with every hostile creature here. `false` when there is nobody to
     /// fight or nobody to do the fighting.
     pub fn start_fight(&mut self, rng: Rng) -> bool {
         if self.fight.is_some() || !(0..self.party.len()).any(|i| self.takes_part(i)) || self.hostiles().next().is_none() {
             return false;
         }
+        // Whoever turned on the party a moment ago is joined by the rest of its pack.
+        self.muster();
         let enemies: Vec<Combatant> = self.hostiles().map(|c| self.combatant_for(c)).collect();
         let inside = |(x, y): (i32, i32)| (x.clamp(0, MAP_W as i32 - 1) as usize, y.clamp(0, MAP_H as i32 - 1) as usize);
         let leader = inside(self.player.cell());
@@ -831,6 +891,27 @@ mod tests {
         assert_eq!(fight.combatants.len(), 2);
         assert_eq!(fight.combatants[0].id, "hero_0");
         assert!(!w.start_fight(Rng::seeded(1)), "one fight at a time");
+    }
+
+    #[test]
+    fn a_hostile_creature_stands_for_a_pack_matched_to_the_party() {
+        let mut w = world();
+        apply(&mut w, json!([{ "op": "attitude", "id": "cat", "attitude": "hostile" }]));
+        // One first-level hero: a rat each is worth little, so several come; a goblin comes alone.
+        w.here_mut().creatures[0].monster = Some("giant-rat".into());
+        assert_eq!(w.encounter_budget(), 75);
+        assert_eq!((w.pack_size(25), w.pack_size(50), w.pack_size(10)), (2, 1, 3));
+        assert!(w.muster());
+        assert_eq!(w.here().creatures.len(), 2);
+        assert_eq!(w.here().creatures[1].id, "cat_2");
+        assert_ne!((w.here().creatures[1].x, w.here().creatures[1].y), (w.here().creatures[0].x, w.here().creatures[0].y));
+        assert!(!w.muster(), "counted out once");
+        // The master's own number is kept, whatever the budget.
+        apply(&mut w, json!([{ "op": "spawn", "kind": "creature", "id": "wolf", "name": "Wolf", "x": 5, "y": 5, "sprite": "cat", "attitude": "hostile", "monster": "wolf", "count": 3 }]));
+        w.muster();
+        assert_eq!(w.here().creatures.iter().filter(|c| c.id.starts_with("wolf")).count(), 3);
+        assert!(w.start_fight(Rng::seeded(3)));
+        assert_eq!(w.fight.as_ref().unwrap().combatants.len(), 6);
     }
 
     #[test]

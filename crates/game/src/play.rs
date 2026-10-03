@@ -528,7 +528,7 @@ const EXIT_HINT_REACH: f32 = 28.0;
 const THING_REACH: f32 = 26.0;
 const LETTERS_PER_SECOND: f32 = 70.0;
 const ARRIVAL_LINGER: f32 = 4.0;
-pub const HUD_HEIGHT: f32 = 14.0;
+pub const HUD_HEIGHT: f32 = 18.0;
 /// A hostile creature this many cells away notices the party and attacks.
 const NOTICE_CELLS: u32 = 3;
 /// After the master refuses unasked-for work, how long before it is offered again.
@@ -626,7 +626,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
         ))
         .with_children(|strip| {
             // Neither line may wrap: the name gives way, cut at its edge, before the keys do.
-            strip.spawn((Node { flex_shrink: 1.0, min_width: px(0), overflow: Overflow::clip(), margin: UiRect::right(px(8)), ..default() }, Text::default(), PlaceName, TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT))));
+            strip.spawn((Node { flex_shrink: 1.0, min_width: px(0), max_width: px(100), overflow: Overflow::clip(), margin: UiRect::right(px(8)), ..default() }, Text::default(), PlaceName, TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT))));
             strip.spawn((Node { flex_shrink: 0.0, ..default() }, Text::default(), HudHint, TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT_SHADE))));
         });
     });
@@ -1128,13 +1128,21 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
             // `give=Name` puts a thing in the bag, the way the master would.
             "give" => {
                 let name = order.split_once('=').map_or("", |(_, n)| n).to_string();
-                world.apply(&[world::Effect::Give { name, description: "Given by a test.".into(), to: String::new(), traits: Default::default() }], None);
+                // A potion given by a test heals, so that drinking can be tested.
+                let potion = name.to_lowercase().contains("potion");
+                let traits = world::story::ItemTraits { kind: if potion { "potion".into() } else { String::new() }, heal: if potion { "2d4+2".into() } else { String::new() }, ..Default::default() };
+                world.apply(&[world::Effect::Give { name, description: "Given by a test.".into(), to: String::new(), traits }], None);
             }
             _ => {}
         }
     }
     // With the bag open the hero still walks, as in the old games.
     if *phase != Phase::Walking && *phase != Phase::Bag {
+        pose.moving = false;
+        return;
+    }
+    // The bag looked into in the middle of a fight: nobody walks, and the fight waits.
+    if *phase == Phase::Bag && game.world.fight_here() {
         pose.moving = false;
         return;
     }
@@ -1183,6 +1191,10 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
     }
     // Something hostile close by does not wait to be spoken to. With guests at the table
     // any of their tokens can be the one that is noticed.
+    // A pack that has not been counted out yet is, now that the party is here.
+    if !session.is_client() && game.world.fight.is_none() && game.world.here().creatures.iter().any(|c| c.attitude == world::Attitude::Hostile && !c.mustered) {
+        game.world.muster();
+    }
     let noticed = game.world.fight.is_none() && (game.world.hostile_near(NOTICE_CELLS) || game.world.tokens_here().any(|t| hostile_near_token(&game.world, t.x, t.y)));
     if !session.is_client() && noticed && game.world.start_fight(Rng::from_clock()) {
         *phase = Phase::Fighting;
@@ -1245,6 +1257,11 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
     }
     if *phase == Phase::Bag && (keyboard.just_pressed(KeyCode::KeyI) || keyboard.just_pressed(KeyCode::Tab)) {
         *phase = Phase::Walking;
+        return;
+    }
+    // In a fight the bag can still be looked into, and a thing drawn or put away.
+    if *phase == Phase::Fighting && (keyboard.just_pressed(KeyCode::KeyI) || keyboard.just_pressed(KeyCode::Tab)) {
+        *phase = Phase::Bag;
         return;
     }
     if *phase != Phase::Walking || !was_settled {
@@ -3049,6 +3066,12 @@ fn guests(
             Intent::Arrange { held, to } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     game.world.arrange(hero, &held, to);
+                }
+                None
+            }
+            Intent::Quick { slot, name } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    game.world.set_quick(hero, slot, &name);
                 }
                 None
             }

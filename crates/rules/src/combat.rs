@@ -111,6 +111,9 @@ pub struct Combatant {
     pub initiative: i32,
     pub movement_left: u32,
     pub action_left: bool,
+    /// The one thing a turn lets a fighter draw, stow or pick up for free has been handled.
+    #[serde(default)]
+    pub handled: bool,
     pub reaction_left: bool,
     pub dodging: bool,
     pub disengaged: bool,
@@ -140,6 +143,7 @@ impl Combatant {
             initiative: 0,
             movement_left: 0,
             action_left: false,
+            handled: false,
             reaction_left: true,
             dodging: false,
             disengaged: false,
@@ -315,6 +319,7 @@ impl Encounter {
         let c = &mut self.combatants[i];
         c.movement_left = c.speed;
         c.action_left = true;
+        c.handled = false;
         c.reaction_left = true;
         c.dodging = false;
         c.disengaged = false;
@@ -594,6 +599,42 @@ impl Encounter {
     pub fn mend_self(&mut self, amount: i32) -> Vec<Event> {
         let who = self.actor().id.clone();
         self.spend_action(|c| c.mend(amount)).then(|| Event::Healed { who: who.clone(), target: who, amount }).into_iter().collect()
+    }
+
+    /// Whether the actor may handle a thing now: once a turn for free, after that for the action.
+    pub fn can_handle(&self) -> bool {
+        let c = self.actor();
+        c.standing() && (!c.handled || c.action_left)
+    }
+
+    /// The actor handles a thing: the free one of the turn, or the action.
+    pub fn handle(&mut self) -> bool {
+        if !self.can_handle() {
+            return false;
+        }
+        let me = self.actor_index();
+        let c = &mut self.combatants[me];
+        if c.handled {
+            c.action_left = false;
+        }
+        c.handled = true;
+        true
+    }
+
+    /// A hero changed what they hold or wear in the middle of the fight: their strikes and
+    /// armour are counted again. Uses of their abilities already spent stay spent.
+    pub fn refit(&mut self, id: &str, character: &Character) {
+        let Some(c) = self.combatants.iter_mut().find(|c| c.id == id) else { return };
+        let fresh = Combatant::hero(character, id, (c.x, c.y));
+        let spent: Vec<(Option<usize>, Option<u8>)> = c.strikes.iter().map(|s| (s.feat, s.uses_left)).collect();
+        c.strikes = fresh.strikes;
+        for strike in &mut c.strikes {
+            if let Some((_, left)) = spent.iter().find(|(feat, _)| feat.is_some() && *feat == strike.feat) {
+                strike.uses_left = *left;
+            }
+        }
+        c.ac = fresh.ac;
+        c.routine = fresh.routine;
     }
 
     pub fn dash(&mut self) -> Vec<Event> {

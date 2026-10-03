@@ -28,7 +28,7 @@ impl Plugin for BagPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BagState>()
             .init_resource::<Said>()
-            .add_systems(Update, (open, build, press, outside, hover, follow, highlight).chain().run_if(in_state(crate::menu::Screen::Play)));
+            .add_systems(Update, (open, build, press, outside, hover, follow, highlight, quick_assign, quick_bar, quick_use).chain().run_if(in_state(crate::menu::Screen::Play)).run_if(resource_exists::<Game>));
     }
 }
 
@@ -482,6 +482,91 @@ fn press(
             sound.write(Play(if lifted.is_some() { Sfx::Item } else { Sfx::Confirm }));
         } else {
             sound.write(Play(Sfx::Error));
+        }
+    }
+}
+
+pub const QUICK_KEYS: [KeyCode; world::bag::QUICK_SLOTS] = [KeyCode::F1, KeyCode::F2, KeyCode::F3, KeyCode::F4, KeyCode::F5, KeyCode::F6];
+
+/// With the bag open, F1-F6 over a thing keeps it at hand under that key.
+fn quick_assign(phase: Res<Phase>, keyboard: Res<ButtonInput<KeyCode>>, mut game: ResMut<Game>, session: Res<Session>, state: Res<BagState>, mut sound: MessageWriter<Play>) {
+    if *phase != Phase::Bag {
+        return;
+    }
+    let Some(slot) = QUICK_KEYS.iter().position(|key| keyboard.just_pressed(*key)) else { return };
+    let hero = state.hero;
+    let name = state.over.and_then(|cell| game.world.story.bags.get(hero).and_then(|b| b.item_at(cell))).map(|i| bag(&game.world, hero)[i].name.clone()).unwrap_or_default();
+    if session.is_client() {
+        session.intend(Intent::Quick { slot, name: name.clone() });
+    }
+    game.world.set_quick(hero, slot, &name);
+    sound.write(Play(if name.is_empty() { Sfx::Back } else { Sfx::Item }));
+}
+
+#[derive(Component)]
+struct QuickBar;
+
+/// The things kept at hand, in the strip at the bottom: a picture, how many, and the key.
+#[allow(clippy::too_many_arguments)]
+fn quick_bar(mut commands: Commands, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut images: ResMut<Assets<Image>>, old: Query<Entity, With<QuickBar>>, mut shown: Local<String>) {
+    let world = &game.world;
+    let me = player_name(&settings);
+    let hero = crate::play::my_hero(world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
+    let slots: Vec<Option<&Item>> = (0..world::bag::QUICK_SLOTS).map(|slot| world.quick_item(hero, slot).and_then(|i| bag(world, hero).get(i))).collect();
+    let print = format!("{hero}|{:?}", slots.iter().map(|s| s.map(|i| (&i.name, i.count, i.rows.len()))).collect::<Vec<_>>());
+    if *shown == print && !old.is_empty() {
+        return;
+    }
+    *shown = print;
+    for entity in &old {
+        commands.entity(entity).despawn();
+    }
+    let height = crate::play::HUD_HEIGHT;
+    let bar = Node { position_type: PositionType::Absolute, left: px(112), bottom: px(1), height: px(height - 2.0), column_gap: px(2), align_items: AlignItems::Center, ..default() };
+    commands.spawn((QuickBar, DespawnOnExit(crate::menu::Screen::Play), bar, GlobalZIndex(9), Pickable::IGNORE)).with_children(|row| {
+        for (n, slot) in slots.iter().enumerate() {
+            row.spawn((Node { width: px(height - 2.0), height: px(height - 2.0), border: UiRect::all(px(1)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(color(WOOD_DEEP)), BorderColor::all(color(if slot.is_some() { BRASS } else { WOOD_DARK })), Pickable::IGNORE))
+                .with_children(|cell| match slot {
+                    Some(item) => {
+                        let image = images.add(picture(item, world).into_image());
+                        cell.spawn((Node { width: px(height - 4.0), height: px(height - 4.0), ..default() }, ImageNode::new(image), Pickable::IGNORE));
+                        if item.count > 1 {
+                            cell.spawn((Node { position_type: PositionType::Absolute, right: px(0), bottom: px(-2), ..default() }, Text::new(item.count.to_string()), fonts.body(), TextColor(color(PARCHMENT)), Pickable::IGNORE));
+                        }
+                    }
+                    None => {
+                        cell.spawn((Text::new((n + 1).to_string()), fonts.body(), TextColor(color(WOOD_LIGHT)), Pickable::IGNORE));
+                    }
+                });
+        }
+    });
+}
+
+/// F1-F6 while walking uses the thing kept under that key, as a right click in the bag would.
+#[allow(clippy::too_many_arguments)]
+fn quick_use(mut phase: ResMut<Phase>, keyboard: Res<ButtonInput<KeyCode>>, mut game: ResMut<Game>, session: Res<Session>, settings: Res<Settings>, mut sound: MessageWriter<Play>, mut said: ResMut<Said>, lang: Res<Lang>) {
+    if *phase != Phase::Walking {
+        return;
+    }
+    let Some(slot) = QUICK_KEYS.iter().position(|key| keyboard.just_pressed(*key)) else { return };
+    let me = player_name(&settings);
+    let hero = crate::play::my_hero(&game.world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
+    let Some(i) = game.world.quick_item(hero, slot) else {
+        sound.write(Play(Sfx::Error));
+        return;
+    };
+    let name = bag(&game.world, hero)[i].name.clone();
+    if session.is_client() {
+        session.intend(Intent::UseItem { index: i });
+    }
+    match game.world.use_item(hero, i, &mut rules::Rng::from_clock()) {
+        Used::Healed(_) => {
+            sound.write(Play(Sfx::Heal));
+        }
+        Used::Ask => {
+            let who = game.world.party.get(hero).map_or(String::new(), |h| h.name.clone());
+            said.0 = Some(format!("{who} {} {name}", T::UsesThing.text(*lang)));
+            *phase = Phase::Walking;
         }
     }
 }

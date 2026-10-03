@@ -131,6 +131,9 @@ pub enum Effect {
         monster: Option<String>,
         #[serde(default)]
         stats: Option<Stats>,
+        /// For a creature: how many of them appear; 0 leaves it to the game.
+        #[serde(default, deserialize_with = "lenient_int")]
+        count: i64,
         /// For a prop that holds things: what is in it, how hard its lock is, its key.
         #[serde(default)]
         contents: Vec<ThingDraft>,
@@ -342,6 +345,8 @@ pub struct Bag {
     /// Things of the master's own that the hero wears or wields now: taken off, each comes
     /// back into the bag as itself, with its name and picture.
     pub worn_as: Vec<Item>,
+    /// The names of the things kept at hand, a key each; empty for a free slot.
+    pub quick: Vec<String>,
 }
 
 /// What the master may say about a thing it gives, beyond its name.
@@ -765,7 +770,7 @@ impl World {
                     notes.extend(read_notes);
                     location.secrets.push(crate::model::Secret { x: sx, y: sy, dc: (*dc).clamp(5, 30) as i32, kind: kind.trim().to_lowercase(), note: note.trim().to_string(), effects, found: false });
                 }
-                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, contents, lock, key } => {
+                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, count, contents, lock, key } => {
                     let mut id = slug(id);
                     if id.is_empty() {
                         id = "thing".to_string();
@@ -786,7 +791,7 @@ impl World {
                     if kind.trim().eq_ignore_ascii_case("creature") {
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
                         if let Some((cx, cy)) = nearest(wanted, free) {
-                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone() });
+                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false });
                         }
                     } else {
                         let chest = (!contents.is_empty() || *lock > 0 || !key.trim().is_empty()).then(|| crate::model::Chest { items: contents.iter().filter_map(ThingDraft::item).collect(), lock: (*lock).clamp(0, 30) as i32, key: key.trim().to_string(), open: false });

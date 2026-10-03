@@ -8,7 +8,7 @@ use crate::story::{KEPT_LINES, Speaker};
 use std::fmt::Write;
 
 /// How the master says what a creature fights with.
-const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "monster" the index of the D&D 5e SRD monster it is or most resembles (goblin, wolf, bandit, skeleton, giant-spider, ogre, guard, …), or give "stats" of its own: {"ac": 13, "hp": 11, "speed": 30, "attacks": [{"name": "…", "bonus": 4, "damage": "1d6+2", "range": 5}], "xp": 50}. Match the danger to a first-level party unless told otherwise: a first-level hero has about ten hit points, so against one or two heroes a single hit must not average more than five (challenge 1/4 or less: giant-rat, kobold, bandit, giant-centipede — not swarm-of-insects, whose bite takes ten), and nothing hostile stands right where the party walks in."##;
+const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "monster" the index of the D&D 5e SRD monster it is or most resembles (goblin, wolf, bandit, skeleton, giant-spider, ogre, guard, …), or give "stats" of its own: {"ac": 13, "hp": 11, "speed": 30, "attacks": [{"name": "…", "bonus": 4, "damage": "1d6+2", "range": 5}], "xp": 50}. Hostile creatures come in packs: put one creature down for the pack and the game brings as many of its kind as make a fair fight for the party there is; give "count" (1 to 8) to set the number yourself — "count": 1 for one that stands alone, a boss or a lone beast. Match the danger to a first-level party unless told otherwise: a first-level hero has about ten hit points, so against one or two heroes a single hit must not average more than five (challenge 1/4 or less: giant-rat, kobold, bandit, giant-centipede — not swarm-of-insects, whose bite takes ten), and nothing hostile stands right where the party walks in."##;
 
 /// How the master changes the world. Shared by drawing (prepared actions) and by play.
 const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
@@ -104,7 +104,7 @@ const LOCATION_SHAPE: &str = r##"{
   "new_tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
   "sprites": [{"id": "…", "rows": ["16 or 32 characters", "… as many rows"]}],
   "props": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "blocking": true, "sprite": "…", "actions": [{"label": "what the players choose", "outcome": "what happens", "effects": []}]}],
-  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "monster": "srd-index or omit", "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
+  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "monster": "srd-index or omit", "count": 0, "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
   "exits": [{"x": 0, "y": 0, "to": "neighbor_id", "label": "what the way out looks like"}],
   "neighbors": [{"id": "neighbor_id", "name": "…", "description": "one sentence: what is there"}]
 }"##;

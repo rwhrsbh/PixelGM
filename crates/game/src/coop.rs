@@ -57,6 +57,8 @@ pub enum Intent {
     Arrange { held: world::bag::Held, to: world::bag::Spot },
     /// One of a thing in the bag used.
     UseItem { index: usize },
+    /// A thing put on a quick slot, by name; an empty name clears the slot.
+    Quick { slot: usize, name: String },
     /// One of a thing in the bag thrown on the ground of a cell.
     Drop { index: usize, cell: (usize, usize) },
     /// What lies on the ground picked up.
