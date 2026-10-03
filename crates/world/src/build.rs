@@ -589,6 +589,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         cues: Vec::new(),
         cue_seq: 0,
         travel: None,
+        moves: Vec::new(),
         acting: None,
         title: fallback(&draft.title, &built.location.name),
         summary: draft.summary.trim().to_string(),

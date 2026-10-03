@@ -21,7 +21,7 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "mark", "x": 0, "y": 0, "kind": "blood|dung|puddle|scorch|ash|slime|vomit|wine|paint|rubble|coins|bones", "color": "#rrggbb"} — something is left on the ground of a cell; without x and y it is where the party stands; "id" instead puts it under that thing; "color" is optional
   {"op": "music", "mood": "calm|explore|tense|battle|boss|mystery|horror|sad|tavern|triumph|dungeon"} — the music of this place changes with what happens: dread creeping in, a celebration, grief
   {"op": "clean", "x": 0, "y": 0} — what was left on a cell is picked up or washed away (with "give" when the party takes it)
-  {"op": "travel", "to": "place_id", "name": "for a new place"} — the party goes to another place
+  {"op": "travel", "to": "place_id", "name": "for a new place", "who": ["hero name"]} — heroes go to another place; "who" lists those who go, everyone here when left out
   {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
   {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
   {"op": "move", "id": "…", "x": 0, "y": 0}

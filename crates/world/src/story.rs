@@ -160,6 +160,9 @@ pub enum Effect {
         to: String,
         #[serde(default)]
         name: String,
+        /// The heroes who go, by name; everyone here when empty.
+        #[serde(default)]
+        who: Vec<String>,
     },
     /// What was left on a cell is taken up or washed away; with no cell, where the party stands.
     Clean {
@@ -548,8 +551,17 @@ impl World {
         let names: Vec<String> = self.party.iter().map(|h| slug(&h.name)).collect();
         let acting = self.acting.filter(|a| *a < self.party.len()).unwrap_or(0);
         let bag_of = |to: &str| names.iter().position(|n| !to.trim().is_empty() && *n == slug(to)).unwrap_or(acting);
-        let mut moved_party: Option<(usize, usize)> = None;
-        let mut travel: Option<(String, String)> = None;
+        let mut moved: Vec<(usize, (usize, usize))> = Vec::new();
+        let mut travel: Option<(String, String, Vec<usize>)> = None;
+        // The heroes in this scene: those the word "party" means here.
+        let present: Vec<usize> = (0..self.party.len()).filter(|i| !self.party[*i].dead && self.takes_part(*i) && self.hero_place(*i) == here).collect();
+        let present = if present.is_empty() { (0..self.party.len().min(1)).collect() } else { present };
+        let heroes_named = |id: &str| -> Vec<usize> {
+            match id {
+                "party" | "hero" | "heroes" | "player" | "players" | "everyone" | "all" => present.clone(),
+                _ => names.iter().position(|n| *n == id).into_iter().collect(),
+            }
+        };
         // Where the party stands, for what is left on the ground with no cell given.
         let party_cell = {
             let (x, y) = self.player.cell();
@@ -656,15 +668,16 @@ impl World {
                         if let (Some(cell), Some(c)) = (nearest(wanted, free), location.creatures.iter_mut().find(|c| c.id == id)) {
                             (c.x, c.y) = cell;
                         }
-                    } else if matches!(id.as_str(), "party" | "hero" | "heroes" | "player") || self.party.iter().any(|h| slug(&h.name) == id) {
-                        // Onto a way out, the party takes it.
+                    } else if !heroes_named(&id).is_empty() {
+                        let heroes = heroes_named(&id);
+                        // Onto a way out, those heroes take it.
                         if let Some(exit) = location.exit_at(wanted.0, wanted.1) {
-                            travel = Some((exit.to.clone(), String::new()));
+                            travel = Some((exit.to.clone(), String::new(), heroes.clone()));
                         }
-                        // The party is carried, pushed or walks where the story says.
+                        // They are carried, pushed or walk where the story says.
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
-                        if let Some((cx, cy)) = nearest(wanted, free) {
-                            moved_party = Some((cx, cy));
+                        if let Some(cell) = nearest(wanted, free) {
+                            moved.extend(heroes.into_iter().map(|h| (h, cell)));
                         }
                     } else {
                         notes.push(format!("move: nothing called '{id}' is here"));
@@ -743,10 +756,11 @@ impl World {
                         location.marks.remove(at);
                     }
                 }
-                Effect::Travel { to, name } => {
+                Effect::Travel { to, name, who } => {
                     let to = slug(to);
                     if !to.is_empty() && to != here {
-                        travel = Some((to, name.trim().to_string()));
+                        let heroes: Vec<usize> = if who.is_empty() { present.clone() } else { who.iter().flat_map(|w| heroes_named(&slug(w))).collect() };
+                        travel = Some((to, name.trim().to_string(), heroes));
                     }
                 }
                 Effect::Mark { id, x, y, kind, color } => {
@@ -775,16 +789,14 @@ impl World {
                 Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight | Effect::Deed { .. } | Effect::Revive { .. } => {}
             }
         }
-        if let Some((x, y)) = moved_party {
-            self.player = Player::in_cell(x, y);
-        }
-        if let Some((to, name)) = travel {
+        self.moves.extend(moved);
+        if let Some((to, name, heroes)) = travel {
             // A place nobody has heard of yet is named now and drawn when the party arrives.
             if !self.locations.contains_key(&to) && !self.stubs.contains_key(&to) {
                 let name = if name.is_empty() { to.replace('_', " ") } else { name };
                 self.stubs.insert(to.clone(), crate::model::Stub { name, description: String::new() });
             }
-            self.travel = Some(to);
+            self.travel = Some((to, heroes));
         }
         // Whatever changed, the party must not end up inside something.
         let (px, py) = self.player.cell();
@@ -866,6 +878,26 @@ mod tests {
         assert!(place.reveal(5.5, 5.5, 2.0));
         assert!(place.was_seen(5, 5) && place.was_seen(6, 6) && !place.was_seen(8, 5));
         assert!(!place.reveal(5.5, 5.5, 2.0), "nothing new the second time");
+    }
+
+    #[test]
+    fn the_story_moves_and_sends_only_the_heroes_it_names_or_those_here() {
+        let mut w = world();
+        let fighter = rules::srd().class("fighter").unwrap();
+        let skills: Vec<String> = fighter.skill_options.iter().take(fighter.skill_picks).cloned().collect();
+        for name in ["Ann", "Bob"] {
+            w.party.push(rules::Character::create(name, "", "human", "fighter", [15, 14, 13, 12, 10, 8], &skills, &[]).unwrap());
+        }
+        w.owners = vec!["ann".into(), "bob".into()];
+        w.apply(&effects(json!([{ "op": "move", "id": "Bob", "x": 3, "y": 3 }])), None);
+        assert_eq!(w.moves.len(), 1);
+        assert_eq!(w.moves[0].0, 1);
+        w.moves.clear();
+        w.apply(&effects(json!([{ "op": "move", "id": "party", "x": 4, "y": 4 }])), None);
+        assert_eq!(w.moves.iter().map(|m| m.0).collect::<Vec<_>>(), [0, 1]);
+        w.apply(&effects(json!([{ "op": "travel", "to": "far_hills", "name": "Far Hills", "who": ["Ann"] }])), None);
+        assert_eq!(w.travel, Some(("far_hills".to_string(), vec![0])));
+        assert!(w.stubs.contains_key("far_hills"));
     }
 
     #[test]

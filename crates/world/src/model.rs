@@ -357,9 +357,13 @@ pub struct World {
     /// The hero whose player the master is answering, for whose bag a thing goes into.
     #[serde(skip)]
     pub acting: Option<usize>,
-    /// A place the story sent the party to, to be gone to once the telling is read.
+    /// A place the story sent heroes to, and which heroes: to be gone to once the telling is
+    /// read, each by their own player.
     #[serde(skip)]
-    pub travel: Option<String>,
+    pub travel: Option<(String, Vec<usize>)>,
+    /// Cells the story put heroes in, by hero: each player's own token is moved.
+    #[serde(skip)]
+    pub moves: Vec<(usize, (usize, usize))>,
     /// Movements to be shown, newest last, numbered so that each is shown once.
     #[serde(default)]
     pub cues: Vec<Cue>,

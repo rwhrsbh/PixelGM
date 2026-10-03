@@ -151,6 +151,46 @@ fn notice(time: Res<Time>, mut game: ResMut<Game>, mut table: ResMut<Table>, pha
     }
 }
 
+/// Where the story put heroes, and where it sent them: the host moves its own and tells each
+/// guest, and a guest sent to a place not drawn yet waits at the door while it is drawn.
+#[allow(clippy::too_many_arguments)]
+fn relocate(mut game: ResMut<Game>, session: Res<Session>, settings: Res<Settings>, mut leave: ResMut<Leave>, mut table: ResMut<Table>, master: Res<Master>, gm: Res<Gm>, store: Res<Store>) {
+    if session.is_client() || (game.world.moves.is_empty() && game.world.travel.is_none()) {
+        return;
+    }
+    let me = player_name(&settings);
+    let owner = |world: &World, h: usize| world.owners.get(h).filter(|o| !o.is_empty()).cloned().unwrap_or_else(|| me.clone());
+    for (h, (x, y)) in std::mem::take(&mut game.world.moves) {
+        let who = owner(&game.world, h);
+        if who == me {
+            if game.world.hero_place(h) == game.world.current || game.world.owners.is_empty() {
+                game.world.player = world::Player::in_cell(x, y);
+            }
+        } else {
+            session.send_to(&who, &Down::MoveTo { x, y });
+        }
+    }
+    if let Some((to, heroes)) = game.world.travel.take() {
+        for h in heroes {
+            let who = owner(&game.world, h);
+            if who == me {
+                leave.0 = Some(to.clone());
+            } else if game.world.locations.contains_key(&to) {
+                game.world.places.insert(who, to.clone());
+            } else if !table.travellers.iter().any(|(p, _)| *p == who) {
+                if !master.is_drawing(&to) {
+                    let mut seen = game.world.clone();
+                    let from = game.world.place_of(&who).to_string();
+                    seen.current = from.clone();
+                    master.ask(&gm, &store, &settings, Ask::Location { world: Box::new(seen), id: to.clone(), from, ahead: false });
+                }
+                session.send_to(&who, &Down::Drawing(to.clone()));
+                table.travellers.push((who, to.clone()));
+            }
+        }
+    }
+}
+
 /// The outcome of a choice is shown only while its continuation is awaited.
 fn forget_going_on(phase: Res<Phase>, mut table: ResMut<Table>) {
     if table.going_on.is_some() && !matches!(*phase, Phase::Asking { .. }) {
@@ -1096,9 +1136,7 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         .exit_here()
         .filter(|e| (e.x == 0 && pushing.0 < 0) || (e.x == world::MAP_W - 1 && pushing.0 > 0) || (e.y == 0 && pushing.1 < 0) || (e.y == world::MAP_H - 1 && pushing.1 > 0))
         .map(|e| e.to.clone());
-    // Or the story sent the party somewhere.
-    let sent = if session.is_client() { None } else { game.world.travel.take() };
-    let taken = stepping_out.or(wished).or(sent);
+    let taken = stepping_out.or(wished);
     if session.is_client() {
         if let Some(to) = taken.clone() {
             session.intend(Intent::Exit { to: to.clone() });
@@ -3116,7 +3154,7 @@ impl Plugin for PlayPlugin {
                 Update,
                 (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
-            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on, notice).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on, notice, relocate).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
             .add_observer(on_master_activate);
     }

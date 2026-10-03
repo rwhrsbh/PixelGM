@@ -142,6 +142,8 @@ pub enum Down {
     Positions(Vec<Token>),
     /// The game master told something; everyone reads it.
     Told(Turn),
+    /// The story put the guest's hero in this cell of where the guest is.
+    MoveTo { x: usize, y: usize },
     /// The game master is working on what somebody did.
     Thinking(String),
     /// The game master could not answer.
@@ -692,6 +694,11 @@ fn client_pump(
             ClientEvent::Message(Down::Positions(tokens)) => {
                 if let Some(game) = &mut game {
                     game.world.others = tokens.into_iter().filter(|t| t.name != me).collect();
+                }
+            }
+            ClientEvent::Message(Down::MoveTo { x, y }) => {
+                if let Some(game) = game.as_mut() {
+                    game.world.player = world::Player::in_cell(x, y);
                 }
             }
             ClientEvent::Message(Down::Told(turn)) => {
