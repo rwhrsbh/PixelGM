@@ -86,6 +86,64 @@ pub fn gear_named(name: &str) -> Option<String> {
     None
 }
 
+/// The gear of the rules a thing of the master's works as: the index it named, or a guess
+/// from what the thing is called. A sword of its own name still cuts like a sword.
+pub fn gear_like(name: &str, kind: &str, named: &str) -> Option<String> {
+    let data = srd();
+    let asked = named.trim().to_lowercase().replace([' ', '_'], "-");
+    if asked == "shield" || data.weapons.contains_key(&asked) || data.armors.contains_key(&asked) {
+        return Some(asked);
+    }
+    if let Some(index) = gear_named(named).or_else(|| gear_named(name)) {
+        return Some(index);
+    }
+    let n = name.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
+    let kind = kind.trim().to_lowercase();
+    let guess = if has(&["shield", "щит"]) {
+        "shield"
+    } else if kind == "armor" || kind == "armour" || has(&["armor", "armour", "mail", "plate", "cuirass", "доспех", "кольчуг", "кирас", "латы", "брон", "панцир"]) {
+        if has(&["leather", "кожан"]) {
+            "leather-armor"
+        } else if has(&["plate", "латы", "латн"]) {
+            "plate-armor"
+        } else if has(&["cuirass", "кирас", "breastplate", "нагрудн", "панцир"]) {
+            "breastplate"
+        } else {
+            "chain-mail"
+        }
+    } else if kind == "weapon" || has(&["sword", "меч", "blade", "клинок", "axe", "топор", "dagger", "кинжал", "нож", "mace", "булав", "club", "дубин", "spear", "копь", "bow", "лук", "hammer", "молот", "staff", "посох"]) {
+        if has(&["dagger", "кинжал", "knife", "нож"]) {
+            "dagger"
+        } else if has(&["greatsword", "двуруч"]) {
+            "greatsword"
+        } else if has(&["short", "корот"]) && has(&["sword", "меч"]) {
+            "shortsword"
+        } else if has(&["axe", "топор", "секир"]) {
+            "battleaxe"
+        } else if has(&["crossbow", "арбалет"]) {
+            "crossbow-light"
+        } else if has(&["bow", "лук"]) {
+            "shortbow"
+        } else if has(&["hammer", "молот"]) {
+            "warhammer"
+        } else if has(&["mace", "булав"]) {
+            "mace"
+        } else if has(&["spear", "копь"]) {
+            "spear"
+        } else if has(&["staff", "посох"]) {
+            "quarterstaff"
+        } else if has(&["club", "дубин", "палиц"]) {
+            "club"
+        } else {
+            "longsword"
+        }
+    } else {
+        return None;
+    };
+    (guess == "shield" || data.weapons.contains_key(guess) || data.armors.contains_key(guess)).then(|| guess.to_string())
+}
+
 const WORDS_1X1: [&str; 30] = [
     "potion", "vial", "flask", "coin", "ring", "key", "gem", "jewel", "amulet", "hair", "tooth", "fang", "seed", "stone", "pebble", "зель", "флакон", "монет", "кольц", "ключ",
     "самоцвет", "камен", "камуш", "амулет", "шерст", "клык", "зуб", "семя", "перо", "feather",
@@ -205,7 +263,12 @@ impl Bag {
 
     /// A piece of gear into the bag, where it fits or beside it.
     pub fn stow(&mut self, index: &str) {
-        let item = Item { name: gear_name(index, false), description: String::new(), count: 1, gear: Some(index.to_string()), at: None, ..Default::default() };
+        let plain = Item { name: gear_name(index, false), description: String::new(), count: 1, gear: Some(index.to_string()), at: None, ..Default::default() };
+        // A thing of the master's own comes back as it was.
+        let item = match self.worn_as.iter().position(|i| i.gear.as_deref() == Some(index)) {
+            Some(n) => Item { at: None, count: 1, ..self.worn_as.remove(n) },
+            None => plain,
+        };
         self.inventory.push(item);
         let last = self.inventory.len() - 1;
         self.inventory[last].at = self.free_spot(self.inventory[last].size(), Some(last));
@@ -229,6 +292,10 @@ impl World {
             let old = std::mem::take(&mut self.story.inventory);
             self.story.bags[0].inventory.extend(old);
             self.story.bags[0].pack();
+        }
+        // Weapons and armour handed over before the game knew what they work as.
+        for item in self.story.bags.iter_mut().flat_map(|b| b.inventory.iter_mut()).filter(|i| i.gear.is_none() && matches!(i.kind.as_str(), "weapon" | "armor" | "armour")) {
+            item.gear = gear_like(&item.name, &item.kind, "");
         }
     }
 }
@@ -534,6 +601,9 @@ fn arrange_in(party: &mut [Character], story: &mut Bag, held: &Held, to: Spot) -
                         story.inventory[last].at = Some(at);
                     }
                 }
+                if !had.name.eq_ignore_ascii_case(&gear_name(&index, false)) {
+                    story.worn_as.push(had);
+                }
                 put_on(&mut trial, slot, index);
                 *party.get_mut(h).expect("checked above") = trial;
                 true
@@ -566,7 +636,10 @@ fn arrange_in(party: &mut [Character], story: &mut Bag, held: &Held, to: Spot) -
                 }
                 let hero = party.get_mut(h).expect("checked above");
                 take_off(hero, slot);
-                story.inventory.push(Item { name: gear_name(&index, false), count: 1, gear: Some(index.clone()), at: Some((x, y)), ..Default::default() });
+                story.stow(&index);
+                if let Some(item) = story.inventory.last_mut() {
+                    item.at = Some((x, y));
+                }
                 true
             }
             (Held::Worn(h, from), Spot::Worn(to_hero, to)) if h == to_hero => {
@@ -644,6 +717,20 @@ mod tests {
         assert!(!w.arrange(0, &Held::Item(0), Spot::Bag(11, BAG_H - 2)), "past the bottom");
         assert!(w.arrange(0, &Held::Item(0), Spot::Bag(11, BAG_H - 3)));
         assert_eq!(w.story.bags[0].item_at((11, BAG_H - 1)), Some(0));
+    }
+
+    #[test]
+    fn a_sword_of_the_masters_own_is_wielded_and_comes_back_as_itself() {
+        let mut w = world();
+        w.apply(&crate::story::read_effects(&[serde_json::json!({ "op": "give", "name": "Керамический меч Стража", "kind": "weapon" })], &mut Vec::new()), None);
+        let i = w.story.bags[0].inventory.iter().position(|i| i.name == "Керамический меч Стража").unwrap();
+        assert_eq!(w.story.bags[0].inventory[i].gear.as_deref(), Some("longsword"));
+        assert!(w.arrange(0, &Held::Item(i), Spot::Worn(0, Slot::Main)));
+        assert_eq!(w.party[0].weapons[0], "longsword");
+        assert!(w.story.bags[0].inventory.iter().all(|i| i.name != "Керамический меч Стража"));
+        let free = w.story.bags[0].free_spot((1, 3), None).unwrap();
+        assert!(w.arrange(0, &Held::Worn(0, Slot::Main), Spot::Bag(free.0, free.1)));
+        assert!(w.story.bags[0].inventory.iter().any(|i| i.name == "Керамический меч Стража"));
     }
 
     #[test]

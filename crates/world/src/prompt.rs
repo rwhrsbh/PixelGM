@@ -13,7 +13,7 @@ const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "mons
 /// How the master changes the world. Shared by drawing (prepared actions) and by play.
 const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "remove", "id": "…"} — a prop or creature leaves the scene
-  {"op": "give", "name": "…", "description": "…", "kind": "weapon|armor|light|potion|food|throwable|key|tool|junk|quest", "size": [1, 2], "heal": "2d4+2", "damage": "1d6", "light": 4, "rows": ["…"]} — the party gains an item. "rows" is REQUIRED on every "give" and on every thing in a container's "contents": always draw the thing yourself — 16 rows of 16 palette characters for each cell of its size, '0' transparent, the thing filling most of the picture, recognisable at a glance — the player sees it in the bag and on the ground, and a thing without a picture is a mistake. The rest besides name is optional: "size" is cells across and down in the bag (1 to 4), "heal" what drinking or eating it heals, "damage" what throwing it does, "light" how many cells it lights when held, "rows" your picture of it (required), 16 pixels to a cell
+  {"op": "give", "name": "…", "description": "…", "kind": "weapon|armor|light|potion|food|throwable|key|tool|junk|quest", "size": [1, 2], "heal": "2d4+2", "damage": "1d6", "light": 4, "rows": ["…"]} — the party gains an item. "rows" is REQUIRED on every "give" and on every thing in a container's "contents": always draw the thing yourself — 16 rows of 16 palette characters for each cell of its size, '0' transparent, the thing filling most of the picture, recognisable at a glance — the player sees it in the bag and on the ground, and a thing without a picture is a mistake. The rest besides name is optional: "size" is cells across and down in the bag (1 to 4), "heal" what drinking or eating it heals, "damage" what throwing it does, "light" how many cells it lights when held, "rows" your picture of it (required), 16 pixels to a cell; a weapon, armour or shield the hero can wield or wear ALWAYS takes "kind": "weapon" or "armor" and "gear": the D&D 5e SRD index it works as (longsword, dagger, greataxe, shortbow, leather-armor, chain-mail, breastplate, plate-armor, shield, …) — its own name and picture stay, the rules come from that index
   {"op": "take", "name": "…"} — the party loses an item (used up, given away, broken)
   {"op": "describe", "id": "…", "description": "…"} — a thing looks different from now on
   {"op": "light", "light": "day|dusk|night|dark"} — time passes here: the hour and the light change
@@ -89,6 +89,7 @@ ACTIONS. Give every prop and creature two or three "actions": things the players
 /// The shape of a location in an answer, shown by example.
 const LOCATION_SHAPE: &str = r##"{
   "id": "snake_case", "name": "…", "description": "two or three sentences the players read on arrival",
+  "palette": {"g": "#rrggbb"},
   "light": "day, dusk, night or dark (a cave, a cellar): the hour and the light of the place",
   "weather": "clear, sun, rain, storm, snow or fog; clear indoors and underground",
   "mood": "the music of the place: calm, explore, tense, mystery, horror, sad, tavern, dungeon",
@@ -298,6 +299,7 @@ const TURN_SHAPE: &str = r##"{
   "narration": "what happens, told to the players",
   "effects": [],
   "sprites": [{"id": "…", "rows": ["…"]}],
+  "palette": {"g": "#rrggbb"},
   "tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
   "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": [], "near": ""}]
 }
@@ -447,6 +449,8 @@ pub fn new_location(world: &World, id: &str, from: &str) -> String {
     for (i, [r, g, b]) in world.palette.colors.iter().enumerate() {
         let _ = write!(text, " {}=#{r:02x}{g:02x}{b:02x}", char_of(i as u8 + 1));
     }
+    let free: String = (world.palette.len()..crate::model::PALETTE_MAX).map(|i| char_of(i as u8)).collect();
+    let _ = write!(text, "\nFREE PALETTE LETTERS (give each a colour in \"palette\" to draw with it): {}", if free.is_empty() { "none" } else { &free });
     let _ = write!(text, "\n\nTILES THAT EXIST (walkable marked +):");
     for (tile_id, tile) in &world.tiles {
         let _ = write!(text, " {tile_id}{}", if tile.walkable { "+" } else { "" });
@@ -465,7 +469,9 @@ pub fn new_location(world: &World, id: &str, from: &str) -> String {
     let (name, description) = world.stubs.get(id).map(|s| (s.name.as_str(), s.description.as_str())).unwrap_or((id, ""));
     let _ = write!(
         text,
-        "\nDraw the place \"{id}\": {name}. {description}\nThe party walks in from \"{from}\" ({}): one exit must lead back to \"{from}\", on the side that makes sense. Other exits may lead to places that exist or to new ones.\n\nAnswer with this JSON object (\"id\" must be \"{id}\"):\n{LOCATION_SHAPE}",
+        "\nDraw the place \"{id}\": {name}. {description}\nYou are NOT bound to what was drawn before. The story moves on: when this place is unlike the last ones — another land, the sky, open space, a ship, a dream, a city after a swamp — give it ground, walls, things and creatures of its own: draw \"new_tiles\" and \"sprites\" for it and add colours in \"palette\" under the free letters; reuse an old tile or sprite only where that very thing would be found here. The hour and the sky follow on from where the party comes from ({}, {}) unless this place is indoors, underground or the story says they changed.\nThe party walks in from \"{from}\" ({}): one exit must lead back to \"{from}\", on the side that makes sense. Other exits may lead to places that exist or to new ones.\n\nAnswer with this JSON object (\"id\" must be \"{id}\"):\n{LOCATION_SHAPE}",
+        world.locations.get(from).map_or("day", |l| if l.light.is_empty() { "day" } else { l.light.as_str() }),
+        world.locations.get(from).map_or("clear", |l| if l.weather.is_empty() { "clear" } else { l.weather.as_str() }),
         world.place_name(from)
     );
     text

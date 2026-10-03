@@ -316,6 +316,9 @@ pub struct Item {
 pub struct Bag {
     pub inventory: Vec<Item>,
     pub held: Option<Item>,
+    /// Things of the master's own that the hero wears or wields now: taken off, each comes
+    /// back into the bag as itself, with its name and picture.
+    pub worn_as: Vec<Item>,
 }
 
 /// What the master may say about a thing it gives, beyond its name.
@@ -329,6 +332,8 @@ pub struct ItemTraits {
     pub heal: String,
     pub damage: String,
     pub light: Value,
+    /// The weapon or armour of the rules this works as, for a thing to wield or wear.
+    pub gear: String,
 }
 
 impl ItemTraits {
@@ -455,7 +460,7 @@ impl ThingDraft {
             name: name.to_string(),
             description: self.description.trim().to_string(),
             count: 1,
-            gear: crate::bag::gear_named(name),
+            gear: crate::bag::gear_like(name, &traits.kind, &traits.gear),
             at: None,
             kind: traits.kind.trim().to_lowercase(),
             size_cells: traits.size(),

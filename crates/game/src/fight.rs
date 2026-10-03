@@ -598,7 +598,7 @@ fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<F
         align_items: if wanted.on_top { AlignItems::FlexStart } else { AlignItems::FlexEnd },
         ..default()
     };
-    commands.spawn((FightSheet, root, GlobalZIndex(10))).with_children(|root| {
+    commands.spawn((FightSheet, DespawnOnExit(Screen::Play), root, GlobalZIndex(10))).with_children(|root| {
         spawn_panel(root, &art, Node { width: px(468), flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }, |sheet| {
             for line in &wanted.lines {
                 sheet.spawn((Text::new(line.clone()), fonts.body(), ink));
@@ -863,6 +863,8 @@ impl Plugin for FightPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FightView>()
             .add_systems(Update, (reset, submit_stunt, input, drive, drive_elsewhere, markers, sheet).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            // A fight left behind (a save loaded after a defeat) leaves nothing on the next screen.
+            .add_systems(OnExit(Screen::Play), |mut view: ResMut<FightView>| *view = FightView::default())
             .add_observer(on_activate);
     }
 }

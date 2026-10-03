@@ -120,6 +120,8 @@ pub struct NeighborDraft {
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
 pub struct LocationDraft {
+    /// Colours added for this place, by letters not in use yet.
+    pub palette: BTreeMap<String, String>,
     pub id: String,
     pub name: String,
     pub description: String,
@@ -627,8 +629,22 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
 }
 
 impl World {
+    /// Takes colours the master adds for a new scene. Only letters not in use yet are taken:
+    /// a colour already drawn with stays what it was, or every old picture would change.
+    pub fn add_colors(&mut self, colors: &BTreeMap<String, String>) {
+        let mut wanted: Vec<(usize, [u8; 3])> = colors.iter().filter_map(|(key, hex)| Some((key.chars().next().and_then(index_of).filter(|i| *i > 0)? as usize - 1, hex_color(hex)?))).collect();
+        wanted.sort();
+        for (slot, color) in wanted {
+            if slot >= self.palette.colors.len() && slot < PALETTE_MAX - 1 {
+                self.palette.colors.resize(slot, [0, 0, 0]);
+                self.palette.colors.push(color);
+            }
+        }
+    }
+
     /// Draws a place that was only a stub. The party is not moved.
     pub fn add_location(&mut self, draft: &LocationDraft, id: &str, arrived_from: Option<&str>) -> Result<Vec<String>, String> {
+        self.add_colors(&draft.palette);
         let known: BTreeSet<String> = self.locations.keys().chain(self.stubs.keys()).cloned().collect();
         let mut assets = Assets { palette_len: self.palette.len(), tiles: &mut self.tiles, sprites: &mut self.sprites };
         let built = build_location(draft, &mut assets, Some(id), &known, arrived_from)?;

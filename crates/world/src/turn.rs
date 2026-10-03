@@ -13,6 +13,8 @@ pub struct TurnDraft {
     pub narration: String,
     pub effects: Vec<Value>,
     pub sprites: Vec<SpriteDraft>,
+    /// Colours added for what this turn draws, by letters not in use yet.
+    pub palette: std::collections::BTreeMap<String, String>,
     /// Kinds of ground the master draws for this turn: a bridge, ice, rubble.
     pub tiles: Vec<crate::build::TileDraft>,
     pub options: Vec<ActionDraft>,
@@ -152,6 +154,7 @@ impl World {
     /// empty `said` means the master spoke unprompted.
     pub fn take_turn(&mut self, said: &str, draft: &TurnDraft) -> (Turn, Vec<String>) {
         let mut notes = Vec::new();
+        self.add_colors(&draft.palette);
         for sprite in &draft.sprites {
             let id = slug(&sprite.id);
             match sprite_from(&sprite.rows, self.palette.len()) {
