@@ -55,6 +55,28 @@ decision changes.
   each player changes only their own hero's gear.
 - At a shared table the master names the acting hero in the third person; players elsewhere
   read the first sentence of each telling in the chat.
+- After the second real game (user): the master must live in the world, not beside it. The
+  master is now sent the map, what is reachable and how many steps away, each hero's gear and
+  bag; it must walk the party up before touching things, start fights instead of narrating
+  blows, and use travel to send heroes elsewhere. Choices continue the scene (outcome at once,
+  then the master's next turn). Fight results go into the story and the facts.
+- Each hero has its own bag (D2 style, right half of the screen, world playable on the left):
+  swap-on-drop, placement highlight, right click to use, click outside to throw on the ground
+  with an arc; things on the ground are picked up with E (how players trade). Items carry a
+  kind, size, the master's own picture, healing, harm and light; torches go in the off hand,
+  show on the doll and light far.
+- Interactive world: chests (contents, lock, key; open, pick with Dex, force with Str), hidden
+  things found by passive Perception, traps underfoot, bodies left by the dead (searchable,
+  revivable), marks, animations, map changes (tile), spawned creatures, weather and hour.
+- Exits are taken on purpose (E, or stepping off the map by the arrow); exit arrows and names
+  are drawn; a new place always leads somewhere new.
+- Music: ~28 hours of mood-tagged pieces (Kevin MacLeod CC BY 4.0, OpenGameArt CC0) fetched in
+  the background into the user folder (1.5 GB cap), offline plays what is cached; the master
+  may set a place's mood.
+- Own provider: any OpenAI-compatible endpoint (OpenAI, OpenRouter, Ollama, LM Studio) instead
+  of Gemini; key sealed with DPAPI.
+- Builds: `.cargo/config.toml` links with rust-lld; an incremental build of the game is ~40 s.
+  Changing Bevy features or the linker rebuilds everything (20–35 min).
 - Platforms: Windows now. Bevy also builds for Android/iOS natively and for the web (wasm,
   WebGPU/WebGL2). The web build would need WebSocket/WebRTC instead of TCP and Steam, browser
   storage instead of files, and no DPAPI; Android needs touch controls and Android Keystore.
