@@ -93,6 +93,34 @@ pub fn wrap_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, 
     ));
 }
 
+/// A reply in a list, one slim line of words that lights up under the cursor: the old way
+/// of offering choices, which leaves the telling room.
+#[derive(Component)]
+pub struct ReplyLine;
+
+pub fn line_button(parent: &mut ChildSpawnerCommands, fonts: &Fonts, label: String, extra: impl Bundle) {
+    parent.spawn((
+        Button,
+        PixelButton { enabled: true, look: ButtonLook::Idle },
+        ReplyLine,
+        extra,
+        AutoDirectionalNavigation::default(),
+        Node { width: percent(100), padding: UiRect::horizontal(px(4)), ..default() },
+        BackgroundColor(Color::NONE),
+        children![(Node { width: percent(100), ..default() }, Text::new(label), fonts.body(), TextColor(color(WOOD_DARK)))],
+    ));
+}
+
+fn style_lines(focus: Res<InputFocus>, nav: Res<NavMode>, mut lines: Query<(Entity, &Interaction, &mut BackgroundColor), With<ReplyLine>>) {
+    for (entity, interaction, mut back) in &mut lines {
+        let lit = *interaction != Interaction::None || (nav.active && focus.get() == Some(entity));
+        let wanted = if lit { color(BRASS_LIGHT) } else { Color::NONE };
+        if back.0 != wanted {
+            back.0 = wanted;
+        }
+    }
+}
+
 pub fn text_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: String, extra: impl Bundle) {
     let look = ButtonLook::Idle;
     parent.spawn((
@@ -175,7 +203,7 @@ fn style_buttons(
     art: Res<Art>,
     focus: Res<InputFocus>,
     nav: Res<NavMode>,
-    mut buttons: Query<(Entity, &Interaction, &mut PixelButton, &mut Node, &Children)>,
+    mut buttons: Query<(Entity, &Interaction, &mut PixelButton, &mut Node, &Children), Without<ReplyLine>>,
     mut faces: Query<&mut ImageNode, With<ButtonFace>>,
     mut labels: Query<&mut TextColor, With<ButtonLabel>>,
 ) {
@@ -220,6 +248,6 @@ pub struct WidgetsPlugin;
 
 impl Plugin for WidgetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (style_buttons, wheel_scrolls, focus_scrolls_into_view)).add_observer(press_activates);
+        app.add_systems(Update, (style_buttons, style_lines, wheel_scrolls, focus_scrolls_into_view)).add_observer(press_activates);
     }
 }

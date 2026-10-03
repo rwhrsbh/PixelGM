@@ -11,7 +11,6 @@ use crate::i18n::{Lang, T};
 use crate::master::{Ask, Master};
 use crate::menu::{Nav, Screen, spawn_panel};
 use crate::play::{Game, HUD_HEIGHT, Phase, Redraw, depth, on_screen};
-use crate::screen::{CANVAS, fit};
 use crate::store::{Settings, Store};
 use crate::theme::*;
 use crate::widgets::{Activate, BUTTON_HEIGHT, EnterPresses, backing, button, text_button};
@@ -221,13 +220,11 @@ pub fn ritual_words(world: &World, index: &str) -> Option<String> {
 }
 
 /// The cell under the mouse, if it is over the map.
-fn cell_under_cursor(window: &Window) -> Option<Cell> {
-    let physical = window.physical_cursor_position()?;
-    let (scale, origin, _) = fit(window.physical_size());
-    let canvas = (physical - origin.as_vec2()) / scale;
+fn cell_under_cursor(window: &Window, view: &crate::view::View) -> Option<Cell> {
+    let canvas = crate::view::map_under_cursor(window, view)?;
     let cell_px = TILE as f32 * crate::scene::PX as f32;
     let cell = ((canvas.x / cell_px).floor() as i32, (canvas.y / cell_px).floor() as i32);
-    ((0..MAP_W as i32).contains(&cell.0) && (0..MAP_H as i32).contains(&cell.1) && canvas.y < CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL).then_some(cell)
+    ((0..MAP_W as i32).contains(&cell.0) && (0..MAP_H as i32).contains(&cell.1)).then_some(cell)
 }
 
 impl FightView {
@@ -439,6 +436,7 @@ fn input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     window: Single<&Window, With<PrimaryWindow>>,
+    frame: Res<crate::view::View>,
     mut game: ResMut<Game>,
     mut view: ResMut<FightView>,
     mut redraw: ResMut<Redraw>,
@@ -455,7 +453,7 @@ fn input(
     }
     let pressed = |codes: &[KeyCode]| keyboard.any_just_pressed(codes.iter().copied());
     let confirm = pressed(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space]);
-    let clicked = mouse.just_pressed(MouseButton::Left).then(|| cell_under_cursor(&window)).flatten();
+    let clicked = mouse.just_pressed(MouseButton::Left).then(|| cell_under_cursor(&window, &frame)).flatten();
     if pressed(&[KeyCode::Escape]) && view.mode != Mode::Menu {
         view.mode = Mode::Menu;
         return;
@@ -558,13 +556,13 @@ struct Shown {
     asking: bool,
     /// Uses left of the acting hero's feats, so a spent one leaves the menu.
     uses: Vec<Option<u8>>,
-    /// The sheet lies at the top, out of the way of those fighting in the bottom rows.
-    on_top: bool,
+    /// How tall the sheet is, in its slot under the map.
+    height: f32,
 }
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<FightView>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, session: Res<Session>, settings: Res<Settings>, mut shown: Local<Option<Shown>>, old: Query<Entity, With<FightSheet>>) {
+fn sheet(mut frame: ResMut<crate::view::View>, mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<FightView>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, session: Res<Session>, settings: Res<Settings>, mut shown: Local<Option<Shown>>, old: Query<Entity, With<FightSheet>>) {
     let fighting = *phase == Phase::Fighting;
     let fight = game.world.fight.as_ref();
     let wanted = fighting.then(|| Shown {
@@ -578,8 +576,9 @@ fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<F
         lang: Some(*lang),
         asking: view.asking,
         uses: fight.map(|f| f.actor().strikes.iter().map(|s| s.uses_left).collect()).unwrap_or_default(),
-        on_top: crate::play::sheet_on_top(&game.world),
+        height: crate::view::HEIGHTS[settings.narration.min(2) as usize],
     });
+    let _ = &mut frame;
     if *shown == wanted && (wanted.is_none() || !old.is_empty()) {
         return;
     }
@@ -591,20 +590,10 @@ fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<F
     let ink = TextColor(color(INK));
     let faded = TextColor(color(FADED));
     let ru = *lang == Lang::Ru;
-    let root = Node {
-        position_type: PositionType::Absolute,
-        left: px(0),
-        top: px(0),
-        width: percent(100),
-        height: percent(100),
-        padding: UiRect { top: px(2), bottom: px(HUD_HEIGHT + 2.0), ..default() },
-        justify_content: JustifyContent::Center,
-        // Out of the way of those fighting.
-        align_items: if wanted.on_top { AlignItems::FlexStart } else { AlignItems::FlexEnd },
-        ..default()
-    };
-    commands.spawn((FightSheet, DespawnOnExit(Screen::Play), root, GlobalZIndex(10))).with_children(|root| {
-        spawn_panel(root, &art, Node { width: px(468), flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }, |sheet| {
+    // Under the map, beside the party: the fight is never covered.
+    let root = Node { position_type: PositionType::Absolute, left: px(0), bottom: px(HUD_HEIGHT), width: px(crate::screen::UI.x as f32 - crate::view::COLUMN), max_height: px(wanted.height), ..default() };
+    commands.spawn((FightSheet, crate::view::Slot, DespawnOnExit(Screen::Play), root, GlobalZIndex(10))).with_children(|root| {
+        spawn_panel(root, &art, Node { width: percent(100), flex_direction: FlexDirection::Column, row_gap: px(2), overflow: Overflow::clip(), ..default() }, |sheet| {
             for line in &wanted.lines {
                 sheet.spawn((Text::new(line.clone()), fonts.body(), ink));
             }

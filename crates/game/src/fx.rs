@@ -6,7 +6,6 @@
 use crate::art::Pixels;
 use crate::menu::Screen;
 use crate::play::{Game, HeroPose, Phase, on_screen};
-use crate::screen::MainCamera;
 use crate::theme::*;
 use bevy::prelude::*;
 use world::TILE;
@@ -48,6 +47,8 @@ pub struct Fx {
     lunges: Vec<Lunge>,
     flashes: Vec<Flash>,
     shake: f32,
+    /// How far the picture is thrown off this frame, in canvas pixels.
+    pub offset: Vec2,
     wince: f32,
     floats: Vec<(Vec2, String, Color)>,
     bursts: Vec<(Vec2, Color, u32)>,
@@ -247,16 +248,15 @@ fn specks(mut commands: Commands, time: Res<Time>, mut specks: Query<(Entity, &m
     }
 }
 
-fn shake(time: Res<Time>, mut fx: ResMut<Fx>, mut camera: Single<&mut Transform, With<MainCamera>>) {
+fn shake(time: Res<Time>, mut fx: ResMut<Fx>) {
     let offset = if fx.shake > 0.0 {
         fx.shake -= time.delta_secs();
         Vec2::new(((fx.random() * 3.0).floor() - 1.0) * 2.0, ((fx.random() * 3.0).floor() - 1.0) * 2.0)
     } else {
         Vec2::ZERO
     };
-    if camera.translation.truncate() != offset {
-        camera.translation.x = offset.x;
-        camera.translation.y = offset.y;
+    if fx.offset != offset {
+        fx.offset = offset;
     }
 }
 

@@ -254,6 +254,7 @@ texts! {
     ArmorClass: "КД", "AC";
     Spells: "Заклинания", "Spells";
     FightItems: "Предметы", "Items";
+    SheetSize: "Размер", "Size";
     UseForWhat: "для чего? Напишите, как и на что", "what for? Say how and on what";
     CreateHero: "В путь", "Set out";
     NeedName: "Герою нужно имя.", "The hero needs a name.";

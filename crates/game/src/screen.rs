@@ -33,6 +33,17 @@ fn spawn_camera(mut commands: Commands) {
 /// the pixels even. Read by everything that turns a point on the window into the canvas.
 static FILL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// How much nearer than the canvas the world is drawn, as the bits of an f32.
+static ZOOM: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+pub fn set_zoom(zoom: f32) {
+    ZOOM.store(zoom.max(0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn zoom() -> f32 {
+    f32::from_bits(ZOOM.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 pub fn set_fill(fill: bool) {
     FILL.store(fill, std::sync::atomic::Ordering::Relaxed);
 }
@@ -95,7 +106,7 @@ fn fit_canvas(
         camera.viewport = Some(Viewport { physical_position: position, physical_size: size, ..default() });
     }
     if let Projection::Orthographic(ortho) = projection.as_mut() {
-        let wanted = 1.0 / scale;
+        let wanted = 1.0 / (scale * zoom());
         if ortho.scale != wanted {
             ortho.scale = wanted;
         }

@@ -202,7 +202,7 @@ fn forget_going_on(phase: Res<Phase>, mut table: ResMut<Table>) {
 #[derive(Component)]
 struct FeedLine(f32);
 
-fn feed(mut table: ResMut<Table>, mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut seen: Local<Option<std::collections::BTreeMap<String, i64>>>, mut lines: Query<(Entity, &mut FeedLine, &mut TextColor, &mut Node)>) {
+fn feed(frame: Res<crate::view::View>, mut table: ResMut<Table>, mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut seen: Local<Option<std::collections::BTreeMap<String, i64>>>, mut lines: Query<(Entity, &mut FeedLine, &mut TextColor, &mut Node)>) {
     let me = player_name(&settings);
     let hero = my_hero(&game.world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
     let now: std::collections::BTreeMap<String, i64> = game.world.story.bags.get(hero).map(|b| {
@@ -266,7 +266,7 @@ fn feed(mut table: ResMut<Table>, mut commands: Commands, time: Res<Time>, game:
             commands.entity(entity).despawn();
             continue;
         }
-        node.bottom = px(HUD_HEIGHT + 6.0 + (count - 1 - rank) as f32 * 12.0);
+        node.bottom = px(frame.bottom + 4.0 + (count - 1 - rank) as f32 * 12.0);
         let fade = (4.0 - line.0).clamp(0.0, 1.0);
         tint.0 = tint.0.with_alpha(fade);
     }
@@ -746,7 +746,7 @@ fn draw(
         }
     }
     if settings.gfx.vignette {
-        commands.spawn((InLocation, Sprite::from_image(cache.vignette.clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.7))));
+        commands.spawn((InLocation, crate::view::ScreenFixed(corner), Sprite::from_image(cache.vignette.clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.7))));
     }
     let sky = cache.sky;
     if settings.gfx.weather && sky != crate::weather::Sky::Clear {
@@ -763,7 +763,7 @@ fn draw(
     }
     if settings.gfx.scan_lines {
         let lines = images.add(crate::post::scan_lines(CANVAS.x, CANVAS.y - (HUD_HEIGHT * crate::screen::UI_PIXEL) as u32).into_image());
-        commands.spawn((InLocation, Sprite::from_image(lines), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.72))));
+        commands.spawn((InLocation, crate::view::ScreenFixed(corner), Sprite::from_image(lines), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.72))));
     }
     // Under the dark, so that the grid of a place not yet explored is not given away.
     commands.spawn((InLocation, WalkGrid, Sprite { color: Color::NONE, ..Sprite::from_image(cache.grid.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.58))));
@@ -1108,6 +1108,14 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
                 hero.dead = true;
             }),
             "deed" => world.secrets_due.push(0),
+            // `fight`: everything alive here turns on the party, so a fight can be tested.
+            "fight" => {
+                let here = world.current.clone();
+                if let Some(place) = world.locations.get_mut(&here) {
+                    place.creatures.iter_mut().for_each(|c| c.attitude = world::Attitude::Hostile);
+                }
+                world.start_fight(Rng::from_clock());
+            }
             // `win`: every enemy in the fight falls, so that its end can be tested.
             "win" => {
                 if let Some(fight) = world.fight.as_mut() {
@@ -1367,20 +1375,6 @@ fn far_from(world: &World, id: &str) -> Option<String> {
     let (px, py) = (world.player.x + world::walk::FEET.0, world.player.y + world::walk::FEET.1);
     let distance = ((centre.0 - px).powi(2) + (centre.1 - py).powi(2)).sqrt();
     (distance > THING_REACH * 1.6).then_some(name)
-}
-
-/// Whether the low sheets should lie at the top of the screen: the hero (or, in a fight,
-/// anyone fighting) stands in the bottom rows, which a sheet at the bottom would cover.
-pub fn sheet_on_top(world: &World) -> bool {
-    const LOW_ROW: i32 = 9;
-    match world.fight.as_ref().filter(|_| world.fight_here()) {
-        Some(fight) => {
-            let rows: Vec<i32> = fight.combatants.iter().filter(|c| !c.dead).map(|c| c.y).collect();
-            // Where most of those fighting stand.
-            rows.iter().filter(|y| **y >= LOW_ROW).count() * 2 > rows.len()
-        }
-        None => world.player.cell().1 >= LOW_ROW,
-    }
 }
 
 /// Which way the hero on this screen looks goes with the world, every frame and whatever
@@ -1946,6 +1940,8 @@ enum Sheet {
     Reading(Turn),
     /// The telling folded away to a strip, so the map can be seen.
     Folded,
+    /// Nothing is being asked or read: the last thing told stays in sight.
+    Last(String),
     Refused(String),
     Journal { carried: String, lines: Vec<(Speaker, String)> },
     /// What is being rolled, in words.
@@ -2018,6 +2014,34 @@ struct Fold(bool);
 fn on_fold(used: On<Activate>, buttons: Query<&Fold>, mut folded: ResMut<Folded>) {
     if let Ok(fold) = buttons.get(used.entity) {
         folded.0 = fold.0;
+    }
+}
+
+/// The button that makes the window of the telling taller, then shorter again.
+#[derive(Component, Clone, Copy)]
+struct Resize;
+
+fn on_resize(used: On<Activate>, buttons: Query<&Resize>, mut settings: ResMut<Settings>, store: Res<Store>) {
+    if buttons.get(used.entity).is_ok() {
+        settings.narration = (settings.narration + 1) % crate::view::HEIGHTS.len() as u8;
+        if let Err(e) = store.save_settings(&settings) {
+            error!("could not save settings: {e}");
+        }
+    }
+}
+
+/// A choice or a prepared action is taken by its number, as replies were in the old games.
+fn number_keys(keyboard: Res<ButtonInput<KeyCode>>, phase: Res<Phase>, buttons: Query<(Entity, &PlayAction)>, mut commands: Commands) {
+    if !matches!(*phase, Phase::Reading { .. } | Phase::Looking { .. }) {
+        return;
+    }
+    let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6];
+    let Some(pressed) = digits.iter().position(|key| keyboard.just_pressed(*key)) else { return };
+    for (entity, action) in &buttons {
+        if matches!(action, PlayAction::Choose(n) | PlayAction::Approach(n) | PlayAction::Do(n) if *n == pressed) {
+            commands.trigger(Activate { entity });
+            return;
+        }
     }
 }
 
@@ -2112,6 +2136,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
             lines.pop();
             Sheet::Character { lines, points: world.party.iter().any(|h| h.points_to_place > 0), offer: extra.offer.clone(), advancing: extra.advancing.clone() }
         }
+        Phase::Walking => world.story.log.iter().rev().find(|l| l.speaker == Speaker::Master && !l.text.starts_with('[')).map_or(Sheet::None, |l| Sheet::Last(l.text.clone())),
         _ => Sheet::None,
     }
 }
@@ -2129,7 +2154,7 @@ fn overlay(
     table: Res<Table>,
     panel: Res<Panel>,
     settings: Res<Settings>,
-    (folded, use_for): (Res<Folded>, Res<UseFor>),
+    (folded, use_for, mut frame): (Res<Folded>, Res<UseFor>, ResMut<crate::view::View>),
     mut translator: ResMut<Translator>,
     mut shown: Local<Sheet>,
     old: Query<Entity, With<Overlay>>,
@@ -2168,11 +2193,18 @@ fn overlay(
         (Phase::Stuck { .. }, Sheet::Stuck(_)) | (Phase::Refused { .. }, Sheet::Refused(_)) if !old.is_empty() => shown.clone(),
         _ => translated(sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang, &extra), foreign(&game.world, *lang), translator.bypass_change_detection()),
     };
-    // A sheet moves to the other edge when the hero walks under it.
-    static WAS_ON_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let on_top = sheet_on_top(&game.world);
-    let moved = WAS_ON_TOP.swap(on_top, std::sync::atomic::Ordering::Relaxed) != on_top;
-    if *shown == wanted && !moved && (wanted == Sheet::None || !old.is_empty()) {
+    // Sheets about the story lie in a slot under the map; the rest take the middle of the
+    // screen, over everything.
+    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Folded | Sheet::Last(_) | Sheet::Rolling(_) | Sheet::Judging(_) | Sheet::Master(_));
+    let height = match &wanted {
+        Sheet::Folded => 30.0,
+        Sheet::Last(_) => 40.0,
+        _ => crate::view::HEIGHTS[settings.narration.min(2) as usize],
+    };
+    let _ = &mut frame;
+    static WAS_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let resized = WAS_HEIGHT.swap(height.to_bits(), std::sync::atomic::Ordering::Relaxed) != height.to_bits();
+    if *shown == wanted && !resized && (wanted == Sheet::None || !old.is_empty()) {
         return;
     }
     for entity in &old {
@@ -2186,23 +2218,36 @@ fn overlay(
     }
     let ink = TextColor(color(INK));
     let faded = TextColor(color(FADED));
-    // Sheets about the story sit at the bottom, where the eye rests while walking; the rest
-    // take the middle of the screen.
-    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Folded | Sheet::Rolling(_) | Sheet::Judging(_) | Sheet::Master(_));
-    let full = Node {
-        position_type: PositionType::Absolute,
-        left: px(0),
-        top: px(0),
-        width: percent(100),
-        height: percent(100),
-        padding: UiRect { top: px(4), bottom: px(HUD_HEIGHT + 4.0), ..default() },
-        justify_content: JustifyContent::Center,
-        align_items: if !low { AlignItems::Center } else if on_top { AlignItems::FlexStart } else { AlignItems::FlexEnd },
-        ..default()
+    let slot_width = crate::screen::UI.x as f32 - crate::view::COLUMN;
+    let full = if low {
+        Node { position_type: PositionType::Absolute, left: px(0), bottom: px(HUD_HEIGHT), width: px(slot_width), max_height: px(height), ..default() }
+    } else {
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(0),
+            top: px(0),
+            width: percent(100),
+            height: percent(100),
+            padding: UiRect { top: px(4), bottom: px(HUD_HEIGHT + 4.0), ..default() },
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        }
     };
-    commands.spawn((Overlay, PopIn(if fresh { 0.0 } else { 1.0 }), full, GlobalZIndex(10))).with_children(|root| {
-        let sheet = Node { width: px(if low || matches!(wanted, Sheet::Journal { .. } | Sheet::Character { .. }) { 440.0 } else { 240.0 }), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
-        spawn_panel(root, &art, sheet, |sheet| match &wanted {
+    let mut root = commands.spawn((Overlay, full, GlobalZIndex(10)));
+    if low {
+        root.insert(crate::view::Slot);
+    } else {
+        root.insert(PopIn(if fresh { 0.0 } else { 1.0 }));
+    }
+    root.with_children(|root| {
+        let sheet = if low {
+            Node { width: percent(100), flex_direction: FlexDirection::Column, ..default() }
+        } else {
+            Node { width: px(if matches!(wanted, Sheet::Journal { .. } | Sheet::Character { .. }) { 440.0 } else { 240.0 }), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }
+        };
+        // What a sheet in the slot holds can be longer than the slot: it scrolls.
+        let body = |sheet: &mut ChildSpawnerCommands| match &wanted {
             Sheet::Drawing(place) => {
                 sheet.spawn((Text::default(), T::Drawing, fonts.body(), ink));
                 sheet.spawn((Text::new(place.clone()), fonts.title(1), ink));
@@ -2348,7 +2393,7 @@ fn overlay(
                     });
                 }
                 for (n, label) in actions.iter().enumerate() {
-                    crate::widgets::wrap_button(sheet, &art, &fonts, label.clone(), PlayAction::Do(n));
+                    crate::widgets::line_button(sheet, &fonts, format!("{}. {label}", n + 1), PlayAction::Do(n));
                 }
                 sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
                     button(line, &art, &fonts, T::OwnAction, true, PlayAction::Own);
@@ -2401,8 +2446,8 @@ fn overlay(
                     let far = option.near.as_deref().and_then(|id| far_from(&game.world, id));
                     match far {
                         // Too far: the hero walks there first, and then does it.
-                        Some(name) => crate::widgets::wrap_button(sheet, &art, &fonts, format!("{} ({} {name})", option.label, T::WalkUpTo.text(*lang)), PlayAction::Approach(n)),
-                        None => crate::widgets::wrap_button(sheet, &art, &fonts, option.label.clone(), PlayAction::Choose(n)),
+                        Some(name) => crate::widgets::line_button(sheet, &fonts, format!("{}. {} ({} {name})", n + 1, option.label, T::WalkUpTo.text(*lang)), PlayAction::Approach(n)),
+                        None => crate::widgets::line_button(sheet, &fonts, format!("{}. {}", n + 1, option.label), PlayAction::Choose(n)),
                     }
                 }
                 sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
@@ -2411,6 +2456,7 @@ fn overlay(
                     }
                     button(line, &art, &fonts, T::Onward, true, (PlayAction::Close, EnterPresses));
                     line.spawn(Node { flex_grow: 1.0, ..default() });
+                    button(line, &art, &fonts, T::SheetSize, true, Resize);
                     button(line, &art, &fonts, T::Fold, true, Fold(true));
                 });
             }
@@ -2473,7 +2519,17 @@ fn overlay(
                 }
                 sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Leave, true, PlayAction::Close));
             }
+            Sheet::Last(text) => {
+                sheet.spawn((Text::new(text.clone()), fonts.body(), faded));
+            }
             Sheet::None => {}
+        };
+        spawn_panel(root, &art, sheet, |sheet| {
+            if low {
+                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), width: percent(100), ..default() }, height - 14.0)).with_children(body);
+            } else {
+                body(sheet);
+            }
         });
     });
 }
@@ -3362,6 +3418,8 @@ impl Plugin for PlayPlugin {
             .init_resource::<Pick>()
             .init_resource::<Approach>()
             .init_resource::<UseFor>()
+            .add_observer(on_resize)
+            .add_systems(Update, number_keys.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, keep_facing.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_fold)
             .init_resource::<Dolls>()

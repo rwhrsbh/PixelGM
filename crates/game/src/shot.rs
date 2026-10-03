@@ -84,6 +84,12 @@ fn named_key(name: &str) -> Option<(KeyCode, Key)> {
         "down" => (KeyCode::ArrowDown, Key::ArrowDown),
         "left" => (KeyCode::ArrowLeft, Key::ArrowLeft),
         "right" => (KeyCode::ArrowRight, Key::ArrowRight),
+        "1" => (KeyCode::Digit1, Key::Character("1".into())),
+        "2" => (KeyCode::Digit2, Key::Character("2".into())),
+        "3" => (KeyCode::Digit3, Key::Character("3".into())),
+        "4" => (KeyCode::Digit4, Key::Character("4".into())),
+        "5" => (KeyCode::Digit5, Key::Character("5".into())),
+        "6" => (KeyCode::Digit6, Key::Character("6".into())),
         letter => {
             // Any single Latin letter is that letter's key.
             const LETTERS: [KeyCode; 26] = [
