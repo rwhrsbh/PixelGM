@@ -161,12 +161,14 @@ struct Cells {
     growth: Vec<Option<Growth>>,
     /// For drawn tiles: the id of the tile.
     drawn: Vec<Option<String>>,
+    /// Cells nobody can walk into, by what the tile says of itself.
+    solid: Vec<bool>,
 }
 
 impl Cells {
     fn read(location: &Location, world: &World) -> Self {
         let stock = base::base_tiles();
-        let mut cells = Self { ground: Vec::new(), growth: Vec::new(), drawn: Vec::new() };
+        let mut cells = Self { ground: Vec::new(), growth: Vec::new(), drawn: Vec::new(), solid: Vec::new() };
         for cy in 0..MAP_H {
             for cx in 0..MAP_W {
                 let id = location.tile_id(cx, cy).unwrap_or(base::FALLBACK_TILE);
@@ -188,11 +190,22 @@ impl Cells {
                     _ => (Ground::Drawn, None),
                 };
                 cells.drawn.push((ground == Ground::Drawn).then(|| id.to_string()));
+                cells.solid.push(world.tiles.get(id).is_none_or(|t| !t.walkable));
                 cells.ground.push(ground);
                 cells.growth.push(growth);
             }
         }
         cells
+    }
+
+    /// Whether a cell stands up from the ground: a wall, or a drawn tile nobody can walk into.
+    /// Such a cell shows a face and throws a shadow, so that what blocks the way looks it.
+    fn raised(&self, cx: i32, cy: i32) -> bool {
+        if cx < 0 || cy < 0 || cx >= MAP_W as i32 || cy >= MAP_H as i32 {
+            return false;
+        }
+        let at = cy as usize * MAP_W + cx as usize;
+        self.ground[at].wall() || self.ground[at] == Ground::Drawn && self.solid[at]
     }
 
     /// The ground of a cell; past the edge of the map the nearest cell goes on.
@@ -471,8 +484,23 @@ impl Painter<'_> {
         if here.wall() {
             return c;
         }
-        // A higher ground next door spills over the edge, raggedly, with a darker lip.
         let (ix, iy) = (x.rem_euclid(CELL), y.rem_euclid(CELL));
+        if here == Ground::Drawn && self.cells.raised(cx, cy) {
+            // A block: a lit top edge, and a front face in shadow where nothing raised stands
+            // in front of it.
+            if !self.cells.raised(cx, cy + 1) && iy >= CELL - 7 {
+                let face = mix(c, mix(p.shadow, p.outline, 0.4), 0.5);
+                return if iy == CELL - 7 { mix(face, p.outline, 0.5) } else if iy == CELL - 1 { mix(face, p.outline, 0.6) } else { face };
+            }
+            if !self.cells.raised(cx, cy - 1) && iy < 2 {
+                return mix(c, p.light, 0.35);
+            }
+            if !self.cells.raised(cx - 1, cy) && ix == 0 || !self.cells.raised(cx + 1, cy) && ix == CELL - 1 {
+                return mix(c, p.outline, 0.45);
+            }
+            return c;
+        }
+        // A higher ground next door spills over the edge, raggedly, with a darker lip.
         let mut best: Option<(Ground, i32)> = None;
         for (dx, dy, near) in sides(x, y) {
             let next = self.cells.at(cx + dx, cy + dy);
@@ -522,10 +550,10 @@ impl Painter<'_> {
         // Walls throw a shadow on the ground at their foot and to their side.
         if here != Ground::Water {
             let mut dark: f32 = 0.0;
-            if self.cells.at(cx, cy - 1).wall() {
+            if self.cells.raised(cx, cy - 1) {
                 dark = dark.max(0.55 - iy as f32 * 0.055);
             }
-            if self.cells.at(cx - 1, cy).wall() {
+            if self.cells.raised(cx - 1, cy) {
                 dark = dark.max(0.4 - ix as f32 * 0.07);
             }
             if dark > 0.0 {
@@ -901,6 +929,39 @@ pub fn vignette(w: i32, h: i32) -> Pixels {
         }
     }
     edge
+}
+
+/// Where one may walk, drawn over the place on demand: open cells outlined, cells that block
+/// the way hatched, ways out marked.
+pub fn walk_grid(location: &Location, world: &World) -> Pixels {
+    let (w, h) = (MAP_W as i32 * CELL, MAP_H as i32 * CELL);
+    let mut grid = Pixels::new(w as u32, h as u32, CLEAR);
+    for cy in 0..MAP_H {
+        for cx in 0..MAP_W {
+            let solid = location.tile_id(cx, cy).and_then(|id| world.tiles.get(id)).is_none_or(|t| !t.walkable) || location.props.iter().any(|p| p.blocking && p.x == cx && p.y == cy);
+            let exit = location.exit_at(cx, cy).is_some();
+            let (x0, y0) = (cx as i32 * CELL, cy as i32 * CELL);
+            for iy in 0..CELL {
+                for ix in 0..CELL {
+                    let edge = ix == 0 || iy == 0 || ix == CELL - 1 || iy == CELL - 1;
+                    let c = if exit {
+                        if edge || ix == 1 || iy == 1 || ix == CELL - 2 || iy == CELL - 2 { [120, 255, 140, 220] } else { [120, 255, 140, 60] }
+                    } else if solid {
+                        // Red stripes across a cell nobody can enter.
+                        if (ix + iy).rem_euclid(8) < 2 { [255, 70, 60, 120] } else if edge { [255, 70, 60, 90] } else { CLEAR }
+                    } else if edge && (ix + iy) % 2 == 0 {
+                        [255, 255, 255, 70]
+                    } else {
+                        CLEAR
+                    };
+                    if c[3] != 0 {
+                        grid.set(x0 + ix, y0 + iy, c);
+                    }
+                }
+            }
+        }
+    }
+    grid
 }
 
 /// A soft shadow to lay under anything that walks.

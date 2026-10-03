@@ -110,7 +110,13 @@ struct SceneCache {
     warm: Handle<Image>,
     shadow: Handle<Image>,
     vignette: Handle<Image>,
+    grid: Handle<Image>,
+    /// Seconds since the place was painted: the grid shows for the first few.
+    age: f32,
 }
+
+#[derive(Component)]
+struct WalkGrid;
 
 /// The frames of every hero drawn so far, by what shows on the hero.
 #[derive(Resource, Default)]
@@ -504,6 +510,8 @@ fn draw(
             cache.vignette = images.add(crate::scene::vignette(CANVAS.x as i32, (CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL) as i32).into_image());
         }
         cache.dark = images.add(crate::scene::darkness(scene.hour, &[], 0).into_image());
+        cache.grid = images.add(crate::scene::walk_grid(here, world).into_image());
+        cache.age = 0.0;
     }
     let corner = on_screen(0.0, 0.0);
     commands.spawn((InLocation, GroundLayer, Sprite::from_image(cache.ground[0].clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(0.0))));
@@ -520,6 +528,7 @@ fn draw(
         }
     }
     commands.spawn((InLocation, Sprite::from_image(cache.vignette.clone()), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.7))));
+    commands.spawn((InLocation, WalkGrid, Sprite { color: Color::NONE, ..Sprite::from_image(cache.grid.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.75))));
 
     let mut picture = |id: &str| world.sprites.get(id).or_else(|| world.sprites.get(MARKER_SPRITE)).map(|s| images.add(crate::scene::sprite(s, &world.palette).into_image()));
     // Everything stands on the bottom edge of its cell, centred.
@@ -639,6 +648,20 @@ fn place_fellows(time: Res<Time>, game: Res<Game>, mut redraw: ResMut<Redraw>, m
             && sprite.image != *image
         {
             sprite.image = image.clone();
+        }
+    }
+}
+
+/// The grid of where one may walk shows while Alt is held, and fades in a new place.
+fn walk_grid(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, phase: Res<Phase>, mut cache: ResMut<SceneCache>, mut grids: Query<&mut Sprite, With<WalkGrid>>) {
+    cache.age += time.delta_secs();
+    let held = keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]) && matches!(*phase, Phase::Walking | Phase::Fighting);
+    let fresh = if *phase == Phase::Walking { (1.0 - (cache.age - 3.0) / 1.5).clamp(0.0, 1.0) } else { 0.0 };
+    // In steps, like every other fade.
+    let alpha = ((if held { 1.0 } else { fresh }) * 4.0).round() / 4.0;
+    for mut sprite in &mut grids {
+        if sprite.color.alpha() != alpha {
+            sprite.color = Color::srgba(1.0, 1.0, 1.0, alpha);
         }
     }
 }
@@ -2586,7 +2609,7 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_observer(on_activate)
             .add_observer(on_master_activate);

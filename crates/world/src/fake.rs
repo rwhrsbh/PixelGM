@@ -54,6 +54,26 @@ const CAT: [&str; 16] = [
     "0000100100101000",
 ];
 
+/// A broken wall the master drew, which nobody can walk through.
+const RUIN: [&str; 16] = [
+    "4444444444444444",
+    "4333433343334333",
+    "4333433343334333",
+    "1111111111111111",
+    "3343334333433343",
+    "3343334333433343",
+    "1111111111111111",
+    "4333433343334333",
+    "4333433343334333",
+    "1111111111111111",
+    "3343334333433343",
+    "3343334333433343",
+    "1111111111111111",
+    "2222222222222222",
+    "2222222222222222",
+    "1111111111111111",
+];
+
 const MOSS: [&str; 16] = [
     "9999989999999899",
     "9899999977999999",
@@ -107,7 +127,19 @@ fn clearing(seed: u32, gaps: &[(usize, usize)]) -> Vec<String> {
 }
 
 fn legend() -> Value {
-    json!({ ".": "grass", ",": "dirt", "T": "tree", "~": "water", "r": "rock", "m": "moss" })
+    json!({ ".": "grass", ",": "dirt", "T": "tree", "~": "water", "r": "rock", "m": "moss", "#": "ruin" })
+}
+
+/// A short broken wall north of the camp, so that every test world has a drawn tile that
+/// blocks the way.
+fn with_ruin(mut map: Vec<String>) -> Vec<String> {
+    let row = &mut map[4];
+    let mut cells: Vec<char> = row.chars().collect();
+    for x in 4..9 {
+        cells[x] = '#';
+    }
+    *row = cells.into_iter().collect();
+    map
 }
 
 /// The answer to "create a new world".
@@ -119,13 +151,13 @@ pub fn world(request: &str) -> String {
         "summary": format!("A quiet hollow made by rule for testing. The host asked for: {request}"),
         "tone": "calm",
         "palette": { "7": "#6fa13a", "e": "#e0703a", "g": "#b040c0" },
-        "tiles": [{ "id": "moss", "name": "mossy stone", "walkable": true, "rows": rows(&MOSS) }],
+        "tiles": [{ "id": "moss", "name": "mossy stone", "walkable": true, "rows": rows(&MOSS) }, { "id": "ruin", "name": "broken wall", "walkable": false, "rows": rows(&RUIN) }],
         "location": {
             "id": "camp",
             "name": "The Camp",
             "description": "A ring of old trees around a fire that someone keeps alive.", "light": "dusk",
             "legend": legend(),
-            "map": clearing(seed, &[east, south]),
+            "map": with_ruin(clearing(seed, &[east, south])),
             "spawn": [8, 12],
             "sprites": [{ "id": "campfire", "rows": rows(&CAMPFIRE) }, { "id": "cat", "rows": rows(&CAT) }],
             "props": [{ "id": "fire", "name": "Campfire", "description": "It crackles.", "x": 10, "y": 12, "blocking": true, "sprite": "campfire",
