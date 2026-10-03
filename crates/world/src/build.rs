@@ -434,6 +434,23 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
         }
     }
 
+    // The world must go on: a new place with no way to anywhere new gets one, on the edge
+    // farthest from where the party comes in, to a place the master will draw when it is reached.
+    let leads_on = exits.iter().any(|e| stub_ids.contains(&e.to));
+    if !leads_on && arrived_from.is_some() {
+        let onward = format!("{id}_beyond");
+        if !known.contains(&onward) {
+            notes.push("no exit led anywhere new; one was added".to_string());
+            let free = |c: Cell| on_edge(c) && !exits.iter().any(|e| (e.x, e.y) == c);
+            let far = (if spawn_given.0 < MAP_W / 2 { MAP_W - 1 } else { 0 }, if spawn_given.1 < MAP_H / 2 { MAP_H - 1 } else { 0 });
+            if let Some((x, y)) = nearest(far, free) {
+                exits.push(Exit { x, y, to: onward.clone(), label: String::new() });
+                stub_ids.insert(onward.clone());
+                stubs.push((onward, Stub { name: "???".to_string(), description: String::new() }));
+            }
+        }
+    }
+
     // Exits are stood on, so their cells must be open and clear.
     for exit in &exits {
         if !assets.tiles[&grid[exit.y][exit.x]].walkable {
@@ -514,7 +531,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     let legend: BTreeMap<char, String> = symbol_of.iter().map(|(tile, symbol)| (*symbol, tile.to_string())).collect();
 
     let name = if draft.name.trim().is_empty() { id.clone() } else { draft.name.trim().to_string() };
-    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), marks: Vec::new() };
+    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), marks: Vec::new(), seen: Vec::new() };
     Ok(Built { id, location, stubs, notes })
 }
 

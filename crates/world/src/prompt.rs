@@ -62,7 +62,7 @@ Built-in tiles you can use without drawing them:
   solid: water, stone_wall, wood_wall, tree, bush, rock
 Draw "new_tiles" when a place needs something these do not cover. A place should look like somewhere particular: buildings with walls and doors, paths, water, clearings — not an empty field.
 
-EXITS. An exit is a walkable cell, usually on the edge of the map or in a doorway, that leads to another place named by "to". Every place an exit leads to is listed in "neighbors" unless it already exists. Give a place two to four exits. Everything must be reachable on foot from "spawn".
+EXITS. An exit is a walkable cell, usually on the edge of the map or in a doorway, that leads to another place named by "to". Every place an exit leads to is listed in "neighbors" unless it already exists. Give a place two to four exits, and at least one of them must lead somewhere new — a neighbor that is not yet in the world — so that the world keeps opening up rather than closing into a loop. Everything must be reachable on foot from "spawn".
 
 PROPS are things worth a look (a well, a wreck, a shrine); CREATURES are beings (people, animals, monsters). Each names a sprite by id; draw the sprite in "sprites" unless one with that id already exists. "attitude" is friendly, neutral or hostile.
 {FIGHTERS}
@@ -214,8 +214,9 @@ const TURN_SHAPE: &str = r##"{
   "narration": "what happens, told to the players",
   "effects": [],
   "sprites": [{"id": "…", "rows": ["…"]}],
-  "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": []}]
-}"##;
+  "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": [], "near": ""}]
+}
+An option that needs the party beside someone or something (talk to them, take it, open it) gives that thing's id as "near": the game lets the party choose it only once they have walked up to it, and keeps it on the thing to be found there. Every other option must be something the party can do from where it stands now."##;
 
 /// With several players at the table one of them can be told something alone.
 const WHISPERS: &str = r##"Several players sit at this table, each playing one character. Tell what a character does by that character's name, in the third person — "Bora reaches for it, slips and falls in the muck" — so that every player knows who did what; keep "you" for the whole party together. When one character alone would notice, know or be told something, add "whispers": [{"to": "that character's name", "text": "…"}] to the object: only that player reads it. Use it rarely; most turns need none."##;

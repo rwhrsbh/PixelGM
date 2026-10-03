@@ -15,6 +15,8 @@ use llm::{ThinkingSetting, Tier};
 enum Choice {
     Language,
     Window,
+    Size,
+    Fill,
     Thinking,
     Fallback,
     Predraw,
@@ -29,6 +31,8 @@ impl Choice {
         match self {
             Choice::Language => T::SetLanguage,
             Choice::Window => T::SetWindow,
+            Choice::Size => T::SetSize,
+            Choice::Fill => T::SetFill,
             Choice::Thinking => T::SetThinking,
             Choice::Fallback => T::SetFallback,
             Choice::Predraw => T::SetPredraw,
@@ -46,6 +50,7 @@ impl Choice {
             Choice::Predraw => Some(T::PredrawHint),
             Choice::Initiative => Some(T::InitiativeHint),
             Choice::Voice => Some(T::VoiceHint),
+            Choice::Fill => Some(T::FillHint),
             _ => None,
         }
     }
@@ -83,6 +88,14 @@ impl Choice {
                 Initiative::Rare => T::InitiativeRare,
                 Initiative::Often => T::InitiativeOften,
             },
+            Choice::Size => [T::SizeAuto, T::Size960, T::Size1280, T::Size1440, T::Size1600, T::Size1920, T::Size2560][s.window_size.min(6) as usize],
+            Choice::Fill => {
+                if s.fill {
+                    T::FillScreen
+                } else {
+                    T::FillSharp
+                }
+            }
             Choice::Music => volume_name(s.music),
             Choice::Sound => volume_name(s.sound),
             Choice::Voice => {
@@ -104,6 +117,8 @@ impl Choice {
                 }
             }
             Choice::Window => s.fullscreen = !s.fullscreen,
+            Choice::Size => s.window_size = (s.window_size + 1) % (crate::screen::SIZES.len() as u8 + 1),
+            Choice::Fill => s.fill = !s.fill,
             Choice::Thinking => {
                 s.thinking = match s.thinking {
                     ThinkingSetting::Off => ThinkingSetting::Low,
@@ -138,7 +153,7 @@ fn volume_name(level: u8) -> T {
     [T::Volume0, T::Volume1, T::Volume2, T::Volume3, T::Volume4][level.min(4) as usize]
 }
 
-const CHOICES: [Choice; 9] = [Choice::Language, Choice::Window, Choice::Music, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
+const CHOICES: [Choice; 11] = [Choice::Language, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
 
 fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
     commands.spawn(screen_root(Screen::Settings)).with_children(|root| {
@@ -253,7 +268,7 @@ mod tests {
             let mut s = Settings::default();
             let before = s.clone();
             choice.advance(&mut s);
-            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade];
+            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade, before.window_size != s.window_size, before.fill != s.fill];
             assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{choice:?}");
         }
     }

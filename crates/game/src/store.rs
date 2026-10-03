@@ -38,6 +38,11 @@ pub struct Settings {
     /// The colour grade and the effects laid over the picture.
     pub grade: crate::post::Grade,
     pub gfx: crate::post::Gfx,
+    /// The window's size: 0 lets the screen choose, otherwise one of `screen::SIZES` from 1.
+    pub window_size: u8,
+    /// The picture fills the window at any scale, with no bars, rather than keeping every
+    /// pixel the same size.
+    pub fill: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -50,7 +55,7 @@ pub enum Initiative {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default() }
+        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true }
     }
 }
 
@@ -295,7 +300,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() } };
+        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false };
         store.save_settings(&settings).unwrap();
         assert_eq!(store.load_settings(), settings);
     }

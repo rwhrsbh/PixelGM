@@ -1202,6 +1202,11 @@ pub const DARK_BLOCK: i32 = 4;
 /// The dark over a place, and the holes the lamps make in it. `lights` are in the world's
 /// own pixels with a reach in cells; `beat` makes flames waver.
 pub fn darkness(hour: Hour, lights: &[Lamp], beat: u32) -> Pixels {
+    darkness_seen(hour, lights, beat, None)
+}
+
+/// The dark, with what the party never saw of the place left wholly black.
+pub fn darkness_seen(hour: Hour, lights: &[Lamp], beat: u32, seen: Option<&[u32]>) -> Pixels {
     let (w, h) = (MAP_W as i32 * CELL / DARK_BLOCK, MAP_H as i32 * CELL / DARK_BLOCK);
     let mut dark = Pixels::new(w as u32, h as u32, CLEAR);
     let per_block = DARK_BLOCK as f32 / PX as f32;
@@ -1215,7 +1220,14 @@ pub fn darkness(hour: Hour, lights: &[Lamp], beat: u32) -> Pixels {
                 let d = ((wx - lamp.x).powi(2) + (wy - lamp.y).powi(2)).sqrt() / reach;
                 lit = lit.max((1.0 - d).clamp(0.0, 1.0).powf(0.8));
             }
-            // Five flat steps of dark, the steps broken up into a pattern rather than banded.
+            let cell = ((wx / world::TILE as f32) as usize, (wy / world::TILE as f32) as usize);
+            if seen.is_some_and(|rows| rows.get(cell.1).is_none_or(|row| row & (1 << cell.0) == 0)) {
+                // Black in the dark; a thick grey where the hour is light and fog hides it.
+                let unseen = if hour.dark >= 0.5 { [hour.tint[0] / 3, hour.tint[1] / 3, hour.tint[2] / 3, 255] } else { [hour.tint[0], hour.tint[1], hour.tint[2], 235] };
+                dark.set(x, y, unseen);
+                continue;
+            }
+            // Flat steps of dark, broken up into a pattern rather than banded.
             let amount = hour.dark * (1.0 - lit);
             let steps = ((amount * 12.0) + dither(x, y) - 0.5).round().clamp(0.0, 12.0) / 12.0;
             if steps > 0.0 {

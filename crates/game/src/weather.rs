@@ -62,6 +62,8 @@ impl Sky {
 #[derive(Component)]
 pub struct Emitter {
     pub sky: Sky,
+    /// How dark the hour is: fog and light are dimmed with it.
+    pub dim: f32,
     pub area: Rect,
     /// Rectangles of water, where rain makes rings instead of splashes.
     pub water: Vec<Rect>,
@@ -74,7 +76,7 @@ pub struct Emitter {
 
 impl Emitter {
     pub fn new(sky: Sky, area: Rect, water: Vec<Rect>) -> Self {
-        Self { sky, area, water, since: 0.0, flash: 2.0, bright: 0.0, seed: 0x9e37_79b9 }
+        Self { sky, dim: 0.0, area, water, since: 0.0, flash: 2.0, bright: 0.0, seed: 0x9e37_79b9 }
     }
 
     fn random(&mut self) -> f32 {
@@ -108,6 +110,8 @@ struct Drift {
     width: f32,
     pulse: f32,
     base: f32,
+    /// How much of its own colour the layer keeps: less in the dark.
+    shade: f32,
 }
 
 #[derive(Component)]
@@ -204,8 +208,8 @@ fn start_layers(mut commands: Commands, new: Query<(Entity, &Emitter), Added<Emi
                 layers.push((2, 1.56, 4.0, 0.25, 0.8));
             }
             Sky::Fog => {
-                layers.push((0, 1.55, 7.0, 0.1, 0.9));
-                layers.push((0, 1.57, -4.0, 0.15, 0.6));
+                layers.push((0, 1.55, 7.0, 0.08, 0.5));
+                layers.push((0, 1.57, -4.0, 0.1, 0.35));
             }
             Sky::Rain | Sky::Storm => layers.push((1, 0.95, 16.0, 0.0, 0.7)),
             Sky::Snow => layers.push((0, 1.55, 3.0, 0.0, 0.35)),
@@ -216,8 +220,8 @@ fn start_layers(mut commands: Commands, new: Query<(Entity, &Emitter), Added<Emi
             let image = get(kind);
             emitter_entity.with_children(|sky| {
                 sky.spawn((
-                    Drift { speed, width: w as f32, pulse, base },
-                    Sprite { rect: Some(Rect::new(0.0, 0.0, w as f32, h as f32)), color: Color::srgba(1.0, 1.0, 1.0, base), ..Sprite::from_image(image) },
+                    Drift { speed, width: w as f32, pulse, base, shade: 1.0 - emitter.dim * 0.85 },
+                    Sprite { rect: Some(Rect::new(0.0, 0.0, w as f32, h as f32)), color: Color::srgba(1.0 - emitter.dim * 0.85, 1.0 - emitter.dim * 0.85, 1.0 - emitter.dim * 0.85, base), ..Sprite::from_image(image) },
                     Anchor::TOP_LEFT,
                     Transform::from_translation(corner.with_z(z)),
                 ));
@@ -350,7 +354,7 @@ fn drift(time: Res<Time>, mut layers: Query<(&Drift, &mut Sprite)>) {
         }
         if d.pulse > 0.0 {
             let a = d.base + (t * 0.4).sin() * d.pulse;
-            sprite.color = Color::srgba(1.0, 1.0, 1.0, (a.clamp(0.0, 1.0) * 8.0).round() / 8.0);
+            sprite.color = Color::srgba(d.shade, d.shade, d.shade, (a.clamp(0.0, 1.0) * 8.0).round() / 8.0);
         }
     }
 }

@@ -163,7 +163,27 @@ impl World {
         self.story.say(Speaker::Player, said);
         self.story.say(Speaker::Master, &draft.narration);
         notes.extend(self.apply(&effects, None));
-        (Turn { narration: draft.narration.trim().to_string(), options: read_actions(&draft.options, &mut notes) }, notes)
+        let mut options = read_actions(&draft.options, &mut notes);
+        // A choice that needs the party beside something is also kept on that thing, to be
+        // found there when the party walks up; one naming nothing here needs nobody.
+        let here = self.current.clone();
+        if let Some(location) = self.locations.get_mut(&here) {
+            for option in &mut options {
+                let Some(id) = option.near.clone() else { continue };
+                let actions = location.props.iter_mut().find(|p| p.id == id).map(|p| &mut p.actions).or_else(|| location.creatures.iter_mut().find(|c| c.id == id).map(|c| &mut c.actions));
+                match actions {
+                    Some(actions) => {
+                        if !actions.iter().any(|a| a.label == option.label) {
+                            actions.push(option.clone());
+                            let extra = actions.len().saturating_sub(6);
+                            actions.drain(..extra);
+                        }
+                    }
+                    None => option.near = None,
+                }
+            }
+        }
+        (Turn { narration: draft.narration.trim().to_string(), options }, notes)
     }
 
     /// Carries out one of the choices the master offered with a turn.

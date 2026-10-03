@@ -213,6 +213,7 @@ texts! {
     GradeCrt: "кинескоп", "CRT";
     HudFallen: "пал", "fallen";
     HudAway: "нет", "away";
+    WalkUpTo: "подойдите к:", "walk up to";
     Fold: "Свернуть", "Fold";
     Unfold: "Развернуть", "Unfold";
     FoldedHint: "Рассказ свёрнут (H)", "The telling is folded (H)";
@@ -326,6 +327,18 @@ texts! {
     SetLanguage: "Язык", "Language";
     LanguageName: "Русский", "English";
     SetWindow: "Окно", "Window";
+    SetSize: "Размер окна", "Window size";
+    SizeAuto: "по экрану", "fit the screen";
+    Size960: "окно 960×540", "960×540";
+    Size1280: "окно 1280×720", "1280×720";
+    Size1440: "окно 1440×810", "1440×810";
+    Size1600: "окно 1600×900", "1600×900";
+    Size1920: "окно 1920×1080", "1920×1080";
+    Size2560: "окно 2560×1440", "2560×1440";
+    SetFill: "Картинка", "Picture";
+    FillScreen: "на весь экран", "fill the screen";
+    FillSharp: "чёткие пиксели", "sharp pixels";
+    FillHint: "На весь экран — без чёрных полос; чёткие пиксели — одинаковые пиксели, но с полосами по краям", "Fill: no black bars; sharp: every pixel the same size, with bars at the edges";
     Windowed: "В окне", "Windowed";
     Fullscreen: "Во весь экран", "Fullscreen";
     SetThinking: "Размышления мастера", "Game master thinking";

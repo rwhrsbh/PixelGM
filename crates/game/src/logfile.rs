@@ -17,6 +17,8 @@ use std::sync::Mutex;
 
 pub const LOG_NAME: &str = "pixelgm.log";
 pub const PREVIOUS_LOG_NAME: &str = "pixelgm.previous.log";
+/// How many sittings before the last are kept, each in a file of its own.
+const KEPT_LOGS: usize = 10;
 
 pub fn log_dir() -> PathBuf {
     store::home().join("logs")
@@ -71,9 +73,18 @@ fn open() -> Option<File> {
     let dir = log_dir();
     fs::create_dir_all(&dir).ok()?;
     let path = dir.join(LOG_NAME);
-    // The sitting before is kept: a crash is often noticed only on the next start.
+    // The sittings before are kept, each under the moment it ended: a crash is often noticed
+    // only after a start or two more. The newest is also the "previous" one.
     if path.exists() {
+        let ended = fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(store::unix_now(), |d| d.as_secs());
+        let kept = dir.join(format!("pixelgm.{}.log", stamp(ended).replace([' ', ':'], "-")));
+        let _ = fs::copy(&path, &kept);
         let _ = fs::rename(&path, dir.join(PREVIOUS_LOG_NAME));
+        let mut old: Vec<PathBuf> = fs::read_dir(&dir).into_iter().flatten().flatten().map(|f| f.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("pixelgm.20"))).collect();
+        old.sort();
+        for gone in old.iter().rev().skip(KEPT_LOGS) {
+            let _ = fs::remove_file(gone);
+        }
     }
     let mut file = File::create(&path).ok()?;
     let _ = writeln!(file, "{} START PixelGM {} on {}", stamp(store::unix_now()), env!("CARGO_PKG_VERSION"), std::env::consts::OS);

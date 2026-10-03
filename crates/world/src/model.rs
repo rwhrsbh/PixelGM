@@ -160,6 +160,10 @@ pub struct Location {
     /// What has been left on the ground.
     #[serde(default)]
     pub marks: Vec<Mark>,
+    /// The cells the party has seen, one row of bits to a row of the map: in the dark, what
+    /// was never seen stays black.
+    #[serde(default)]
+    pub seen: Vec<u32>,
 }
 
 /// Something left on the ground of a cell.

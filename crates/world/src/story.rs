@@ -172,6 +172,9 @@ pub struct Action {
     pub label: String,
     pub outcome: String,
     pub effects: Vec<Effect>,
+    /// The thing the party must stand beside to do it, if any.
+    #[serde(default)]
+    pub near: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
@@ -180,6 +183,7 @@ pub struct ActionDraft {
     pub label: String,
     pub outcome: String,
     pub effects: Vec<Value>,
+    pub near: String,
 }
 
 const MAX_ACTIONS: usize = 4;
@@ -203,7 +207,12 @@ pub fn read_actions(drafts: &[ActionDraft], notes: &mut Vec<String>) -> Vec<Acti
         .iter()
         .filter(|d| !d.label.trim().is_empty() && !d.outcome.trim().is_empty())
         .take(MAX_ACTIONS)
-        .map(|d| Action { label: d.label.trim().chars().take(MAX_LABEL).collect(), outcome: d.outcome.trim().to_string(), effects: read_effects(&d.effects, notes) })
+        .map(|d| Action {
+            label: d.label.trim().chars().take(MAX_LABEL).collect(),
+            outcome: d.outcome.trim().to_string(),
+            effects: read_effects(&d.effects, notes),
+            near: Some(slug(&d.near)).filter(|id| !id.is_empty()),
+        })
         .collect()
 }
 
@@ -327,6 +336,27 @@ fn clamp_cell(x: i64, y: i64) -> (usize, usize) {
 const SPARE_SYMBOLS: &str = "!$^()[]{}<>?/|`'\"-_";
 
 impl Location {
+    /// Whether the party has seen a cell of this place.
+    pub fn was_seen(&self, x: usize, y: usize) -> bool {
+        self.seen.get(y).is_some_and(|row| row & (1 << x) != 0)
+    }
+
+    /// Marks the cells within `reach` cells of a point as seen. True when any was new.
+    pub fn reveal(&mut self, cx: f32, cy: f32, reach: f32) -> bool {
+        self.seen.resize(MAP_H, 0);
+        let mut new = false;
+        for y in 0..MAP_H {
+            for x in 0..MAP_W {
+                let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                if dx * dx + dy * dy <= reach * reach && self.seen[y] & (1 << x) == 0 {
+                    self.seen[y] |= 1 << x;
+                    new = true;
+                }
+            }
+        }
+        new
+    }
+
     fn has_thing(&self, id: &str) -> bool {
         self.props.iter().any(|p| p.id == id) || self.creatures.iter().any(|c| c.id == id)
     }
@@ -356,6 +386,7 @@ impl World {
         let mut notes = Vec::new();
         let here = self.current.clone();
         let resolve = |id: &str| if id == "self" { me.unwrap_or("self").to_string() } else { slug(id) };
+        let mut moved_party: Option<(usize, usize)> = None;
         // Where the party stands, for what is left on the ground with no cell given.
         let party_cell = {
             let (x, y) = self.player.cell();
@@ -454,6 +485,12 @@ impl World {
                         if let (Some(cell), Some(c)) = (nearest(wanted, free), location.creatures.iter_mut().find(|c| c.id == id)) {
                             (c.x, c.y) = cell;
                         }
+                    } else if matches!(id.as_str(), "party" | "hero" | "heroes" | "player") || self.party.iter().any(|h| slug(&h.name) == id) {
+                        // The party is carried, pushed or walks where the story says.
+                        let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
+                        if let Some((cx, cy)) = nearest(wanted, free) {
+                            moved_party = Some((cx, cy));
+                        }
                     } else {
                         notes.push(format!("move: nothing called '{id}' is here"));
                     }
@@ -536,6 +573,9 @@ impl World {
                 Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight | Effect::Deed { .. } | Effect::Revive { .. } => {}
             }
         }
+        if let Some((x, y)) = moved_party {
+            self.player = Player::in_cell(x, y);
+        }
         // Whatever changed, the party must not end up inside something.
         let (px, py) = self.player.cell();
         if let Some(location) = self.locations.get(&here)
@@ -606,6 +646,16 @@ mod tests {
         assert_eq!(marks.len(), 2);
         assert_eq!((marks[0].x as i32, marks[0].y as i32, marks[0].kind.as_str()), (at.0, at.1, "dung"));
         assert_eq!((marks[1].x, marks[1].y, marks[1].kind.as_str()), (3, 4, "ash"));
+    }
+
+    #[test]
+    fn what_was_seen_of_a_place_is_remembered() {
+        let mut w = world();
+        let place = w.locations.get_mut(&w.current.clone()).unwrap();
+        assert!(!place.was_seen(5, 5));
+        assert!(place.reveal(5.5, 5.5, 2.0));
+        assert!(place.was_seen(5, 5) && place.was_seen(6, 6) && !place.was_seen(8, 5));
+        assert!(!place.reveal(5.5, 5.5, 2.0), "nothing new the second time");
     }
 
     #[test]

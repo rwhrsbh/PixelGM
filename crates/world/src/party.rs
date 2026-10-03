@@ -487,6 +487,24 @@ impl World {
     fn end_fight_here(&mut self, host_there: bool) -> Option<FightSummary> {
         let fight = self.fight.take()?;
         let won = fight.outcome() == Outcome::Victory;
+        // The master was not there for the dice: what happened goes into the story and the
+        // facts, so the next telling knows who is dead.
+        let place = self.locations.get(&self.current).map_or(self.current.clone(), |l| l.name.clone());
+        let fallen: Vec<&str> = fight.combatants.iter().filter(|c| c.side == Side::Enemy && c.dead).map(|c| c.name.as_str()).collect();
+        let standing: Vec<&str> = fight.combatants.iter().filter(|c| c.side == Side::Enemy && !c.dead).map(|c| c.name.as_str()).collect();
+        let heroes: Vec<String> = fight.combatants.iter().filter(|c| c.side == Side::Party).map(|c| format!("{} {}{}", c.name, c.hp.max(0), if c.dead { " (dead)" } else if c.hp <= 0 { " (down)" } else { "" })).collect();
+        let mut told = format!("[Fight in {place}: {}.", if won { "the party won" } else { "the party was beaten" });
+        if !fallen.is_empty() {
+            told.push_str(&format!(" Killed: {}.", fallen.join(", ")));
+        }
+        if !standing.is_empty() {
+            told.push_str(&format!(" Still standing: {}.", standing.join(", ")));
+        }
+        told.push_str(&format!(" Heroes' hit points after: {}.]", heroes.join(", ")));
+        self.story.say(crate::story::Speaker::Master, &told);
+        for name in &fallen {
+            self.story.remember(&format!("{name} was killed by the party in {place}."));
+        }
         for (i, hero) in self.party.iter_mut().enumerate() {
             if let Some(c) = fight.combatants.iter().find(|c| c.id == hero_id(i)) {
                 hero.hp = c.hp;

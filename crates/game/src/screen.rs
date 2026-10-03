@@ -29,24 +29,46 @@ fn spawn_camera(mut commands: Commands) {
     commands.spawn((Camera2d, MainCamera, Msaa::Off, UiAntiAlias::Off));
 }
 
+/// Whether the picture fills the window at any scale rather than in half steps that keep
+/// the pixels even. Read by everything that turns a point on the window into the canvas.
+static FILL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_fill(fill: bool) {
+    FILL.store(fill, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Window sizes the player can pick, after "chosen by the screen".
+pub const SIZES: [(u32, u32); 6] = [(960, 540), (1280, 720), (1440, 810), (1600, 900), (1920, 1080), (2560, 1440)];
+
 /// The largest scale, in half steps, at which the canvas fits the window; and the centred
-/// rectangle it covers.
+/// rectangle it covers. Filling, the scale is whatever fits exactly.
 pub fn fit(window: UVec2) -> (f32, UVec2, UVec2) {
+    fit_with(window, FILL.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+pub fn fit_with(window: UVec2, fill: bool) -> (f32, UVec2, UVec2) {
     let fits = (window.x as f32 / CANVAS.x as f32).min(window.y as f32 / CANVAS.y as f32);
-    let scale = ((fits * 2.0).floor() / 2.0).max(1.0);
+    let scale = if fill { fits.max(0.25) } else { ((fits * 2.0).floor() / 2.0).max(1.0) };
     let size = (CANVAS.as_vec2() * scale).as_uvec2().min(window);
     (scale, (window - size) / 2, size)
 }
 
 /// A new window takes the largest size that is a whole number of canvases and fits the
 /// screen, so that it opens sharp. Once, at the start.
-fn fit_window(mut done: Local<bool>, monitors: Query<&bevy::window::Monitor>, mut window: Single<&mut Window, With<PrimaryWindow>>) {
-    if *done {
+fn fit_window(mut done: Local<Option<u8>>, settings: Res<crate::store::Settings>, monitors: Query<&bevy::window::Monitor>, mut window: Single<&mut Window, With<PrimaryWindow>>) {
+    set_fill(settings.fill);
+    // Again whenever the player picks another size.
+    if *done == Some(settings.window_size) {
         return;
     }
     let Some(monitor) = monitors.iter().next() else { return };
-    *done = true;
+    *done = Some(settings.window_size);
     if window.mode != bevy::window::WindowMode::Windowed || !window.visible {
+        return;
+    }
+    if let Some((w, h)) = settings.window_size.checked_sub(1).and_then(|i| SIZES.get(i as usize)) {
+        let (w, h) = (*w.min(&monitor.physical_width), *h.min(&monitor.physical_height));
+        window.resolution.set_physical_resolution(w, h);
         return;
     }
     let room = UVec2::new(monitor.physical_width, monitor.physical_height).as_vec2() * Vec2::new(0.94, 0.88);
@@ -92,17 +114,19 @@ mod tests {
 
     #[test]
     fn full_hd_is_twice_with_no_bars() {
-        assert_eq!(fit(UVec2::new(1920, 1080)), (2.0, UVec2::ZERO, UVec2::new(1920, 1080)));
+        assert_eq!(fit_with(UVec2::new(1920, 1080), false), (2.0, UVec2::ZERO, UVec2::new(1920, 1080)));
     }
 
     #[test]
     fn a_window_between_whole_scales_gets_a_half_step_centred() {
-        assert_eq!(fit(UVec2::new(1600, 900)), (1.5, UVec2::new(80, 45), UVec2::new(1440, 810)));
-        assert_eq!(fit(UVec2::new(2560, 1440)), (2.5, UVec2::new(80, 45), UVec2::new(2400, 1350)));
+        assert_eq!(fit_with(UVec2::new(1600, 900), false), (1.5, UVec2::new(80, 45), UVec2::new(1440, 810)));
+        assert_eq!(fit_with(UVec2::new(2560, 1440), false), (2.5, UVec2::new(80, 45), UVec2::new(2400, 1350)));
+        // Filling, there are no bars on a screen of the canvas's shape.
+        assert_eq!(fit_with(UVec2::new(1600, 900), true), (1600.0 / 960.0, UVec2::ZERO, UVec2::new(1600, 900)));
     }
 
     #[test]
     fn window_smaller_than_the_canvas_is_clipped_not_scaled_to_zero() {
-        assert_eq!(fit(UVec2::new(800, 600)), (1.0, UVec2::new(0, 30), UVec2::new(800, 540)));
+        assert_eq!(fit_with(UVec2::new(800, 600), false), (1.0, UVec2::new(0, 30), UVec2::new(800, 540)));
     }
 }

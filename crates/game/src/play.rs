@@ -112,6 +112,7 @@ struct SceneCache {
     vignette: Handle<Image>,
     grid: Handle<Image>,
     water: Vec<(usize, usize)>,
+    sky: crate::weather::Sky,
     roofs: Vec<(Handle<Image>, (i32, i32), Vec<(usize, usize)>)>,
     /// Seconds since the place was painted: the grid shows for the first few.
     age: f32,
@@ -125,6 +126,22 @@ struct WalkGrid;
 struct ExitMarker {
     home: Vec3,
     dir: Vec2,
+}
+
+/// The cell of a way out, for its arrow and its words.
+#[derive(Component)]
+struct ExitAt(usize, usize);
+
+/// In the night a way out shows only once the party has seen where it is.
+fn exits_seen(game: Res<Game>, settings: Res<Settings>, cache: Res<SceneCache>, mut marks: Query<(&ExitAt, &mut Visibility)>) {
+    let dark = (settings.gfx.night && cache.hour.is_some_and(|h| h.dark >= 0.8)) || (settings.gfx.weather && cache.sky == crate::weather::Sky::Fog);
+    let here = game.world.here();
+    for (at, mut visibility) in &mut marks {
+        let wanted = if !dark || here.was_seen(at.0, at.1) { Visibility::Inherited } else { Visibility::Hidden };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
 }
 
 fn exit_markers(time: Res<Time>, mut markers: Query<(&ExitMarker, &mut Transform)>) {
@@ -453,8 +470,9 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
             BackgroundColor(color(INK)),
         ))
         .with_children(|strip| {
-            strip.spawn((Text::default(), PlaceName, fonts.body(), TextColor(color(PARCHMENT))));
-            strip.spawn((Text::default(), HudHint, fonts.body(), TextColor(color(PARCHMENT_SHADE))));
+            // Neither line may wrap: the name gives way, cut at its edge, before the keys do.
+            strip.spawn((Node { flex_shrink: 1.0, min_width: px(0), overflow: Overflow::clip(), margin: UiRect::right(px(8)), ..default() }, Text::default(), PlaceName, TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT))));
+            strip.spawn((Node { flex_shrink: 0.0, ..default() }, Text::default(), HudHint, TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT_SHADE))));
         });
     });
 }
@@ -543,6 +561,7 @@ fn draw(
         cache.standing = scene.standing.into_iter().map(|s| (images.add(s.picture.into_image()), s.foot)).collect();
         cache.hour = Some(scene.hour);
         cache.water = scene.water.clone();
+        cache.sky = crate::weather::Sky::of(&here.weather);
         cache.roofs = scene.roofs.into_iter().map(|r| (images.add(r.picture.into_image()), r.at, r.inside)).collect();
         cache.lamps = scene.lamps;
         cache.key = key;
@@ -561,7 +580,8 @@ fn draw(
         commands.spawn((InLocation, Sprite::from_image(image.clone()), Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(*x, *y).extend(depth(*y)))));
     }
     let hour = cache.hour.unwrap_or(crate::scene::Hour { dark: 0.0, tint: [0, 0, 0] });
-    if hour.dark > 0.0 && settings.gfx.night {
+    let foggy = cache.sky == crate::weather::Sky::Fog && settings.gfx.weather;
+    if (hour.dark > 0.0 && settings.gfx.night) || foggy {
         // The dark over the place, and the warmth around its lamps.
         let map = Vec2::new(CANVAS.x as f32, CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL);
         commands.spawn((InLocation, DarkLayer, Sprite { custom_size: Some(map), ..Sprite::from_image(cache.dark.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.6))));
@@ -577,7 +597,9 @@ fn draw(
         let map = Rect::new(0.0, 0.0, CANVAS.x as f32, CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL);
         let cell = (TILE * crate::scene::PX as u32) as f32;
         let water = cache.water.iter().map(|(x, y)| Rect::new(*x as f32 * cell, *y as f32 * cell, (*x + 1) as f32 * cell, (*y + 1) as f32 * cell)).collect();
-        commands.spawn((InLocation, crate::weather::Emitter::new(sky, map, water), Transform::default(), Visibility::default()));
+        let mut emitter = crate::weather::Emitter::new(sky, map, water);
+        emitter.dim = if settings.gfx.night { hour.dark } else { 0.0 };
+        commands.spawn((InLocation, emitter, Transform::default(), Visibility::default()));
     }
     for (n, (image, (x, y), _)) in cache.roofs.iter().enumerate() {
         let at = Vec3::new(*x as f32 - CANVAS.x as f32 / 2.0, CANVAS.y as f32 / 2.0 - *y as f32, 1.5);
@@ -587,9 +609,12 @@ fn draw(
         let lines = images.add(crate::post::scan_lines(CANVAS.x, CANVAS.y - (HUD_HEIGHT * crate::screen::UI_PIXEL) as u32).into_image());
         commands.spawn((InLocation, Sprite::from_image(lines), Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.72))));
     }
-    commands.spawn((InLocation, WalkGrid, Sprite { color: Color::NONE, ..Sprite::from_image(cache.grid.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.75))));
+    // Under the dark, so that the grid of a place not yet explored is not given away.
+    commands.spawn((InLocation, WalkGrid, Sprite { color: Color::NONE, ..Sprite::from_image(cache.grid.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.58))));
 
-    // Every way out is marked: a glowing arrow pointing where it leads, and where to.
+    // Every way out is marked: a glowing arrow pointing where it leads, and where to. A way
+    // two cells wide is named once.
+    let mut named: Vec<String> = Vec::new();
     for exit in &here.exits {
         let dir = if exit.x == 0 {
             (-1, 0)
@@ -603,7 +628,7 @@ fn draw(
         let centre = ((exit.x as f32 + 0.5) * TILE as f32, (exit.y as f32 + 0.5) * TILE as f32);
         let home = on_screen(centre.0, centre.1).extend(1.8);
         let arrow = images.add(crate::scene::exit_arrow(dir.0, dir.1).into_image());
-        commands.spawn((InLocation, ExitMarker { home, dir: Vec2::new(dir.0 as f32, -(dir.1 as f32)) }, Sprite { color: Color::linear_rgb(1.5, 1.4, 1.1), ..Sprite::from_image(arrow) }, Transform::from_translation(home)));
+        commands.spawn((InLocation, ExitAt(exit.x, exit.y), ExitMarker { home, dir: Vec2::new(dir.0 as f32, -(dir.1 as f32)) }, Sprite { color: Color::linear_rgb(1.5, 1.4, 1.1), ..Sprite::from_image(arrow) }, Transform::from_translation(home)));
         let name = if exit.label.trim().is_empty() { world.place_name(&exit.to).to_string() } else { exit.label.clone() };
         let name: String = if name.chars().count() > 26 { format!("{}…", name.chars().take(25).collect::<String>()) } else { name };
         // The words sit inside the map, beside the arrow, on the side away from the edge.
@@ -618,8 +643,12 @@ fn draw(
             _ if exit.x + 8 > world::MAP_W => (Anchor::BOTTOM_RIGHT, Vec2::new(16.0, 18.0)),
             _ => (Anchor::BOTTOM_CENTER, Vec2::new(0.0, 18.0)),
         };
+        if named.contains(&exit.to) {
+            continue;
+        }
+        named.push(exit.to.clone());
         for (shift, tint, z) in [(Vec2::new(2.0, -2.0), Color::srgba(0.05, 0.03, 0.02, 0.85), 1.81), (Vec2::ZERO, Color::srgb(1.0, 0.92, 0.7), 1.82)] {
-            commands.spawn((InLocation, Text2d::new(name.clone()), fonts.body(), TextColor(tint), anchor, Transform::from_translation((home.truncate() + offset + shift).extend(z)).with_scale(Vec3::splat(2.0))));
+            commands.spawn((InLocation, ExitAt(exit.x, exit.y), Text2d::new(name.clone()), fonts.body(), TextColor(tint), anchor, Transform::from_translation((home.truncate() + offset + shift).extend(z)).with_scale(Vec3::splat(2.0))));
         }
     }
     let mut picture = |id: &str| world.sprites.get(id).or_else(|| world.sprites.get(MARKER_SPRITE)).map(|s| images.add(crate::scene::sprite(s, &world.palette).into_image()));
@@ -777,14 +806,31 @@ fn water(time: Res<Time>, cache: Res<SceneCache>, mut layers: Query<&mut Sprite,
 }
 
 /// The dark is redrawn as the lamps waver and the heroes, who carry a light of their own, walk.
-fn lighting(time: Res<Time>, game: Res<Game>, settings: Res<Settings>, cache: Res<SceneCache>, mut images: ResMut<Assets<Image>>, mut since: Local<f32>, mut beat: Local<u32>) {
-    let Some(hour) = cache.hour.filter(|h| h.dark > 0.0 && settings.gfx.night) else { return };
-    *since += time.delta_secs();
-    if *since < 0.1 {
-        return;
+fn lighting(time: Res<Time>, mut game: ResMut<Game>, settings: Res<Settings>, cache: Res<SceneCache>, mut images: ResMut<Assets<Image>>) {
+    let foggy = cache.sky == crate::weather::Sky::Fog && settings.gfx.weather;
+    let Some(hour) = cache.hour.filter(|h| (h.dark > 0.0 && settings.gfx.night) || foggy) else { return };
+    // Every frame, so the light moves with the hero smoothly; the flames waver eight times a second.
+    let beat = (time.elapsed_secs() * 8.0) as u32;
+    // Underground, and in fog, what the party has never come near stays unseen.
+    let exploring = hour.dark >= 0.8 || cache.sky == crate::weather::Sky::Fog;
+    if exploring {
+        let world = &mut game.world;
+        let mut eyes: Vec<(f32, f32)> = vec![(world.player.x + world::walk::FEET.0, world.player.y + world::walk::FEET.1)];
+        eyes.extend(world.tokens_here().map(|t| (t.x + world::walk::FEET.0, t.y + world::walk::FEET.1)));
+        let lamps: Vec<(f32, f32, f32)> = cache.lamps.iter().map(|l| (l.x, l.y, l.reach)).collect();
+        let tile = TILE as f32;
+        let here = world.current.clone();
+        if let Some(place) = world.locations.get_mut(&here) {
+            // What burns is seen from afar.
+            for (x, y, reach) in lamps {
+                place.reveal(x / tile, y / tile, reach * 0.8);
+            }
+            for (x, y) in eyes {
+                place.reveal(x / tile, y / tile, 3.2);
+            }
+        }
     }
-    *since = 0.0;
-    *beat = beat.wrapping_add(1);
+    let game = &*game;
     let mut lights = cache.lamps.clone();
     let carried = if hour.dark >= 0.5 { 3.4 } else { 2.4 };
     let world = &game.world;
@@ -799,7 +845,10 @@ fn lighting(time: Res<Time>, game: Res<Game>, settings: Res<Settings>, cache: Re
         }
     }
     if let Some(mut image) = images.get_mut(&cache.dark) {
-        *image = crate::scene::darkness(hour, &lights, *beat).into_image();
+        let seen = exploring.then(|| world.here().seen.as_slice());
+        // Fog hides in grey what darkness hides in black.
+        let hour = if foggy && hour.dark < 0.8 { crate::scene::Hour { dark: if settings.gfx.night { hour.dark } else { 0.0 }, tint: [150, 152, 162] } } else { hour };
+        *image = crate::scene::darkness_seen(hour, &lights, beat, seen).into_image();
     }
 }
 
@@ -823,7 +872,12 @@ fn cues(mut background: ResMut<Background>, mut fx: ResMut<Fx>, game: Res<Game>)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>, session: Res<Session>, mut table: ResMut<Table>) {
+/// A way out the player asked to take with E.
+#[derive(Resource, Default)]
+struct Leave(Option<String>);
+
+#[allow(clippy::too_many_arguments)]
+fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>, session: Res<Session>, mut table: ResMut<Table>, mut leave: ResMut<Leave>) {
     // Orders from a test script, whatever the screen shows.
     for order in std::mem::take(&mut warp.1) {
         let (what, amount) = order.split_once('=').map_or((order.as_str(), 0), |(what, n)| (what, n.trim().parse::<i32>().unwrap_or(0)));
@@ -874,9 +928,18 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         *phase = next;
         return;
     }
+    // A way out is taken on purpose: E beside it, or a step off the map where it leads.
+    let wished = std::mem::take(&mut leave.0);
+    let pushing = {
+        let held = |keys: [KeyCode; 2]| keyboard.any_pressed(keys) as i32;
+        (held([KeyCode::KeyD, KeyCode::ArrowRight]) - held([KeyCode::KeyA, KeyCode::ArrowLeft]), held([KeyCode::KeyS, KeyCode::ArrowDown]) - held([KeyCode::KeyW, KeyCode::ArrowUp]))
+    };
+    let stepping_out = game.world.exit_here().filter(|e| {
+        (e.x == 0 && pushing.0 < 0) || (e.x == world::MAP_W - 1 && pushing.0 > 0) || (e.y == 0 && pushing.1 < 0) || (e.y == world::MAP_H - 1 && pushing.1 > 0)
+    });
+    let taken = stepping_out.map(|e| e.to.clone()).or(wished);
     if session.is_client() {
-        if let Some(exit) = game.world.exit_here() {
-            let to = exit.to.clone();
+        if let Some(to) = taken.clone() {
             session.intend(Intent::Exit { to: to.clone() });
             // The host moves the party; until its world arrives the guest steps back, so
             // that a refusal does not leave it standing in the doorway asking again.
@@ -889,9 +952,9 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         game.world.player = world::Player::in_cell(x.min(world::MAP_W - 1), y.min(world::MAP_H - 1));
     }
     if !session.is_client()
-        && let Some(exit) = game.world.exit_here()
+        && let Some(to) = taken
     {
-        *phase = Phase::Leaving { to: exit.to.clone(), t: 0.0 };
+        *phase = Phase::Leaving { to, t: 0.0 };
         return;
     }
     // Something hostile close by does not wait to be spoken to. With guests at the table
@@ -931,7 +994,8 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
 /// Keys that open something while walking: interact, the journal, the pause menu. Escape
 /// also closes whatever sheet is open.
 #[allow(clippy::too_many_arguments)]
-fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Res<Game>, mut phase: ResMut<Phase>, mut was_walking: Local<bool>, mut table: ResMut<Table>, settings: Res<Settings>, session: Res<Session>, store: Res<Store>) {
+#[allow(clippy::too_many_arguments)]
+fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Res<Game>, mut phase: ResMut<Phase>, mut was_walking: Local<bool>, mut table: ResMut<Table>, settings: Res<Settings>, session: Res<Session>, store: Res<Store>, mut leave: ResMut<Leave>) {
     let pad = |button: GamepadButton| gamepads.iter().any(|pad| pad.just_pressed(button));
     // The draft went away while its sheet was open (judged, or the seat changed hands).
     if *phase == Phase::Judging && table.judging.is_none() {
@@ -959,10 +1023,12 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
         return;
     }
     if keyboard.any_just_pressed([KeyCode::KeyE, KeyCode::Enter, KeyCode::NumpadEnter]) || pad(GamepadButton::South) {
-        *phase = match game.world.thing_near(THING_REACH) {
-            Some(thing) => Phase::Looking { thing: thing.to_string() },
-            None => Phase::Writing { near: None },
-        };
+        // A thing to hand comes first, then a way out close by, then the party's own words.
+        match (game.world.thing_near(THING_REACH), game.world.exit_near(EXIT_HINT_REACH)) {
+            (Some(thing), _) => *phase = Phase::Looking { thing: thing.to_string() },
+            (None, Some(exit)) => leave.0 = Some(exit.to.clone()),
+            (None, None) => *phase = Phase::Writing { near: None },
+        }
     } else if keyboard.just_pressed(KeyCode::KeyJ) || pad(GamepadButton::North) {
         *phase = Phase::Journal;
     } else if keyboard.just_pressed(KeyCode::KeyI) || keyboard.just_pressed(KeyCode::Tab) {
@@ -1066,6 +1132,16 @@ fn settle(draft: Result<Box<LocationDraft>, Trouble>, id: &str, from: &str, game
         }
         Err(trouble) => Phase::Stuck { to: id.to_string(), trouble },
     }
+}
+
+/// The name of a thing here, when the party stands too far from it to deal with it.
+fn far_from(world: &World, id: &str) -> Option<String> {
+    let here = world.here();
+    let (cell, name) = here.props.iter().find(|p| p.id == id).map(|p| ((p.x, p.y), p.name.clone())).or_else(|| here.creatures.iter().find(|c| c.id == id).map(|c| ((c.x, c.y), c.name.clone())))?;
+    let centre = ((cell.0 as f32 + 0.5) * TILE as f32, (cell.1 as f32 + 0.5) * TILE as f32);
+    let (px, py) = (world.player.x + world::walk::FEET.0, world.player.y + world::walk::FEET.1);
+    let distance = ((centre.0 - px).powi(2) + (centre.1 - py).powi(2)).sqrt();
+    (distance > THING_REACH * 1.6).then_some(name)
 }
 
 /// The first sentence or so of a telling, for players who are somewhere else.
@@ -1424,8 +1500,8 @@ fn hud(
     let hint = match (toast.text.filter(|_| toast.left > 0.0), thing_name, world.exit_near(EXIT_HINT_REACH)) {
         (Some(said), _, _) => said.text(*lang).to_string(),
         (None, Some(name), _) => format!("E: {}", read(&name)),
-        (None, None, Some(exit)) if exit.label.is_empty() => format!("→ {}", read(world.place_name(&exit.to))),
-        (None, None, Some(exit)) => format!("{} → {}", read(&exit.label), read(world.place_name(&exit.to))),
+        (None, None, Some(exit)) if exit.label.is_empty() => format!("E: → {}", read(world.place_name(&exit.to))),
+        (None, None, Some(exit)) => format!("E: {} → {}", read(&exit.label), read(world.place_name(&exit.to))),
         (None, None, None) if my_offer(world, &player_name(&settings), matches!(*session, Session::Solo)).is_some() => T::FeatOffer.text(*lang).to_string(),
         (None, None, None) if seat_state(world, &session, &player_name(&settings)) == SeatState::Mine => format!("{}{}", T::HudHint.text(*lang), T::HudMaster.text(*lang)),
         (None, None, None) => T::HudHint.text(*lang).to_string(),
@@ -1919,7 +1995,14 @@ fn overlay(
                     stack.spawn((cell(), Text::default(), Typed(turn.narration.clone()), fonts.body(), ink));
                 });
                 for (n, option) in turn.options.iter().enumerate() {
-                    crate::widgets::wrap_button(sheet, &art, &fonts, option.label.clone(), PlayAction::Choose(n));
+                    // A choice that needs the party beside something far off waits for it there.
+                    let far = option.near.as_deref().and_then(|id| far_from(&game.world, id));
+                    match far {
+                        Some(name) => {
+                            sheet.spawn((Text::new(format!("{} — {} {name}", option.label, T::WalkUpTo.text(*lang))), fonts.body(), faded));
+                        }
+                        None => crate::widgets::wrap_button(sheet, &art, &fonts, option.label.clone(), PlayAction::Choose(n)),
+                    }
                 }
                 sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
                     if !turn.options.is_empty() {
@@ -2772,6 +2855,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<HeroPose>()
             .init_resource::<SceneCache>()
             .init_resource::<Folded>()
+            .init_resource::<Leave>()
             .add_observer(on_fold)
             .init_resource::<Dolls>()
             .init_resource::<Background>()
@@ -2782,7 +2866,7 @@ impl Plugin for PlayPlugin {
                 Update,
                 (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
-            .add_systems(Update, (fold_keys, roofs, exit_markers).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
             .add_observer(on_master_activate);
     }
