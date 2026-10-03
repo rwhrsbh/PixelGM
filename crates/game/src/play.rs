@@ -121,6 +121,36 @@ struct SceneCache {
 #[derive(Component)]
 struct WalkGrid;
 
+/// What the heroes notice of what is hidden, and the traps they walk into: the host looks
+/// where each player stands, and tells each what they found.
+#[allow(clippy::too_many_arguments)]
+fn notice(time: Res<Time>, mut game: ResMut<Game>, mut table: ResMut<Table>, phase: Res<Phase>, session: Res<Session>, settings: Res<Settings>, mut redraw: ResMut<Redraw>, mut since: Local<f32>) {
+    if session.is_client() || !matches!(*phase, Phase::Walking | Phase::Bag) {
+        return;
+    }
+    *since += time.delta_secs();
+    if *since < 0.4 {
+        return;
+    }
+    *since = 0.0;
+    let me = player_name(&settings);
+    let mut players: Vec<String> = vec![me.clone()];
+    players.extend(session.players());
+    for player in players {
+        let home = (player != me).then(|| enter_scene(&mut game, &mut table, &player));
+        let found = game.world.notice();
+        leave_scene(&mut game, &mut table, home);
+        for note in found {
+            redraw.0 = true;
+            if player == me {
+                table.heard("★", &note);
+            } else {
+                session.send_to(&player, &Down::Chat { from: "★".into(), text: note });
+            }
+        }
+    }
+}
+
 /// The outcome of a choice is shown only while its continuation is awaited.
 fn forget_going_on(phase: Res<Phase>, mut table: ResMut<Table>) {
     if table.going_on.is_some() && !matches!(*phase, Phase::Asking { .. }) {
@@ -396,6 +426,8 @@ enum PlayAction {
     Stay,
     /// A prepared action of the thing being looked at.
     Do(usize),
+    /// Open, pick or force the container being looked at.
+    Chest(world::bag::Opening),
     /// Open the field for the party's own words.
     Own,
     Send,
@@ -1278,6 +1310,16 @@ fn far_from(world: &World, id: &str) -> Option<String> {
     (distance > THING_REACH * 1.6).then_some(name)
 }
 
+/// What came of going at a container, in words.
+fn chest_words(result: &world::bag::Opened, lang: Lang) -> String {
+    match result {
+        world::bag::Opened::Took(names) if names.is_empty() => T::ChestEmpty.text(lang).to_string(),
+        world::bag::Opened::Took(names) => format!("{} {}", T::ChestTook.text(lang), names.join(", ")),
+        world::bag::Opened::Locked => T::ChestLocked.text(lang).to_string(),
+        world::bag::Opened::Failed { roll, total, needed } => format!("{} d20 {roll} → {total} / {needed}", T::ChestFailed.text(lang)),
+    }
+}
+
 /// The first sentence or so of a telling, for players who are somewhere else.
 fn gist(narration: &str) -> String {
     let text = narration.trim();
@@ -1705,7 +1747,8 @@ enum Sheet {
     Paused { seat: SeatState, lost: bool },
     Judging(DraftView),
     Master(PanelView),
-    Looking { name: String, description: String, actions: Vec<String> },
+    /// `chest`: none for a thing that holds nothing; whether it is locked, for one that does.
+    Looking { name: String, description: String, actions: Vec<String>, chest: Option<bool> },
     /// Whether there are other players to talk to.
     Writing { table: bool },
     Asking(String),
@@ -1810,7 +1853,7 @@ fn translated(sheet: Sheet, other_tongue: bool, translator: &mut Translator) -> 
     }
     let mut read = |text: &str| translator.read(true, text);
     match sheet {
-        Sheet::Looking { name, description, actions } => Sheet::Looking { name: read(&name), description: read(&description), actions: actions.iter().map(|a| read(a)).collect() },
+        Sheet::Looking { name, description, actions, chest } => Sheet::Looking { name: read(&name), description: read(&description), actions: actions.iter().map(|a| read(a)).collect(), chest },
         Sheet::Reading(turn) => Sheet::Reading(Turn {
             narration: read(&turn.narration),
             options: turn
@@ -1843,7 +1886,10 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
                 .map(|p| (&p.name, &p.description, &p.actions))
                 .or_else(|| here.creatures.iter().find(|c| &c.id == thing).map(|c| (&c.name, &c.description, &c.actions)));
             match found {
-                Some((name, description, actions)) => Sheet::Looking { name: name.clone(), description: description.clone(), actions: actions.iter().map(|a| a.label.clone()).collect() },
+                Some((name, description, actions)) => {
+                    let chest = here.props.iter().find(|p| &p.id == thing).and_then(|p| p.chest.as_ref()).filter(|c| !c.open || !c.items.is_empty()).map(|c| c.lock > 0 && !c.open);
+                    Sheet::Looking { name: name.clone(), description: description.clone(), actions: actions.iter().map(|a| a.label.clone()).collect(), chest }
+                }
                 None => Sheet::None,
             }
         }
@@ -2090,9 +2136,19 @@ fn overlay(
                 button(sheet, &art, &fonts, T::Report, true, PlayAction::Report);
                 button(sheet, &art, &fonts, T::ToMainMenu, true, PlayAction::MainMenu);
             }
-            Sheet::Looking { name, description, actions } => {
+            Sheet::Looking { name, description, actions, chest } => {
                 sheet.spawn((Text::new(name.clone()), fonts.title(1), ink));
                 sheet.spawn((Text::new(description.clone()), fonts.body(), ink));
+                // A container: open it, and when it is locked, pick it or break it.
+                if let Some(locked) = chest {
+                    sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                        button(line, &art, &fonts, T::ChestOpen, true, PlayAction::Chest(world::bag::Opening::Open));
+                        if *locked {
+                            button(line, &art, &fonts, T::ChestPick, true, PlayAction::Chest(world::bag::Opening::Pick));
+                            button(line, &art, &fonts, T::ChestForce, true, PlayAction::Chest(world::bag::Opening::Force));
+                        }
+                    });
+                }
                 for (n, label) in actions.iter().enumerate() {
                     crate::widgets::wrap_button(sheet, &art, &fonts, label.clone(), PlayAction::Do(n));
                 }
@@ -2323,6 +2379,7 @@ fn on_activate(
     if session.is_client() {
         let asked = match (*action, phase.clone()) {
             (PlayAction::Do(index), Phase::Looking { thing }) => Some(Intent::Do { thing, index }),
+            (PlayAction::Chest(how), Phase::Looking { thing }) => Some(Intent::OpenChest { prop: thing, how }),
             (PlayAction::Choose(index), Phase::Reading { .. }) => Some(Intent::Choose(index)),
             (PlayAction::Roll, Phase::Rolling) => Some(Intent::Roll),
             (PlayAction::Improve(ability), _) => Some(Intent::Improve(ability)),
@@ -2450,6 +2507,12 @@ fn on_activate(
                 *phase = told(outcome_of(outcome), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
             }
         }
+        (PlayAction::Chest(how), Phase::Looking { thing }) => {
+            let hero = my_hero(&game.world, &player_name(&settings), matches!(*session, Session::Solo)).unwrap_or(0);
+            if let Some(result) = game.world.open_chest(hero, &thing, how, &mut Rng::from_clock()) {
+                *phase = told(outcome_of(chest_words(&result, settings.lang)), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
+            }
+        }
         (PlayAction::Own, Phase::Looking { thing }) => *phase = Phase::Writing { near: Some(thing) },
         (PlayAction::Own, _) => *phase = Phase::Writing { near: None },
         (PlayAction::Send, Phase::Writing { near }) => {
@@ -2501,7 +2564,7 @@ fn guests(
     let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
     for (player, intent) in std::mem::take(&mut table.inbox) {
         // What a guest does to the world happens where that guest stands.
-        let home = matches!(intent, Intent::Do { .. } | Intent::Choose(_) | Intent::Roll | Intent::Say { .. } | Intent::Gm(_)).then(|| enter_scene(&mut game, &mut table, &player));
+        let home = matches!(intent, Intent::Do { .. } | Intent::Choose(_) | Intent::Roll | Intent::Say { .. } | Intent::Gm(_) | Intent::OpenChest { .. }).then(|| enter_scene(&mut game, &mut table, &player));
         let shown = match intent {
             Intent::Do { thing, index } => game.world.perform(&thing, index).map(outcome_of),
             Intent::Choose(index) => table.options.get(&game.world.current).and_then(|options| options.get(index)).cloned().map(|option| {
@@ -2619,6 +2682,10 @@ fn guests(
                     redraw.0 = true;
                 }
                 None
+            }
+            Intent::OpenChest { prop, how } => {
+                let hero = game.world.owners.iter().position(|o| *o == player).unwrap_or(0);
+                game.world.open_chest(hero, &prop, how, &mut Rng::from_clock()).map(|result| outcome_of(chest_words(&result, settings.lang)))
             }
             Intent::PickUp { n } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
@@ -3049,7 +3116,7 @@ impl Plugin for PlayPlugin {
                 Update,
                 (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
-            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on, notice).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
             .add_observer(on_master_activate);
     }

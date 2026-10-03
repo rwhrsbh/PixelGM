@@ -23,6 +23,10 @@ fn nowhere() -> i64 {
     -1
 }
 
+fn secret_dc() -> i64 {
+    13
+}
+
 pub(crate) fn lenient_int<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     Ok(match Value::deserialize(d)? {
         Value::Number(n) => n.as_f64().map_or(0, |f| f.round() as i64),
@@ -96,6 +100,28 @@ pub enum Effect {
         monster: Option<String>,
         #[serde(default)]
         stats: Option<Stats>,
+        /// For a prop that holds things: what is in it, how hard its lock is, its key.
+        #[serde(default)]
+        contents: Vec<ThingDraft>,
+        #[serde(default, deserialize_with = "lenient_int")]
+        lock: i64,
+        #[serde(default)]
+        key: String,
+    },
+    /// Something hidden here: found by a sharp eye nearby, or a trap found underfoot.
+    Secret {
+        #[serde(deserialize_with = "lenient_int")]
+        x: i64,
+        #[serde(deserialize_with = "lenient_int")]
+        y: i64,
+        #[serde(default = "secret_dc", deserialize_with = "lenient_int")]
+        dc: i64,
+        #[serde(default)]
+        kind: String,
+        #[serde(default)]
+        note: String,
+        #[serde(default)]
+        effects: Vec<Value>,
     },
     /// A way out opens.
     Exit {
@@ -392,18 +418,28 @@ impl Story {
 
 }
 
-impl Bag {
-    pub fn give_with(&mut self, name: &str, description: &str, traits: &ItemTraits) {
-        let name = name.trim();
+/// A thing as the master wrote it: a name, a description and what else it said.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct ThingDraft {
+    pub name: String,
+    pub description: String,
+    #[serde(flatten)]
+    pub traits: ItemTraits,
+}
+
+impl ThingDraft {
+    pub fn item(&self) -> Option<Item> {
+        let name = self.name.trim();
         if name.is_empty() {
-            return;
+            return None;
         }
-        let gear = crate::bag::gear_named(name);
-        let item = Item {
+        let traits = &self.traits;
+        Some(Item {
             name: name.to_string(),
-            description: description.trim().to_string(),
+            description: self.description.trim().to_string(),
             count: 1,
-            gear,
+            gear: crate::bag::gear_named(name),
             at: None,
             kind: traits.kind.trim().to_lowercase(),
             size_cells: traits.size(),
@@ -411,8 +447,16 @@ impl Bag {
             heal: traits.heal.trim().to_string(),
             damage: traits.damage.trim().to_string(),
             light: traits.light(),
-        };
-        self.receive(item);
+        })
+    }
+}
+
+impl Bag {
+    pub fn give_with(&mut self, name: &str, description: &str, traits: &ItemTraits) {
+        let draft = ThingDraft { name: name.to_string(), description: description.to_string(), traits: traits.clone() };
+        if let Some(item) = draft.item() {
+            self.receive(item);
+        }
     }
 
     /// A thing into the bag: onto a heap of the same name, or a place of its own. Gear lies
@@ -633,7 +677,14 @@ impl World {
                         notes.push("tile: the place cannot hold another kind of tile".to_string());
                     }
                 }
-                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats } => {
+                Effect::Secret { x, y, dc, kind, note, effects } => {
+                    let (sx, sy) = clamp_cell(*x, *y);
+                    let mut read_notes = Vec::new();
+                    let effects = read_effects(effects, &mut read_notes);
+                    notes.extend(read_notes);
+                    location.secrets.push(crate::model::Secret { x: sx, y: sy, dc: (*dc).clamp(5, 30) as i32, kind: kind.trim().to_lowercase(), note: note.trim().to_string(), effects, found: false });
+                }
+                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, contents, lock, key } => {
                     let mut id = slug(id);
                     if id.is_empty() {
                         id = "thing".to_string();
@@ -657,7 +708,8 @@ impl World {
                             location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone() });
                         }
                     } else {
-                        location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: Vec::new(), body: None });
+                        let chest = (!contents.is_empty() || *lock > 0 || !key.trim().is_empty()).then(|| crate::model::Chest { items: contents.iter().filter_map(ThingDraft::item).collect(), lock: (*lock).clamp(0, 30) as i32, key: key.trim().to_string(), open: false });
+                        location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: Vec::new(), body: None, chest });
                     }
                 }
                 Effect::Exit { x, y, to, label } => {

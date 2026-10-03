@@ -35,6 +35,25 @@ const CAMPFIRE: [&str; 16] = [
     "0000000000000000",
 ];
 
+const CHEST: [&str; 16] = [
+    "0000000000000000",
+    "0000000000000000",
+    "0000000000000000",
+    "0011111111111100",
+    "01bbbbbbbbbbbb10",
+    "01bbbbbbbbbbbb10",
+    "01aaaaaaaaaaaa10",
+    "0111111ee1111110",
+    "01bbbbbeebbbbb10",
+    "01bbbbbbbbbbbb10",
+    "01bbbbbbbbbbbb10",
+    "01aaaaaaaaaaaa10",
+    "01aaaaaaaaaaaa10",
+    "0111111111111110",
+    "0000000000000000",
+    "0000000000000000",
+];
+
 const CAT: [&str; 16] = [
     "0000000000000000",
     "0000000000000000",
@@ -169,9 +188,15 @@ pub fn world(request: &str) -> String {
             "legend": legend(),
             "map": with_ruin(clearing(seed, &[east, south])),
             "spawn": [8, 12],
-            "sprites": [{ "id": "campfire", "rows": rows(&CAMPFIRE) }, { "id": "cat", "rows": rows(&CAT) }],
+            "sprites": [{ "id": "campfire", "rows": rows(&CAMPFIRE) }, { "id": "cat", "rows": rows(&CAT) }, { "id": "chest", "rows": rows(&CHEST) }],
             "props": [{ "id": "fire", "name": "Campfire", "description": "It crackles.", "x": 10, "y": 12, "blocking": true, "sprite": "campfire",
-                "actions": [{ "label": "Warm your hands", "outcome": "The heat seeps into your fingers. Someone fed this fire not long ago.", "effects": [{ "op": "fact", "text": "Someone tends the campfire." }] }] }],
+                "actions": [{ "label": "Warm your hands", "outcome": "The heat seeps into your fingers. Someone fed this fire not long ago.", "effects": [{ "op": "fact", "text": "Someone tends the campfire." }] }] },
+                { "id": "chest", "name": "Old chest", "description": "Iron bands, a heavy lock.", "x": 6, "y": 12, "blocking": true, "sprite": "chest", "lock": 12, "key": "Iron key",
+                  "contents": [{ "name": "Torch", "kind": "light", "light": 5, "size": [1, 2] }, { "name": "Potion of healing", "kind": "potion", "heal": "2d4+2" }] }],
+            "secrets": [
+                { "x": 8, "y": 10, "dc": 8, "kind": "hidden", "note": "A loose stone hides a little cache.", "effects": [{ "op": "give", "name": "Iron key" }] },
+                { "x": 11, "y": 13, "dc": 25, "kind": "trap", "note": "A snare snaps shut on your ankle!", "effects": [{ "op": "damage", "amount": "2" }] }
+            ],
             "creatures": [{ "id": "cat", "name": "Grey cat", "description": "It watches you.", "x": 12, "y": 11, "sprite": "cat", "attitude": "friendly",
                 "actions": [
                     { "label": "Pet the cat", "outcome": "The cat leans into your hand and purrs.", "effects": [{ "op": "describe", "id": "self", "description": "It purrs when you look at it." }] },

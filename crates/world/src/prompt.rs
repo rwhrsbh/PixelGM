@@ -25,7 +25,8 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
   {"op": "move", "id": "…", "x": 0, "y": 0}
   {"op": "tile", "x": 0, "y": 0, "tile": "tile_id"} — one cell of ground changes (a door opens, a bridge falls)
-  {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral"} — a creature that might fight also takes "monster" or "stats"
+  {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral"} — a creature that might fight also takes "monster" or "stats"; a prop that holds things (a chest, a crate, a purse) takes "contents": [things as in "give"], and "lock": 15 with "key": "key name" when it is locked — the game handles opening, picking and forcing it
+  {"op": "secret", "x": 0, "y": 0, "dc": 14, "kind": "hidden|trap", "note": "a loose stone in the wall", "effects": []} — something hidden: when a hero with a sharp enough eye comes near it is found and its effects happen (a hidden door: a "tile" to a door; a cache: "give"); a trap goes off with its effects ("damage") when stepped on unnoticed
   {"op": "exit", "x": 0, "y": 0, "to": "place_id", "label": "…"} — a way out appears
   {"op": "fact", "text": "…"} — something that must be remembered for the rest of the campaign
   {"op": "check", "ability": "str|dex|con|int|wis|cha", "skill": "stealth", "dc": 15, "success": {"narration": "…", "effects": []}, "failure": {"narration": "…", "effects": []}} — the outcome is uncertain: the game rolls the die and takes one branch. Write both. Skills: acrobatics, animal-handling, arcana, athletics, deception, history, insight, intimidation, investigation, medicine, nature, perception, performance, persuasion, religion, sleight-of-hand, stealth, survival. Difficulty: 5 trivial, 10 easy, 15 moderate, 20 hard, 25 very hard.
@@ -171,7 +172,8 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     let here = world.here();
     let _ = writeln!(text, "\nPLACE \"{}\": {}. {}", world.current, here.name, here.description);
     for prop in &here.props {
-        let _ = writeln!(text, "- prop {} at ({}, {}): {} — {}", prop.id, prop.x, prop.y, prop.name, prop.description);
+        let held = prop.chest.as_ref().map(|c| if c.open { " (opened)".to_string() } else if c.lock > 0 { format!(" (locked, lock {}{})", c.lock, if c.key.is_empty() { String::new() } else { format!(", key: {}", c.key) }) } else { " (shut)".to_string() }).unwrap_or_default();
+        let _ = writeln!(text, "- prop {} at ({}, {}){held}: {} — {}", prop.id, prop.x, prop.y, prop.name, prop.description);
     }
     for creature in &here.creatures {
         let _ = writeln!(text, "- creature {} at ({}, {}), {}: {} — {}", creature.id, creature.x, creature.y, attitude_word(creature.attitude), creature.name, creature.description);

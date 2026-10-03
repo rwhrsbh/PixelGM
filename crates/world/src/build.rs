@@ -60,6 +60,25 @@ pub struct PropDraft {
     pub blocking: bool,
     pub sprite: String,
     pub actions: Vec<ActionDraft>,
+    /// For a container: what is in it, how hard its lock is, the name of its key.
+    pub contents: Vec<crate::story::ThingDraft>,
+    #[serde(deserialize_with = "lenient_int")]
+    pub lock: i64,
+    pub key: String,
+}
+
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(default)]
+pub struct SecretDraft {
+    #[serde(deserialize_with = "lenient_int")]
+    pub x: i64,
+    #[serde(deserialize_with = "lenient_int")]
+    pub y: i64,
+    #[serde(deserialize_with = "lenient_int")]
+    pub dc: i64,
+    pub kind: String,
+    pub note: String,
+    pub effects: Vec<Value>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -113,6 +132,7 @@ pub struct LocationDraft {
     pub sprites: Vec<SpriteDraft>,
     pub new_tiles: Vec<TileDraft>,
     pub neighbors: Vec<NeighborDraft>,
+    pub secrets: Vec<SecretDraft>,
     pub light: String,
     pub weather: String,
 }
@@ -136,7 +156,7 @@ pub fn extract_json(text: &str) -> Option<&str> {
 }
 
 /// Fields the game reads as lists. Models sometimes write them as objects keyed by id.
-const LISTS: [&str; 15] = ["tiles", "new_tiles", "sprites", "props", "creatures", "exits", "neighbors", "actions", "effects", "options", "attacks", "whispers", "feats", "texts", "facts"];
+const LISTS: [&str; 17] = ["tiles", "new_tiles", "sprites", "props", "creatures", "exits", "neighbors", "actions", "effects", "options", "attacks", "whispers", "feats", "texts", "facts", "contents", "secrets"];
 
 /// Mends the commonest ways a model bends the answer format, before it is read: a list
 /// written as an object keyed by id becomes a list, each entry keeping its key as its id.
@@ -364,7 +384,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             notes.push(format!("prop '{}' names sprite '{}', which was not drawn", p.id, p.sprite));
             sprite = MARKER_SPRITE.to_string();
         }
-        props.push(Prop { id: unique(slug(&p.id), &format!("prop_{n}"), &mut taken), name: p.name.trim().to_string(), description: p.description.trim().to_string(), x, y, blocking: p.blocking, sprite, actions: read_actions(&p.actions, &mut notes), body: None });
+        props.push(Prop { id: unique(slug(&p.id), &format!("prop_{n}"), &mut taken), name: p.name.trim().to_string(), description: p.description.trim().to_string(), x, y, blocking: p.blocking, sprite, actions: read_actions(&p.actions, &mut notes), body: None, chest: (!p.contents.is_empty() || p.lock > 0 || !p.key.trim().is_empty()).then(|| crate::model::Chest { items: p.contents.iter().filter_map(crate::story::ThingDraft::item).collect(), lock: p.lock.clamp(0, 30) as i32, key: p.key.trim().to_string(), open: false }) });
     }
 
     let mut creatures: Vec<Creature> = Vec::new();
@@ -531,7 +551,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     let legend: BTreeMap<char, String> = symbol_of.iter().map(|(tile, symbol)| (*symbol, tile.to_string())).collect();
 
     let name = if draft.name.trim().is_empty() { id.clone() } else { draft.name.trim().to_string() };
-    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), marks: Vec::new(), seen: Vec::new(), items: Vec::new() };
+    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), marks: Vec::new(), seen: Vec::new(), items: Vec::new(), secrets: draft.secrets.iter().map(|s| { let (x, y) = clamp_cell(s.x, s.y); crate::model::Secret { x, y, dc: if s.dc <= 0 { 13 } else { s.dc.clamp(5, 30) as i32 }, kind: s.kind.trim().to_lowercase(), note: s.note.trim().to_string(), effects: crate::story::read_effects(&s.effects, &mut notes), found: false } }).collect() };
     Ok(Built { id, location, stubs, notes })
 }
 

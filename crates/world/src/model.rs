@@ -98,6 +98,40 @@ pub struct Prop {
     /// story brings it back.
     #[serde(default)]
     pub body: Option<Box<Creature>>,
+    /// When this holds things: a chest, a crate, a corpse's purse.
+    #[serde(default)]
+    pub chest: Option<Chest>,
+}
+
+/// What a container holds, and how it is shut.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct Chest {
+    pub items: Vec<crate::story::Item>,
+    /// How hard the lock is to pick, or the lid to force; none when it is not locked.
+    pub lock: i32,
+    /// The name of the key that opens it, if any.
+    pub key: String,
+    pub open: bool,
+}
+
+/// Something hidden in a place: a secret door, a cache, a trap. Found by a sharp eye when
+/// the party comes near, or — a trap — by stepping on it.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct Secret {
+    pub x: usize,
+    pub y: usize,
+    /// How hard it is to notice.
+    pub dc: i32,
+    /// "hidden" for what is found by looking, "trap" for what goes off underfoot.
+    pub kind: String,
+    /// What it is, in a few words, told when it is found.
+    pub note: String,
+    /// What finding it, or setting it off, does.
+    #[serde(default)]
+    pub effects: Vec<crate::story::Effect>,
+    #[serde(default)]
+    pub found: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -167,6 +201,9 @@ pub struct Location {
     /// Things lying on the ground, dropped or left by the story.
     #[serde(default)]
     pub items: Vec<Lying>,
+    /// What is hidden here.
+    #[serde(default)]
+    pub secrets: Vec<Secret>,
     /// The cells the party has seen, one row of bits to a row of the map: in the dark, what
     /// was never seen stays black.
     #[serde(default)]

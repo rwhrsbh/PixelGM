@@ -61,6 +61,8 @@ pub enum Intent {
     Drop { index: usize, cell: (usize, usize) },
     /// What lies on the ground picked up.
     PickUp { n: usize },
+    /// A container opened, picked or forced.
+    OpenChest { prop: String, how: world::bag::Opening },
 }
 
 /// What the player in the master's seat does. A guest sends it and the host checks who it

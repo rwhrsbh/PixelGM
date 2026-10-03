@@ -549,6 +549,7 @@ impl World {
                             sprite: dead.sprite.clone(),
                             actions: Vec::new(),
                             body: Some(Box::new(dead)),
+                            chest: None,
                         });
                     }
                 } else if let Some(creature) = location.creatures.iter_mut().find(|creature| creature.id == c.id) {

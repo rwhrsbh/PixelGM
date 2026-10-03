@@ -217,6 +217,13 @@ texts! {
     BagUseHint: "ПКМ — применить, клик за сумкой — бросить", "Right click: use; click outside: drop";
     UsesThing: "использует", "uses";
     PickUp: "поднять", "pick up";
+    ChestOpen: "Открыть", "Open";
+    ChestPick: "Взломать замок", "Pick the lock";
+    ChestForce: "Выбить", "Force it";
+    ChestLocked: "Заперто. Нужен ключ — или взломать, или выбить.", "Locked. It needs a key, a pick or force.";
+    ChestEmpty: "Пусто.", "Empty.";
+    ChestTook: "Взято:", "Taken:";
+    ChestFailed: "Не поддаётся:", "It holds:";
     Fold: "Свернуть", "Fold";
     Unfold: "Развернуть", "Unfold";
     FoldedHint: "Рассказ свёрнут (H)", "The telling is folded (H)";

@@ -304,6 +304,103 @@ impl World {
     }
 }
 
+/// How a hero goes about a shut container.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Opening {
+    /// Lift the lid, or turn the key one carries.
+    Open,
+    /// Pick the lock: Dexterity (Sleight of Hand).
+    Pick,
+    /// Break it open: Strength (Athletics), a little harder.
+    Force,
+}
+
+/// What came of it.
+#[derive(Debug, PartialEq)]
+pub enum Opened {
+    /// Open: these things went into the hero's bag.
+    Took(Vec<String>),
+    /// Shut fast: it needs a key, a pick or force.
+    Locked,
+    /// The try failed: the roll, its total and what it needed.
+    Failed { roll: i32, total: i32, needed: i32 },
+}
+
+impl World {
+    /// A hero goes at a container here.
+    pub fn open_chest(&mut self, hero: usize, prop: &str, how: Opening, rng: &mut rules::Rng) -> Option<Opened> {
+        self.ensure_bags();
+        let here = self.current.clone();
+        let hero_now = self.party.get(hero)?.clone();
+        let has_key = |key: &str, bag: &Bag| !key.is_empty() && bag.inventory.iter().any(|i| i.name.to_lowercase().contains(&key.to_lowercase()) || key.to_lowercase().contains(&i.name.to_lowercase()));
+        let bag_now = self.story.bags.get(hero)?.clone();
+        let chest = self.locations.get_mut(&here)?.props.iter_mut().find(|p| p.id == prop)?.chest.as_mut()?;
+        if !chest.open && chest.lock > 0 {
+            match how {
+                Opening::Open if has_key(&chest.key, &bag_now) => {}
+                Opening::Open => return Some(Opened::Locked),
+                Opening::Pick | Opening::Force => {
+                    let (ability, skill, needed) = if how == Opening::Pick { (rules::Ability::Dex, "sleight-of-hand", chest.lock) } else { (rules::Ability::Str, "athletics", chest.lock + 2) };
+                    let roll = rng.die(20) as i32;
+                    let total = roll + hero_now.check_bonus(ability, Some(skill));
+                    if total < needed {
+                        return Some(Opened::Failed { roll, total, needed });
+                    }
+                }
+            }
+        }
+        chest.open = true;
+        let items = std::mem::take(&mut chest.items);
+        let names = items.iter().map(|i| i.name.clone()).collect();
+        let bag = self.story.bags.get_mut(hero)?;
+        for item in items {
+            bag.receive(item);
+        }
+        Some(Opened::Took(names))
+    }
+
+    /// The best eye among the heroes here, as a number to beat: ten and their Perception.
+    fn passive_perception(&self) -> i32 {
+        (0..self.party.len()).filter(|i| !self.party[*i].dead && self.takes_part(*i)).map(|i| 10 + self.party[i].check_bonus(rules::Ability::Wis, Some("perception"))).max().unwrap_or(10)
+    }
+
+    /// What the party notices of the secrets around it, and the traps it walks into. Each
+    /// found thing is told once and does what it was made to do. Gives the notes to show.
+    pub fn notice(&mut self) -> Vec<String> {
+        let (px, py) = self.player.cell();
+        let eye = self.passive_perception();
+        let here = self.current.clone();
+        let Some(place) = self.locations.get_mut(&here) else { return Vec::new() };
+        let mut fired: Vec<(String, Vec<crate::story::Effect>, bool)> = Vec::new();
+        for secret in place.secrets.iter_mut().filter(|s| !s.found) {
+            let (dx, dy) = ((secret.x as i32 - px).abs(), (secret.y as i32 - py).abs());
+            let under = dx == 0 && dy == 0;
+            let near = dx <= 2 && dy <= 2;
+            let trap = secret.kind == "trap";
+            if near && eye >= secret.dc {
+                // Seen in time: a trap is marked and avoided; anything else is found.
+                secret.found = true;
+                fired.push((secret.note.clone(), if trap { Vec::new() } else { secret.effects.clone() }, trap));
+            } else if trap && under {
+                secret.found = true;
+                fired.push((secret.note.clone(), secret.effects.clone(), false));
+            }
+        }
+        let mut told = Vec::new();
+        for (note, effects, marked) in fired {
+            if marked {
+                if let Some(secret) = self.locations.get(&here).and_then(|p| p.secrets.iter().find(|s| s.note == note)).map(|s| (s.x, s.y)) {
+                    self.apply(&[crate::story::Effect::Mark { id: String::new(), x: secret.0 as i64, y: secret.1 as i64, kind: "trap".into(), color: "#c03020".into() }], None);
+                }
+            } else {
+                self.apply(&effects, None);
+            }
+            told.push(note);
+        }
+        told
+    }
+}
+
 /// What a hero wears in a slot.
 pub fn worn(hero: &Character, slot: Slot) -> Option<String> {
     match slot {
@@ -626,6 +723,46 @@ mod tests {
         let at = w.story.bags[0].inventory.len() - 1;
         assert!(matches!(w.use_item(0, at, &mut rules::Rng::seeded(1)), Used::Healed(n) if n > 0));
         assert_eq!(w.story.bags[0].inventory[at].count, 1);
+    }
+
+    fn effects(json: serde_json::Value) -> Vec<crate::story::Effect> {
+        let mut notes = Vec::new();
+        crate::story::read_effects(json.as_array().unwrap(), &mut notes)
+    }
+
+    #[test]
+    fn a_locked_chest_opens_to_its_key_and_yields_to_force_or_skill() {
+        let mut w = world();
+        let (x, y) = w.player.cell();
+        w.apply(&effects(serde_json::json!([{ "op": "spawn", "kind": "prop", "id": "strongbox", "name": "Chest", "x": x + 1, "y": y, "lock": 12, "key": "Iron key", "contents": [{ "name": "Gold ring" }, { "name": "Potion", "heal": "2d4" }] }])), None);
+        assert!(w.here().props.iter().any(|p| p.chest.as_ref().is_some_and(|c| c.items.len() == 2)));
+        let mut rng = rules::Rng::seeded(3);
+        assert_eq!(w.open_chest(0, "strongbox", Opening::Open, &mut rng), Some(Opened::Locked));
+        w.story.bags[0].inventory.push(named("Iron key"));
+        assert_eq!(w.open_chest(0, "strongbox", Opening::Open, &mut rng), Some(Opened::Took(vec!["Gold ring".into(), "Potion".into()])));
+        assert!(w.story.bags[0].inventory.iter().any(|i| i.name == "Potion" && i.heal == "2d4"));
+        // Opened, it stays open and empty.
+        assert_eq!(w.open_chest(0, "strongbox", Opening::Open, &mut rng), Some(Opened::Took(vec![])));
+        // Without a key, enough tries at the lock get it open.
+        w.apply(&effects(serde_json::json!([{ "op": "spawn", "kind": "prop", "id": "box", "x": x, "y": y + 1, "lock": 10, "contents": [{ "name": "Coin" }] }])), None);
+        let opened = (0..40).any(|_| matches!(w.open_chest(0, "box", Opening::Force, &mut rng), Some(Opened::Took(_))));
+        assert!(opened);
+    }
+
+    #[test]
+    fn a_hidden_door_is_seen_by_a_sharp_eye_and_a_trap_bites_whoever_steps_on_it_unseen() {
+        let mut w = world();
+        let (x, y) = w.player.cell();
+        w.apply(&effects(serde_json::json!([
+            { "op": "secret", "x": x + 1, "y": y, "dc": 5, "kind": "hidden", "note": "a draught from the wall", "effects": [{ "op": "give", "name": "Old key" }] },
+            { "op": "secret", "x": x, "y": y, "dc": 30, "kind": "trap", "note": "a needle", "effects": [{ "op": "damage", "amount": "3" }] }
+        ])), None);
+        let before = w.party[0].hp;
+        let told = w.notice();
+        assert!(told.contains(&"a draught from the wall".to_string()) && told.contains(&"a needle".to_string()));
+        assert!(w.story.bags[0].inventory.iter().any(|i| i.name == "Old key"));
+        assert!(w.party[0].hp < before, "the trap went off underfoot");
+        assert!(w.notice().is_empty(), "each is found once");
     }
 
     #[test]
