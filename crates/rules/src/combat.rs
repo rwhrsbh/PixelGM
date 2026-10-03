@@ -48,8 +48,9 @@ fn cells(feet: u32) -> u32 {
 
 impl Strike {
     pub fn weapon(character: &Character, index: &str) -> Self {
-        let (name, range) = match srd().weapons.get(index) {
-            Some(w) => (w.name.clone(), w.range),
+        let (base, better) = crate::character::gear(index);
+        let (name, range) = match srd().weapons.get(base) {
+            Some(w) => (if better > 0 { format!("{} +{better}", w.name) } else { w.name.clone() }, w.range),
             None => ("Unarmed strike".to_string(), (5, 5)),
         };
         Self { name, bonus: character.attack_bonus(index), damage: vec![character.damage(index)], range: cells(range.0), long_range: cells(range.1), ..Self::default() }

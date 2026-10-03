@@ -57,6 +57,12 @@ pub enum Intent {
     Arrange { held: world::bag::Held, to: world::bag::Spot },
     /// One of a thing in the bag used.
     UseItem { index: usize },
+    /// One of a ware bought from a keeper here.
+    Buy { keeper: String, ware: usize },
+    /// One of a thing of one's own sold to a keeper here.
+    Sell { keeper: String, index: usize },
+    /// A try at a better price.
+    Haggle { keeper: String },
     /// Coins laid on the ground of a cell.
     DropGold { amount: u32, cell: (usize, usize) },
     /// A thing put on a quick slot, by name; an empty name clears the slot.

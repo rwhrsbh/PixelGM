@@ -16,6 +16,13 @@ pub struct PixelButton {
     look: ButtonLook,
 }
 
+impl PixelButton {
+    /// A button that can be pressed, drawn by whoever spawns it.
+    pub fn plain() -> Self {
+        Self { enabled: true, look: ButtonLook::Idle }
+    }
+}
+
 /// A button was used: clicked with the mouse, or chosen with the keyboard or a gamepad.
 /// Screens listen for this instead of raw clicks, so every way of pressing behaves the same.
 #[derive(EntityEvent)]

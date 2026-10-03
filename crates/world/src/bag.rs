@@ -49,6 +49,7 @@ pub enum Gear {
 }
 
 pub fn gear_kind(index: &str) -> Option<Gear> {
+    let index = rules::gear(index).0;
     if index == "shield" {
         Some(Gear::Shield)
     } else if srd().weapons.contains_key(index) {
@@ -63,8 +64,9 @@ pub fn gear_kind(index: &str) -> Option<Gear> {
 /// The rules' name of a piece of gear, in the language asked for.
 pub fn gear_name(index: &str, russian: bool) -> String {
     let data = srd();
+    let (index, better) = rules::gear(index);
     let english = data.weapons.get(index).map(|w| w.name.as_str()).or_else(|| data.armors.get(index).map(|a| a.name.as_str())).unwrap_or(if index == "shield" { "Shield" } else { index });
-    tr(russian, english).to_string()
+    if better > 0 { format!("{} +{better}", tr(russian, english)) } else { tr(russian, english).to_string() }
 }
 
 /// The gear a name the master wrote stands for, in either language: "Longsword", "длинный меч".
@@ -185,6 +187,7 @@ impl Item {
 
 pub fn gear_size(index: &str) -> (u8, u8) {
     let data = srd();
+    let index = rules::gear(index).0;
     if index == "shield" {
         return (2, 2);
     }
@@ -566,7 +569,7 @@ pub fn worn(hero: &Character, slot: Slot) -> Option<String> {
 }
 
 fn may_wear(hero: &Character, slot: Slot, index: &str) -> bool {
-    let two_handed = |i: &str| srd().weapons.get(i).is_some_and(|w| w.two_handed);
+    let two_handed = |i: &str| srd().weapons.get(rules::gear(i).0).is_some_and(|w| w.two_handed);
     match (slot, gear_kind(index)) {
         // A two-handed weapon in hand leaves no hand for a shield, and the other way round.
         (Slot::Main, Some(Gear::Weapon)) => !(hero.shield && two_handed(index)),

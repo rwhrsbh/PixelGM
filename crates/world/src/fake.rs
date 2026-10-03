@@ -199,6 +199,11 @@ pub fn world(request: &str) -> String {
                 { "x": 11, "y": 13, "dc": 25, "kind": "trap", "note": "A snare snaps shut on your ankle!", "effects": [{ "op": "damage", "amount": "2" }] }
             ],
             "creatures": [{ "id": "cat", "name": "Grey cat", "description": "It watches you.", "x": 12, "y": 11, "sprite": "cat", "attitude": "friendly",
+                "shop": [
+                    { "name": "Healing potion", "kind": "potion", "heal": "2d4+2", "price": 8 },
+                    { "name": "Ration", "kind": "food", "price": 2 },
+                    { "name": "Fine dagger", "kind": "weapon", "gear": "dagger", "bonus": 1, "rarity": "uncommon", "price": 40 }
+                ],
                 "actions": [
                     { "label": "Pet the cat", "outcome": "The cat leans into your hand and purrs.", "effects": [{ "op": "describe", "id": "self", "description": "It purrs when you look at it." }] },
                     { "label": "Shoo it away", "outcome": "The cat slips away between the trees, leaving a tuft of fur.", "effects": [{ "op": "remove", "id": "self" }, { "op": "give", "name": "Cat hair", "description": "A tuft of grey fur." }] }

@@ -33,6 +33,7 @@ mod store;
 mod theme;
 mod translate;
 mod voice;
+mod shop_ui;
 mod view;
 mod widgets;
 
@@ -78,6 +79,6 @@ fn main() -> AppExit {
         hero::HeroPlugin,
         fight::FightPlugin,
     ))
-    .add_plugins((view::ViewPlugin, translate::TranslatePlugin, bag_ui::BagPlugin, post::PostPlugin, motion::MotionPlugin, music::MusicPlugin, provider::ProviderPlugin, party_hud::PartyHudPlugin, graphics::GraphicsPlugin, weather::WeatherPlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
+    .add_plugins((view::ViewPlugin, shop_ui::ShopPlugin, translate::TranslatePlugin, bag_ui::BagPlugin, post::PostPlugin, motion::MotionPlugin, music::MusicPlugin, provider::ProviderPlugin, party_hud::PartyHudPlugin, graphics::GraphicsPlugin, weather::WeatherPlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
     app.run()
 }

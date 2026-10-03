@@ -146,6 +146,9 @@ pub enum Effect {
         /// For a creature: how many of them appear; 0 leaves it to the game.
         #[serde(default, deserialize_with = "lenient_int")]
         count: i64,
+        /// For a creature that keeps a shop: what it sells.
+        #[serde(default)]
+        shop: Vec<ThingDraft>,
         /// For a prop that holds things: what is in it, how hard its lock is, its key.
         #[serde(default)]
         contents: Vec<ThingDraft>,
@@ -339,6 +342,12 @@ pub struct Item {
     /// The master's own picture of it, rows of palette indices.
     #[serde(default)]
     pub rows: Vec<String>,
+    /// What it is worth in coins; 0 leaves the worth to the game.
+    #[serde(default)]
+    pub price: u32,
+    /// common (or empty), uncommon, rare, legendary.
+    #[serde(default)]
+    pub rarity: String,
     /// Dice of healing when used up, dice of harm when thrown, cells of light when lit.
     #[serde(default)]
     pub heal: String,
@@ -376,6 +385,12 @@ pub struct ItemTraits {
     pub light: Value,
     /// The weapon or armour of the rules this works as, for a thing to wield or wear.
     pub gear: String,
+    /// What it costs in a shop, in coins.
+    pub price: Value,
+    /// common, uncommon, rare or legendary.
+    pub rarity: String,
+    /// How much better than the book's a weapon or armour is: +1 to +3.
+    pub bonus: Value,
 }
 
 impl ItemTraits {
@@ -502,7 +517,18 @@ impl ThingDraft {
             name: name.to_string(),
             description: self.description.trim().to_string(),
             count: 1,
-            gear: crate::bag::gear_like(name, &traits.kind, &traits.gear),
+            gear: crate::bag::gear_like(name, &traits.kind, &traits.gear).map(|index| {
+                // A better weapon or coat is the same gear, one to three better.
+                let better = traits.bonus.as_f64().or_else(|| traits.bonus.as_str().and_then(|s| s.trim().trim_start_matches('+').parse().ok())).unwrap_or(0.0).clamp(0.0, 3.0) as i32;
+                if better > 0 && index != "shield" { format!("{}+{better}", rules::gear(&index).0) } else { index }
+            }),
+            price: traits.price.as_f64().or_else(|| traits.price.as_str().and_then(|s| s.trim().parse().ok())).unwrap_or(0.0).clamp(0.0, 1_000_000.0) as u32,
+            rarity: match traits.rarity.trim().to_lowercase().as_str() {
+                "uncommon" | "необычный" => "uncommon".into(),
+                "rare" | "редкий" => "rare".into(),
+                "legendary" | "epic" | "легендарный" => "legendary".into(),
+                _ => String::new(),
+            },
             at: None,
             kind: traits.kind.trim().to_lowercase(),
             size_cells: traits.size(),
@@ -515,6 +541,51 @@ impl ThingDraft {
 }
 
 impl World {
+    /// Holds a thing the master hands over to what the party's level allows: a bonus of one
+    /// up to level 4, two up to 10, three after; where the caps are lifted, nothing.
+    pub fn temper(&self, mut item: Item) -> Item {
+        if !self.limited() {
+            return item;
+        }
+        let most = match self.party_level() {
+            0..=4 => 1,
+            5..=10 => 2,
+            _ => 3,
+        };
+        if let Some(index) = item.gear.clone() {
+            let (base, better) = rules::gear(&index);
+            if better > most {
+                item.gear = Some(format!("{base}+{most}"));
+            }
+        }
+        item
+    }
+
+    /// What a thing is worth in coins: what the master said, or what its kind usually fetches.
+    pub fn worth(item: &Item) -> u32 {
+        if item.price > 0 {
+            return item.price;
+        }
+        let base = match item.kind.as_str() {
+            "key" | "quest" | "gold" => 0,
+            "junk" => 1,
+            "food" | "light" => 2,
+            "potion" => 50,
+            "weapon" => 15,
+            "armor" | "armour" => 40,
+            _ if item.gear.is_some() => 15,
+            _ => 5,
+        };
+        let better = item.gear.as_deref().map_or(0, |g| rules::gear(g).1) as u32;
+        let rarity = match item.rarity.as_str() {
+            "uncommon" => 4,
+            "rare" => 20,
+            "legendary" => 100,
+            _ => 1,
+        };
+        base * rarity * (1 + better * better * 10)
+    }
+
     /// The chance, in hundredths, that the best of the party passes the check a choice
     /// begins with; nothing for a choice that needs no die.
     pub fn chance(&self, action: &Action) -> Option<u8> {
@@ -626,6 +697,15 @@ impl World {
         let mut moved: Vec<(usize, (usize, usize))> = Vec::new();
         let mut travel: Option<(String, String, Vec<usize>)> = None;
         let mut travel_look = String::new();
+        let most_better = if !self.limited() {
+            3
+        } else {
+            match self.party_level() {
+                0..=4 => 1,
+                5..=10 => 2,
+                _ => 3,
+            }
+        };
         let mut until: Option<String> = None;
         let mut passed = 0u32;
         let mut gold: Vec<(usize, i64)> = Vec::new();
@@ -704,6 +784,15 @@ impl World {
                     let b = bag_of(to);
                     if let Some(bag) = self.story.bags.get_mut(b) {
                         bag.give_with(name, description, traits);
+                        // A generous master cannot hand a low-level hero the best blade there is.
+                        for item in bag.inventory.iter_mut() {
+                            if let Some(index) = item.gear.clone() {
+                                let (base, better) = rules::gear(&index);
+                                if better > most_better {
+                                    item.gear = Some(format!("{base}+{most_better}"));
+                                }
+                            }
+                        }
                     }
                 }
                 Effect::Take { name, from } => {
@@ -787,7 +876,7 @@ impl World {
                     notes.extend(read_notes);
                     location.secrets.push(crate::model::Secret { x: sx, y: sy, dc: (*dc).clamp(5, 30) as i32, kind: kind.trim().to_lowercase(), note: note.trim().to_string(), effects, found: false });
                 }
-                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, count, contents, lock, key } => {
+                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, count, shop, contents, lock, key } => {
                     let mut id = slug(id);
                     if id.is_empty() {
                         id = "thing".to_string();
@@ -808,7 +897,7 @@ impl World {
                     if kind.trim().eq_ignore_ascii_case("creature") {
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
                         if let Some((cx, cy)) = nearest(wanted, free) {
-                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false });
+                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false });
                         }
                     } else {
                         let chest = (!contents.is_empty() || *lock > 0 || !key.trim().is_empty()).then(|| crate::model::Chest { items: contents.iter().filter_map(ThingDraft::item).collect(), lock: (*lock).clamp(0, 30) as i32, key: key.trim().to_string(), open: false });

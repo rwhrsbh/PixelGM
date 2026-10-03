@@ -32,6 +32,18 @@ impl Ability {
     }
 }
 
+/// A piece of gear and how much better than the book's it is: "longsword+1" is a longsword
+/// that hits and cuts one better; "chain-mail+2" turns blows two better.
+pub fn gear(index: &str) -> (&str, i32) {
+    match index.rsplit_once('+') {
+        Some((base, more)) => match more.parse::<i32>() {
+            Ok(better) => (base, better.clamp(0, 3)),
+            Err(_) => (index, 0),
+        },
+        None => (index, 0),
+    }
+}
+
 pub fn modifier(score: i32) -> i32 {
     (score - 10).div_euclid(2)
 }
@@ -407,8 +419,9 @@ impl Character {
     /// Armour class: armour and shield, or the unarmoured defence of barbarians and monks.
     pub fn ac(&self) -> i32 {
         let dex = self.modifier(Ability::Dex);
-        let body = match self.armor.as_deref().and_then(|a| srd().armors.get(a)) {
-            Some(armor) => armor.base + if armor.adds_dex { armor.max_dex.map_or(dex, |max| dex.min(max)) } else { 0 },
+        let (worn, better) = self.armor.as_deref().map_or(("", 0), gear);
+        let body = match srd().armors.get(worn) {
+            Some(armor) => better + armor.base + if armor.adds_dex { armor.max_dex.map_or(dex, |max| dex.min(max)) } else { 0 },
             None => match self.class.as_str() {
                 "barbarian" => 10 + dex + self.modifier(Ability::Con),
                 "monk" if !self.shield => 10 + dex + self.modifier(Ability::Wis),
@@ -474,12 +487,14 @@ impl Character {
     }
 
     pub fn attack_bonus(&self, weapon: &str) -> i32 {
-        srd().weapons.get(weapon).map_or(self.modifier(Ability::Str), |w| self.modifier(self.weapon_ability(w))) + self.proficiency()
+        let (weapon, better) = gear(weapon);
+        better + srd().weapons.get(weapon).map_or(self.modifier(Ability::Str), |w| self.modifier(self.weapon_ability(w))) + self.proficiency()
     }
 
     pub fn damage(&self, weapon: &str) -> Dice {
+        let (weapon, better) = gear(weapon);
         match srd().weapons.get(weapon) {
-            Some(w) => Dice { bonus: w.dice.bonus + self.modifier(self.weapon_ability(w)), ..w.dice },
+            Some(w) => Dice { bonus: better + w.dice.bonus + self.modifier(self.weapon_ability(w)), ..w.dice },
             // Bare hands.
             None => Dice::new(0, 0, 1 + self.modifier(Ability::Str)),
         }

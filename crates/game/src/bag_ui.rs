@@ -154,6 +154,10 @@ fn item_name(item: &Item, ru: bool) -> String {
 fn gear_lines(index: &str, lang: Lang) -> Vec<(String, Rgba)> {
     let data = rules::srd();
     let mut lines = Vec::new();
+    let (index, better) = rules::gear(index);
+    if better > 0 {
+        lines.push((format!("+{better} {}", T::BagBetter.text(lang)), BRASS_LIGHT));
+    }
     match gear_kind(index) {
         Some(Gear::Weapon) => {
             if let Some(w) = data.weapons.get(index) {
@@ -197,6 +201,16 @@ fn item_lines(item: &Item, lang: Lang) -> Vec<(String, Rgba)> {
     }
     if !item.description.trim().is_empty() {
         lines.push((item.description.trim().to_string(), PARCHMENT_SHADE));
+    }
+    match item.rarity.as_str() {
+        "uncommon" => lines.push((T::RarityUncommon.text(lang).to_string(), MOSS)),
+        "rare" => lines.push((T::RarityRare.text(lang).to_string(), [0x6a, 0xa0, 0xe0, 0xff])),
+        "legendary" => lines.push((T::RarityLegendary.text(lang).to_string(), FLAME)),
+        _ => {}
+    }
+    let worth = World::worth(item);
+    if worth > 0 {
+        lines.push((format!("{} {worth}", T::Price.text(lang)), PARCHMENT_SHADE));
     }
     lines.push((T::BagUseHint.text(lang).to_string(), FADED));
     lines
@@ -399,7 +413,7 @@ fn press(
     mut sound: MessageWriter<Play>,
     mut said: ResMut<Said>,
     lang: Res<Lang>,
-    (keyboard, mut use_for): (Res<ButtonInput<KeyCode>>, ResMut<crate::play::UseFor>),
+    (keyboard, mut use_for, shopping, mut deal): (Res<ButtonInput<KeyCode>>, ResMut<crate::play::UseFor>, Res<crate::shop_ui::Shopping>, ResMut<crate::shop_ui::Deal>),
 ) {
     if *phase != Phase::Bag {
         return;
@@ -417,6 +431,24 @@ fn press(
             && let Some(i) = game.world.story.bags.get(hero).and_then(|b| b.item_at((x, y)))
         {
             let name = bag(&game.world, hero)[i].name.clone();
+            // In a shop a right click sells.
+            if let Some(keeper) = shopping.0.clone() {
+                if session.is_client() {
+                    session.intend(Intent::Sell { keeper: keeper.clone(), index: i });
+                }
+                match game.world.sell(hero, &keeper, i) {
+                    Ok((sold, coins)) => {
+                        deal.0 = format!("{} {sold} (+{coins})", T::Sold.text(*lang));
+                        sound.write(Play(Sfx::Item));
+                    }
+                    Err(trouble) => {
+                        deal.0 = crate::shop_ui::trouble_words(trouble, *lang);
+                        sound.write(Play(Sfx::Error));
+                    }
+                }
+                state.built.clear();
+                return;
+            }
             // With Alt held the player says what the thing is used for: the field opens, and
             // what is typed goes to the master after "X uses Y:".
             if keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]) {

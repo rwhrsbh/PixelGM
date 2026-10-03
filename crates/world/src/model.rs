@@ -167,6 +167,20 @@ pub struct Creature {
     /// The pack has been counted out: the others of its kind already stand here.
     #[serde(default)]
     pub mustered: bool,
+    /// Everything a shopkeeper has to sell, as the master gave it; empty for anyone else.
+    #[serde(default)]
+    pub stock: Vec<crate::story::Item>,
+    /// What is laid out today.
+    #[serde(default)]
+    pub wares: Vec<crate::story::Item>,
+    /// The day the wares were laid out.
+    #[serde(default)]
+    pub shop_day: u32,
+    /// How haggling moved the prices today, in hundredths.
+    #[serde(default)]
+    pub haggle: i8,
+    #[serde(default)]
+    pub haggled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]

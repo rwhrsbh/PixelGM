@@ -98,6 +98,8 @@ pub struct CreatureDraft {
     pub stats: Option<Stats>,
     #[serde(deserialize_with = "lenient_int")]
     pub count: i64,
+    /// What a shopkeeper sells: things as in "give", each with a "price".
+    pub shop: Vec<crate::story::ThingDraft>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -321,6 +323,20 @@ fn add_tiles(drafts: &[TileDraft], assets: &mut Assets, notes: &mut Vec<String>)
     }
 }
 
+/// A shopkeeper's stock from what the master listed: at most thirty kinds, a few of each.
+pub(crate) fn stock_of(drafts: &[crate::story::ThingDraft]) -> Vec<crate::story::Item> {
+    drafts
+        .iter()
+        .filter_map(|d| d.item())
+        .take(30)
+        .map(|mut item| {
+            // What is used up comes by the handful; a blade or a coat is the only one.
+            item.count = if item.gear.is_some() { 1 } else { 3 };
+            item
+        })
+        .collect()
+}
+
 fn clamp_cell(x: i64, y: i64) -> Cell {
     (x.clamp(0, MAP_W as i64 - 1) as usize, y.clamp(0, MAP_H as i64 - 1) as usize)
 }
@@ -430,7 +446,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             "hostile" => Attitude::Hostile,
             _ => Attitude::Neutral,
         };
-        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone(), count: c.count.clamp(0, 8) as u8, mustered: false });
+        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone(), count: c.count.clamp(0, 8) as u8, mustered: false, stock: stock_of(&c.shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false });
     }
 
     let id = forced_id.map(str::to_string).unwrap_or_else(|| {

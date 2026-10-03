@@ -485,6 +485,8 @@ enum PlayAction {
     Chest(world::bag::Opening),
     /// Walk up to what a choice needs, then take it.
     Approach(usize),
+    /// See what the one being looked at has to sell.
+    Trade,
     /// Open the field for the party's own words.
     Own,
     Send,
@@ -1950,7 +1952,8 @@ enum Sheet {
     Judging(DraftView),
     Master(PanelView),
     /// `chest`: none for a thing that holds nothing; whether it is locked, for one that does.
-    Looking { name: String, description: String, actions: Vec<String>, chest: Option<bool> },
+    /// `shop`: whether it keeps a shop.
+    Looking { name: String, description: String, actions: Vec<String>, chest: Option<bool>, shop: bool },
     /// Whether there are other players to talk to.
     Writing { table: bool, about: String },
     Asking(String),
@@ -2087,7 +2090,7 @@ fn translated(sheet: Sheet, other_tongue: bool, translator: &mut Translator) -> 
     }
     let mut read = |text: &str| translator.read(true, text);
     match sheet {
-        Sheet::Looking { name, description, actions, chest } => Sheet::Looking { name: read(&name), description: read(&description), actions: actions.iter().map(|a| read(a)).collect(), chest },
+        Sheet::Looking { name, description, actions, chest, shop } => Sheet::Looking { name: read(&name), description: read(&description), actions: actions.iter().map(|a| read(a)).collect(), chest, shop },
         Sheet::Reading(turn) => Sheet::Reading(Turn {
             narration: read(&turn.narration),
             options: turn
@@ -2122,7 +2125,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
             match found {
                 Some((name, description, actions)) => {
                     let chest = here.props.iter().find(|p| &p.id == thing).and_then(|p| p.chest.as_ref()).filter(|c| !c.open || !c.items.is_empty()).map(|c| c.lock > 0 && !c.open);
-                    Sheet::Looking { name: name.clone(), description: description.clone(), actions: actions.iter().map(|a| a.label.clone()).collect(), chest }
+                    Sheet::Looking { name: name.clone(), description: description.clone(), actions: actions.iter().map(|a| a.label.clone()).collect(), chest, shop: world.keeps_shop(thing) }
                 }
                 None => Sheet::None,
             }
@@ -2396,7 +2399,7 @@ fn overlay(
                 button(sheet, &art, &fonts, T::Report, true, PlayAction::Report);
                 button(sheet, &art, &fonts, T::ToMainMenu, true, PlayAction::MainMenu);
             }
-            Sheet::Looking { name, description, actions, chest } => {
+            Sheet::Looking { name, description, actions, chest, shop } => {
                 sheet.spawn((Text::new(name.clone()), fonts.title(1), ink));
                 sheet.spawn((Text::new(description.clone()), fonts.body(), ink));
                 // A container: open it, and when it is locked, pick it or break it.
@@ -2413,6 +2416,9 @@ fn overlay(
                     crate::widgets::line_button(sheet, &fonts, format!("{}. {label}", n + 1), PlayAction::Do(n));
                 }
                 sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                    if *shop {
+                        button(line, &art, &fonts, T::Trade, true, PlayAction::Trade);
+                    }
                     button(line, &art, &fonts, T::OwnAction, true, PlayAction::Own);
                     button(line, &art, &fonts, T::Leave, true, PlayAction::Close);
                 });
@@ -2627,7 +2633,7 @@ fn on_activate(
     settings: Res<Settings>,
     master: Res<Master>,
     mut session: ResMut<Session>,
-    (mut table, mut approach, use_for): (ResMut<Table>, ResMut<Approach>, Res<UseFor>),
+    (mut table, mut approach, use_for, mut shopping): (ResMut<Table>, ResMut<Approach>, Res<UseFor>, ResMut<crate::shop_ui::Shopping>),
 ) {
     // This observer hears every button in the game; outside a game there is nothing to act on.
     let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
@@ -2811,6 +2817,11 @@ fn on_activate(
             if let Some(result) = game.world.open_chest(hero, &thing, how, &mut Rng::from_clock()) {
                 *phase = told(outcome_of(chest_words(&result, settings.lang)), Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table);
             }
+        }
+        (PlayAction::Trade, Phase::Looking { thing }) => {
+            game.world.restock(&thing);
+            shopping.0 = Some(thing);
+            *phase = Phase::Bag;
         }
         (PlayAction::Own, Phase::Looking { thing }) => *phase = Phase::Writing { near: Some(thing) },
         (PlayAction::Own, _) => *phase = Phase::Writing { near: None },
@@ -3136,6 +3147,31 @@ fn guests(
             Intent::Arrange { held, to } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     game.world.arrange(hero, &held, to);
+                }
+                None
+            }
+            Intent::Buy { keeper, ware } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    let home = enter_scene(&mut game, &mut table, &player);
+                    game.world.restock(&keeper);
+                    let _ = game.world.buy(hero, &keeper, ware);
+                    leave_scene(&mut game, &mut table, Some(home));
+                }
+                None
+            }
+            Intent::Sell { keeper, index } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    let home = enter_scene(&mut game, &mut table, &player);
+                    let _ = game.world.sell(hero, &keeper, index);
+                    leave_scene(&mut game, &mut table, Some(home));
+                }
+                None
+            }
+            Intent::Haggle { keeper } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    let home = enter_scene(&mut game, &mut table, &player);
+                    game.world.haggle(hero, &keeper, &mut Rng::from_clock());
+                    leave_scene(&mut game, &mut table, Some(home));
                 }
                 None
             }
