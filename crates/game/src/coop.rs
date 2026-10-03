@@ -55,6 +55,12 @@ pub enum Intent {
     Stunt { said: String, spell: Option<(String, u8)> },
     /// A thing moved in the bag, or put on or taken off a hero.
     Arrange { held: world::bag::Held, to: world::bag::Spot },
+    /// One of a thing in the bag used.
+    UseItem { index: usize },
+    /// One of a thing in the bag thrown on the ground of a cell.
+    Drop { index: usize, cell: (usize, usize) },
+    /// What lies on the ground picked up.
+    PickUp { n: usize },
 }
 
 /// What the player in the master's seat does. A guest sends it and the host checks who it

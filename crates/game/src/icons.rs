@@ -298,7 +298,7 @@ mod tests {
     use super::*;
 
     fn item(name: &str) -> Item {
-        Item { name: name.into(), description: String::new(), count: 1, gear: world::bag::gear_named(name), at: None }
+        Item { name: name.into(), description: String::new(), count: 1, gear: world::bag::gear_named(name), at: None, ..Default::default() }
     }
 
     #[test]

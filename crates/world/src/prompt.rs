@@ -13,8 +13,8 @@ const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "mons
 /// How the master changes the world. Shared by drawing (prepared actions) and by play.
 const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "remove", "id": "…"} — a prop or creature leaves the scene
-  {"op": "give", "name": "…", "description": "…"} — the party gains an item
-  {"op": "take", "name": "…"} — the party loses an item
+  {"op": "give", "name": "…", "description": "…", "kind": "weapon|armor|light|potion|food|throwable|key|tool|junk|quest", "size": [1, 2], "heal": "2d4+2", "damage": "1d6", "light": 4, "rows": ["…"]} — the party gains an item; all but name are optional: "size" is cells across and down in the bag (1 to 4), "heal" what drinking or eating it heals, "damage" what throwing it does, "light" how many cells it lights when held, "rows" your own picture of it, 16 pixels to a cell
+  {"op": "take", "name": "…"} — the party loses an item (used up, given away, broken)
   {"op": "describe", "id": "…", "description": "…"} — a thing looks different from now on
   {"op": "light", "light": "day|dusk|night|dark"} — time passes here: the hour and the light change
   {"op": "weather", "weather": "clear|sun|rain|storm|snow|fog"} — the sky over this place changes
@@ -33,7 +33,7 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "xp", "amount": 50} — for something achieved; rarely, and modestly
   {"op": "fight"} — the hostile creatures here attack; the game runs the fight by the rules
   {"op": "deed", "hero": "name"} — that character just did something out of the ordinary, clever or brave beyond what the moment asked; the game keeps count
-  {"op": "revive", "hero": "name"} — the story brings a dead character back; only when it has truly earned it
+  {"op": "revive", "hero": "name or a body's id"} — the story brings a dead character back; only when it has truly earned it
 Never roll dice yourself and never decide an uncertain outcome: that is what "check" is for. Nothing may follow a check in the same list except what should happen whichever way it goes.
 Use only ids that exist. Inside an action that belongs to a thing, the id "self" means that thing.
 SPACE. The party is somewhere on the map and can only touch, take, open, strike or speak softly with what is beside it. To deal with something farther off that can be reached, first "move" the party to a cell beside it, in the same answer, then do the rest. What cannot be reached on foot cannot be touched: say what is in the way. Only what the party carries can be used — no torch, rope or key that is not in their hands.
@@ -203,6 +203,9 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
             None => "cannot be reached on foot from here".to_string(),
         }
     };
+    for lying in &here.items {
+        let _ = writeln!(text, "- {} lies on the ground at ({}, {})", lying.item.name, lying.x, lying.y);
+    }
     let _ = writeln!(text, "WHAT IS WHERE FROM THE PARTY:");
     for prop in &here.props {
         let _ = writeln!(text, "- {} ({}): {}", prop.id, prop.name, walk((prop.x, prop.y)));
@@ -223,16 +226,21 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
         // Those who are here: a party that has split up is told about scene by scene.
         for hero in world.party.iter().enumerate().filter(|(i, _)| !world.is_away(*i) && world.hero_place(*i) == world.current).map(|(_, h)| h) {
             let state = if hero.dead { " (dead)".to_string() } else { format!(", {} of {} hit points", hero.hp, hero.max_hp) };
-            let gear = [hero.weapons.join(", "), hero.armor.clone().unwrap_or_default(), if hero.shield { "shield".to_string() } else { String::new() }].into_iter().filter(|g| !g.is_empty()).collect::<Vec<_>>().join("; ");
-            let _ = writeln!(text, "- {}, {} {} of level {}{state}. Trained in: {}. Carries: {gear}. {}", hero.name, hero.race, hero.class, hero.level, hero.skills.join(", "), hero.description);
+            let index = world.party.iter().position(|h| std::ptr::eq(h, hero)).unwrap_or(0);
+            let light = world.held_light(index).map(|l| format!("{} (lit, in hand)", l.name)).unwrap_or_default();
+            let bag: Vec<String> = world.story.bags.get(index).map(|b| b.inventory.iter().map(|i| if i.count > 1 { format!("{} x{}", i.name, i.count) } else { i.name.clone() }).collect()).unwrap_or_default();
+            let bag = if bag.is_empty() { "nothing".to_string() } else { bag.join(", ") };
+            let gear = [hero.weapons.join(", "), hero.armor.clone().unwrap_or_default(), if hero.shield { "shield".to_string() } else { String::new() }, light].into_iter().filter(|g| !g.is_empty()).collect::<Vec<_>>().join("; ");
+            let _ = writeln!(text, "- {}, {} {} of level {}{state}. Trained in: {}. Carries: {gear}. In the bag: {bag}. {}", hero.name, hero.race, hero.class, hero.level, hero.skills.join(", "), hero.description);
         }
     }
-    let _ = write!(text, "\nTHE PARTY CARRIES:");
-    if world.story.inventory.is_empty() {
-        let _ = write!(text, " nothing of note");
-    }
-    for item in &world.story.inventory {
-        let _ = write!(text, " {}{};", item.name, if item.count > 1 { format!(" x{}", item.count) } else { String::new() });
+    // With no heroes made yet, what was found so far waits in the first bag.
+    if world.party.is_empty()
+        && let Some(bag) = world.story.bags.first().filter(|b| !b.inventory.is_empty())
+    {
+        let things: Vec<String> = bag.inventory.iter().map(|i| i.name.clone()).collect();
+        let _ = write!(text, "
+THE PARTY CARRIES: {}", things.join(", "));
     }
     let lines = world.story.log.get(recent).unwrap_or(&[]);
     if !lines.is_empty() {
@@ -467,7 +475,7 @@ mod tests {
         assert!(text.contains("- prop fire at (") && text.contains("Campfire"));
         assert!(!text.contains("creature cat"), "the cat left");
         assert!(text.contains("- The well is dry.") && text.contains("CHAPTER 1: They arrived at dusk."));
-        assert!(text.contains("Cat hair;"));
+        assert!(text.contains("Cat hair"));
         assert!(text.contains("PARTY: Shoo it away") && text.contains("GM: The cat slips away"));
         assert!(text.contains("«I look under the roots»") && text.contains("next to \"fire\""));
         assert!(text.contains("- exit at (") && text.contains("The East Road"));

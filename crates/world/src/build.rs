@@ -364,7 +364,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             notes.push(format!("prop '{}' names sprite '{}', which was not drawn", p.id, p.sprite));
             sprite = MARKER_SPRITE.to_string();
         }
-        props.push(Prop { id: unique(slug(&p.id), &format!("prop_{n}"), &mut taken), name: p.name.trim().to_string(), description: p.description.trim().to_string(), x, y, blocking: p.blocking, sprite, actions: read_actions(&p.actions, &mut notes) });
+        props.push(Prop { id: unique(slug(&p.id), &format!("prop_{n}"), &mut taken), name: p.name.trim().to_string(), description: p.description.trim().to_string(), x, y, blocking: p.blocking, sprite, actions: read_actions(&p.actions, &mut notes), body: None });
     }
 
     let mut creatures: Vec<Creature> = Vec::new();
@@ -531,7 +531,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     let legend: BTreeMap<char, String> = symbol_of.iter().map(|(tile, symbol)| (*symbol, tile.to_string())).collect();
 
     let name = if draft.name.trim().is_empty() { id.clone() } else { draft.name.trim().to_string() };
-    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), marks: Vec::new(), seen: Vec::new() };
+    let location = Location { name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), marks: Vec::new(), seen: Vec::new(), items: Vec::new() };
     Ok(Built { id, location, stubs, notes })
 }
 
@@ -568,6 +568,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         cues: Vec::new(),
         cue_seq: 0,
         travel: None,
+        acting: None,
         title: fallback(&draft.title, &built.location.name),
         summary: draft.summary.trim().to_string(),
         tone: draft.tone.trim().to_string(),

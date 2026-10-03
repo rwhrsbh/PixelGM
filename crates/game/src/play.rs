@@ -121,6 +121,65 @@ struct SceneCache {
 #[derive(Component)]
 struct WalkGrid;
 
+/// Things gained and lost, a line each in the corner for a few seconds.
+#[derive(Component)]
+struct FeedLine(f32);
+
+fn feed(mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut seen: Local<Option<std::collections::BTreeMap<String, i64>>>, mut lines: Query<(Entity, &mut FeedLine, &mut TextColor, &mut Node)>) {
+    let me = player_name(&settings);
+    let hero = my_hero(&game.world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
+    let now: std::collections::BTreeMap<String, i64> = game.world.story.bags.get(hero).map(|b| {
+        let mut counts = std::collections::BTreeMap::new();
+        for item in &b.inventory {
+            *counts.entry(item.name.clone()).or_insert(0) += item.count as i64;
+        }
+        counts
+    }).unwrap_or_default();
+    if let Some(before) = seen.as_ref() {
+        let mut changes: Vec<(String, i64)> = Vec::new();
+        for (name, n) in &now {
+            let was = before.get(name).copied().unwrap_or(0);
+            if *n != was {
+                changes.push((name.clone(), n - was));
+            }
+        }
+        for (name, was) in before {
+            if !now.contains_key(name) {
+                changes.push((name.clone(), -was));
+            }
+        }
+        for (n, (name, delta)) in changes.into_iter().enumerate() {
+            let (sign, tint) = if delta > 0 { ("+", Color::srgb(0.55, 0.9, 0.5)) } else { ("−", Color::srgb(0.95, 0.5, 0.4)) };
+            let count = if delta.abs() > 1 { format!(" ×{}", delta.abs()) } else { String::new() };
+            commands.spawn((
+                DespawnOnExit(Screen::Play),
+                FeedLine(-(n as f32) * 0.15),
+                Node { position_type: PositionType::Absolute, right: px(6), bottom: px(HUD_HEIGHT + 6.0), padding: UiRect::axes(px(4), px(1)), ..default() },
+                BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.8)),
+                Text::new(format!("{sign} {name}{count}")),
+                fonts.body(),
+                TextColor(tint),
+                GlobalZIndex(9),
+            ));
+        }
+    }
+    *seen = Some(now);
+    // The newest at the bottom; each rises and fades.
+    let mut all: Vec<_> = lines.iter_mut().collect();
+    all.sort_by(|a, b| a.1.0.total_cmp(&b.1.0));
+    let count = all.len();
+    for (rank, (entity, mut line, mut tint, mut node)) in all.into_iter().enumerate() {
+        line.0 += time.delta_secs();
+        if line.0 > 4.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        node.bottom = px(HUD_HEIGHT + 6.0 + (count - 1 - rank) as f32 * 12.0);
+        let fade = (4.0 - line.0).clamp(0.0, 1.0);
+        tint.0 = tint.0.with_alpha(fade);
+    }
+}
+
 /// The arrow over a way out, bobbing towards where it leads.
 #[derive(Component)]
 struct ExitMarker {
@@ -178,8 +237,8 @@ fn roofs(time: Res<Time>, game: Res<Game>, cache: Res<SceneCache>, mut roofs: Qu
 struct Dolls(std::collections::HashMap<String, Vec<Handle<Image>>>);
 
 impl Dolls {
-    fn of(&mut self, hero: &rules::Character, images: &mut Assets<Image>) -> Vec<Handle<Image>> {
-        self.0.entry(crate::doll::key(hero)).or_insert_with(|| crate::doll::frames(hero).into_iter().map(|frame| images.add(frame.into_image())).collect()).clone()
+    fn of(&mut self, hero: &rules::Character, light: bool, images: &mut Assets<Image>) -> Vec<Handle<Image>> {
+        self.0.entry(format!("{}|{light}", crate::doll::key(hero))).or_insert_with(|| crate::doll::frames_holding(hero, light).into_iter().map(|frame| images.add(frame.into_image())).collect()).clone()
     }
 }
 
@@ -612,6 +671,13 @@ fn draw(
     // Under the dark, so that the grid of a place not yet explored is not given away.
     commands.spawn((InLocation, WalkGrid, Sprite { color: Color::NONE, ..Sprite::from_image(cache.grid.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.58))));
 
+    // What lies on the ground, small, with a shadow.
+    for lying in &here.items {
+        let image = images.add(crate::icons::icon(&lying.item).into_image());
+        let (x, y) = ((lying.x as f32 + 0.5) * TILE as f32, (lying.y as f32 + 0.8) * TILE as f32);
+        let glow = if lying.item.light > 0 { Color::linear_rgb(1.8, 1.5, 1.2) } else { Color::WHITE };
+        commands.spawn((InLocation, Sprite { color: glow, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(x, y).extend(0.95)).with_scale(Vec3::splat(1.0))));
+    }
     // Every way out is marked: a glowing arrow pointing where it leads, and where to. A way
     // two cells wide is named once.
     let mut named: Vec<String> = Vec::new();
@@ -657,9 +723,16 @@ fn draw(
     for prop in &here.props {
         let (x, y) = foot(prop.x, prop.y);
         if let Some(image) = picture(&prop.sprite) {
-            // What burns is drawn brighter than white, so that it glows.
-            let glow = if crate::scene::is_lamp(prop) { Color::linear_rgb(1.9, 1.6, 1.25) } else { Color::WHITE };
-            commands.spawn((InLocation, Sprite { color: glow, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(x, y).extend(depth(y)))));
+            // What burns is drawn brighter than white, so that it glows; a body lies on its side, grey.
+            let (glow, turned) = if prop.body.is_some() {
+                (Color::srgb(0.55, 0.5, 0.5), Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
+            } else if crate::scene::is_lamp(prop) {
+                (Color::linear_rgb(1.9, 1.6, 1.25), Quat::IDENTITY)
+            } else {
+                (Color::WHITE, Quat::IDENTITY)
+            };
+            let at = on_screen(x, y).extend(if prop.body.is_some() { 0.9 } else { depth(y) });
+            commands.spawn((InLocation, Sprite { color: glow, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(at).with_rotation(turned)));
         }
     }
     for (n, creature) in here.creatures.iter().enumerate() {
@@ -677,7 +750,7 @@ fn draw(
                 .with_children(|me| shadow_under(me, &cache.shadow));
         }
     }
-    let frames_of = |index: Option<usize>, dolls: &mut Dolls, images: &mut Assets<Image>| index.and_then(|i| world.party.get(i)).map(|hero| dolls.of(hero, images));
+    let frames_of = |index: Option<usize>, dolls: &mut Dolls, images: &mut Assets<Image>| index.and_then(|i| world.party.get(i).map(|hero| dolls.of(hero, world.held_light(i).is_some(), images)));
     match world.fight.as_ref().filter(|_| world.fight_here()) {
         // In a fight every hero stands in a cell of its own; the fallen are darkened.
         Some(fight) => {
@@ -832,11 +905,18 @@ fn lighting(time: Res<Time>, mut game: ResMut<Game>, settings: Res<Settings>, ca
     }
     let game = &*game;
     let mut lights = cache.lamps.clone();
-    let carried = if hour.dark >= 0.5 { 3.4 } else { 2.4 };
+    let carried: f32 = if hour.dark >= 0.5 { 3.4 } else { 2.4 };
     let world = &game.world;
-    lights.push(crate::scene::Lamp { x: world.player.x, y: world.player.y, reach: carried });
+    // A torch in hand lights much farther than eyes used to the dark: one's own, and each
+    // fellow's by their token.
+    let torch = |player: &str| world.owners.iter().position(|o| o == player).or_else(|| world.owners.is_empty().then_some(0)).and_then(|i| world.held_light(i)).map_or(0.0, |l| l.light as f32 + 1.0);
+    let me = player_name(&settings);
+    lights.push(crate::scene::Lamp { x: world.player.x, y: world.player.y, reach: carried.max(torch(&me)) });
+    for lying in world.here().items.iter().filter(|l| l.item.light > 0) {
+        lights.push(crate::scene::Lamp { x: (lying.x as f32 + 0.5) * TILE as f32, y: (lying.y as f32 + 0.5) * TILE as f32, reach: lying.item.light as f32 });
+    }
     for token in world.tokens_here() {
-        lights.push(crate::scene::Lamp { x: token.x, y: token.y, reach: carried });
+        lights.push(crate::scene::Lamp { x: token.x, y: token.y, reach: carried.max(torch(&token.name)) });
     }
     if let Some(fight) = world.fight.as_ref().filter(|_| world.fight_here()) {
         let tile = TILE as f32;
@@ -876,6 +956,42 @@ fn cues(mut background: ResMut<Background>, mut fx: ResMut<Fx>, game: Res<Game>)
 #[derive(Resource, Default)]
 struct Leave(Option<String>);
 
+/// Something on the ground the player asked to pick up with E.
+#[derive(Resource, Default)]
+struct Pick(Option<usize>);
+
+/// Picks up what was asked for, and sends to the master what a use of a thing put into words.
+#[allow(clippy::too_many_arguments)]
+fn bag_work(
+    mut pick: ResMut<Pick>,
+    mut said: ResMut<crate::bag_ui::Said>,
+    mut game: ResMut<Game>,
+    mut phase: ResMut<Phase>,
+    mut redraw: ResMut<Redraw>,
+    session: Res<Session>,
+    settings: Res<Settings>,
+    store: Res<Store>,
+    gm: Res<Gm>,
+    master: Res<Master>,
+    table: Res<Table>,
+) {
+    let me = player_name(&settings);
+    let hero = my_hero(&game.world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
+    if let Some(n) = pick.0.take() {
+        if session.is_client() {
+            session.intend(Intent::PickUp { n });
+        }
+        if game.world.pick_up(hero, n) {
+            redraw.0 = true;
+        }
+    }
+    if *phase == Phase::Walking
+        && let Some(words) = said.0.take()
+    {
+        *phase = send(words, None, &game, &gm, &store, &settings, &master, &session, &table);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>, session: Res<Session>, mut table: ResMut<Table>, mut leave: ResMut<Leave>) {
     // Orders from a test script, whatever the screen shows.
@@ -907,12 +1023,13 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
             // `give=Name` puts a thing in the bag, the way the master would.
             "give" => {
                 let name = order.split_once('=').map_or("", |(_, n)| n).to_string();
-                world.apply(&[world::Effect::Give { name, description: "Given by a test.".into() }], None);
+                world.apply(&[world::Effect::Give { name, description: "Given by a test.".into(), to: String::new(), traits: Default::default() }], None);
             }
             _ => {}
         }
     }
-    if *phase != Phase::Walking {
+    // With the bag open the hero still walks, as in the old games.
+    if *phase != Phase::Walking && *phase != Phase::Bag {
         pose.moving = false;
         return;
     }
@@ -999,7 +1116,7 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
 /// also closes whatever sheet is open.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Res<Game>, mut phase: ResMut<Phase>, mut was_walking: Local<bool>, mut table: ResMut<Table>, settings: Res<Settings>, session: Res<Session>, store: Res<Store>, mut leave: ResMut<Leave>) {
+fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Res<Game>, mut phase: ResMut<Phase>, mut was_walking: Local<bool>, mut table: ResMut<Table>, settings: Res<Settings>, session: Res<Session>, store: Res<Store>, mut leave: ResMut<Leave>, mut pick: ResMut<Pick>) {
     let pad = |button: GamepadButton| gamepads.iter().any(|pad| pad.just_pressed(button));
     // The draft went away while its sheet was open (judged, or the seat changed hands).
     if *phase == Phase::Judging && table.judging.is_none() {
@@ -1027,6 +1144,11 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
         return;
     }
     if keyboard.any_just_pressed([KeyCode::KeyE, KeyCode::Enter, KeyCode::NumpadEnter]) || pad(GamepadButton::South) {
+        // Something lying at the party's feet is picked up first.
+        if let Some(n) = game.world.lying_near() {
+            pick.0 = Some(n);
+            return;
+        }
         // A thing to hand comes first, then a way out close by, then the party's own words.
         match (game.world.thing_near(THING_REACH), game.world.exit_near(EXIT_HINT_REACH)) {
             (Some(thing), _) => *phase = Phase::Looking { thing: thing.to_string() },
@@ -1342,6 +1464,8 @@ fn receive(
                         }
                     }
                     Ok(draft) => {
+                        let acting_player = scene.clone().unwrap_or_else(|| player_name(&settings));
+                        desk.game.world.acting = desk.game.world.owners.iter().position(|o| *o == acting_player).or_else(|| my_hero(&desk.game.world, &acting_player, matches!(*desk.session, Session::Solo)));
                         let home = scene.as_deref().map(|player| enter_scene(desk.game, desk.table, player));
                         finish(&mut desk, &said, &draft);
                         leave_scene(desk.game, desk.table, home);
@@ -1501,8 +1625,10 @@ fn hud(
     }
     toast.left = (toast.left - time.delta_secs()).max(0.0);
     let thing_name = world.thing_near(THING_REACH).and_then(|id| here.props.iter().map(|p| (&p.id, &p.name)).chain(here.creatures.iter().map(|c| (&c.id, &c.name))).find(|(i, _)| i.as_str() == id).map(|(_, name)| name.clone()));
+    let lying = world.lying_near().and_then(|n| here.items.get(n)).map(|l| l.item.name.clone());
     let hint = match (toast.text.filter(|_| toast.left > 0.0), thing_name, world.exit_near(EXIT_HINT_REACH)) {
         (Some(said), _, _) => said.text(*lang).to_string(),
+        (None, _, _) if lying.is_some() => format!("E: {} {}", T::PickUp.text(*lang), lying.unwrap_or_default()),
         (None, Some(name), _) => format!("E: {}", read(&name)),
         (None, None, Some(exit)) if exit.label.is_empty() => format!("E: → {}", read(world.place_name(&exit.to))),
         (None, None, Some(exit)) => format!("E: {} → {}", read(&exit.label), read(world.place_name(&exit.to))),
@@ -1714,7 +1840,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
         Phase::Reading { turn } => if extra.folded { Sheet::Folded } else { Sheet::Reading(turn.clone()) },
         Phase::Refused { trouble, .. } => Sheet::Refused(trouble_text(trouble, now, lang)),
         Phase::Journal => {
-            let carried = world.story.inventory.iter().map(|i| if i.count > 1 { format!("{} ×{}", i.name, i.count) } else { i.name.clone() }).collect::<Vec<_>>().join(", ");
+            let carried = world.story.bags.iter().flat_map(|b| b.inventory.iter()).chain(world.story.inventory.iter()).map(|i| if i.count > 1 { format!("{} ×{}", i.name, i.count) } else { i.name.clone() }).collect::<Vec<_>>().join(", ");
             let skip = world.story.log.len().saturating_sub(JOURNAL_LINES);
             Sheet::Journal { carried, lines: world.story.log.iter().skip(skip).map(|l| (l.speaker, l.text.clone())).collect() }
         }
@@ -2438,16 +2564,34 @@ fn guests(
                 }
                 None
             }
+            // Each player's bag is their own hero's.
             Intent::Arrange { held, to } => {
-                // The bag is everyone's; what a hero wears is its player's to change.
-                let heroes = |h: &usize| game.world.owners.get(*h).is_some_and(|o| *o == player);
-                let allowed = match (&held, to) {
-                    (world::bag::Held::Worn(h, _), _) if !heroes(h) => false,
-                    (_, world::bag::Spot::Worn(h, _)) if !heroes(&h) => false,
-                    _ => true,
-                };
-                if allowed {
-                    game.world.arrange(&held, to);
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    game.world.arrange(hero, &held, to);
+                }
+                None
+            }
+            Intent::UseItem { index } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    game.world.use_item(hero, index, &mut Rng::from_clock());
+                }
+                None
+            }
+            Intent::Drop { index, cell } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    let home = enter_scene(&mut game, &mut table, &player);
+                    game.world.drop_item(hero, index, cell);
+                    leave_scene(&mut game, &mut table, Some(home));
+                    redraw.0 = true;
+                }
+                None
+            }
+            Intent::PickUp { n } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    let home = enter_scene(&mut game, &mut table, &player);
+                    game.world.pick_up(hero, n);
+                    leave_scene(&mut game, &mut table, Some(home));
+                    redraw.0 = true;
                 }
                 None
             }
@@ -2860,6 +3004,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<SceneCache>()
             .init_resource::<Folded>()
             .init_resource::<Leave>()
+            .init_resource::<Pick>()
             .add_observer(on_fold)
             .init_resource::<Dolls>()
             .init_resource::<Background>()
@@ -2870,7 +3015,7 @@ impl Plugin for PlayPlugin {
                 Update,
                 (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
-            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
             .add_observer(on_master_activate);
     }

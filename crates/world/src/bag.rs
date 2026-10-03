@@ -4,12 +4,12 @@
 //! hero, and what a hero wears can be taken off into the bag.
 
 use crate::model::World;
-use crate::story::{Item, Story};
+use crate::story::{Bag, Item};
 use rules::{Character, srd, tr};
 use serde::{Deserialize, Serialize};
 
 pub const BAG_W: u8 = 12;
-pub const BAG_H: u8 = 10;
+pub const BAG_H: u8 = 8;
 
 /// Where on a hero a thing is worn.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -98,6 +98,9 @@ const WORDS_1X3: [&str; 6] = ["sword", "club", "меч", "дубин", "посо
 impl Item {
     /// How many cells across and down the thing takes.
     pub fn size(&self) -> (u8, u8) {
+        if let Some(size) = self.size_cells {
+            return size;
+        }
         if let Some(index) = &self.gear {
             return gear_size(index);
         }
@@ -147,7 +150,7 @@ fn covers(at: (u8, u8), size: (u8, u8), cell: (u8, u8)) -> bool {
     cell.0 >= at.0 && cell.0 < at.0 + size.0 && cell.1 >= at.1 && cell.1 < at.1 + size.1
 }
 
-impl Story {
+impl Bag {
     /// Whether a thing of `size` fits at `at`, leaving out the item `ignore`.
     pub fn fits(&self, size: (u8, u8), at: (u8, u8), ignore: Option<usize>) -> bool {
         if at.0 + size.0 > BAG_W || at.1 + size.1 > BAG_H {
@@ -165,6 +168,22 @@ impl Story {
     /// The first place a thing of `size` fits, down each column from the left.
     pub fn free_spot(&self, size: (u8, u8), ignore: Option<usize>) -> Option<(u8, u8)> {
         (0..BAG_W).flat_map(|x| (0..BAG_H).map(move |y| (x, y))).find(|at| self.fits(size, *at, ignore))
+    }
+
+    /// The things that lie, wholly or partly, where a thing of `size` would go.
+    pub fn overlapped(&self, size: (u8, u8), at: (u8, u8), ignore: Option<usize>) -> Vec<usize> {
+        self.inventory
+            .iter()
+            .enumerate()
+            .filter(|(i, other)| {
+                Some(*i) != ignore
+                    && other.at.is_some_and(|o| {
+                        let s = other.size();
+                        at.0 < o.0 + s.0 && o.0 < at.0 + size.0 && at.1 < o.1 + s.1 && o.1 < at.1 + size.1
+                    })
+            })
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// The item lying on a cell of the bag.
@@ -186,10 +205,102 @@ impl Story {
 
     /// A piece of gear into the bag, where it fits or beside it.
     pub fn stow(&mut self, index: &str) {
-        let item = Item { name: gear_name(index, false), description: String::new(), count: 1, gear: Some(index.to_string()), at: None };
+        let item = Item { name: gear_name(index, false), description: String::new(), count: 1, gear: Some(index.to_string()), at: None, ..Default::default() };
         self.inventory.push(item);
         let last = self.inventory.len() - 1;
         self.inventory[last].at = self.free_spot(self.inventory[last].size(), Some(last));
+    }
+}
+
+impl World {
+    /// The light a hero holds, if any.
+    pub fn held_light(&self, hero: usize) -> Option<&Item> {
+        self.story.bags.get(hero)?.held.as_ref()
+    }
+
+    /// Every hero has a bag; what a save from before bags were each hero's own carried goes
+    /// into the first one.
+    pub fn ensure_bags(&mut self) {
+        let wanted = self.party.len().max(1);
+        if self.story.bags.len() < wanted {
+            self.story.bags.resize_with(wanted, Bag::default);
+        }
+        if !self.story.inventory.is_empty() {
+            let old = std::mem::take(&mut self.story.inventory);
+            self.story.bags[0].inventory.extend(old);
+            self.story.bags[0].pack();
+        }
+    }
+}
+
+/// What using a thing came to.
+#[derive(Debug, PartialEq)]
+pub enum Used {
+    /// It healed a hero by this much, and one of it is gone.
+    Healed(i32),
+    /// The game has no rule for it: the master decides what happens.
+    Ask,
+}
+
+impl World {
+    /// Uses one of a thing from the bag on a hero. Something that heals heals by its dice;
+    /// anything else is the master's to tell.
+    pub fn use_item(&mut self, hero: usize, i: usize, rng: &mut rules::Rng) -> Used {
+        self.ensure_bags();
+        let Some(item) = self.story.bags.get(hero).and_then(|b| b.inventory.get(i)) else { return Used::Ask };
+        let Some(dice) = rules::Dice::parse(&item.heal, 0).filter(|_| !item.heal.trim().is_empty()) else { return Used::Ask };
+        let Some(target) = self.party.get_mut(hero) else { return Used::Ask };
+        let before = target.hp;
+        target.hp = (target.hp + dice.roll(rng).max(1)).min(target.max_hp);
+        let healed = target.hp - before;
+        let bag = &mut self.story.bags[hero].inventory;
+        if bag[i].count > 1 {
+            bag[i].count -= 1;
+        } else {
+            bag.remove(i);
+        }
+        Used::Healed(healed)
+    }
+
+    /// Lays one of a thing from the bag on the ground of a cell of this place.
+    pub fn drop_item(&mut self, hero: usize, i: usize, cell: (usize, usize)) -> bool {
+        self.ensure_bags();
+        let Some(bag) = self.story.bags.get_mut(hero) else { return false };
+        let Some(item) = bag.inventory.get(i) else { return false };
+        let mut one = item.clone();
+        one.count = 1;
+        one.at = None;
+        if item.count > 1 {
+            bag.inventory[i].count -= 1;
+        } else {
+            bag.inventory.remove(i);
+        }
+        let here = self.current.clone();
+        let Some(place) = self.locations.get_mut(&here) else { return false };
+        place.items.push(crate::model::Lying { x: cell.0, y: cell.1, item: one });
+        true
+    }
+
+    /// Picks up what lies on the ground, by its place in the list.
+    pub fn pick_up(&mut self, hero: usize, n: usize) -> bool {
+        self.ensure_bags();
+        let here = self.current.clone();
+        let Some(place) = self.locations.get_mut(&here) else { return false };
+        if n >= place.items.len() {
+            return false;
+        }
+        let lying = place.items.remove(n);
+        match self.story.bags.get_mut(hero) {
+            Some(bag) => bag.receive(lying.item),
+            None => return false,
+        }
+        true
+    }
+
+    /// What lies on the ground within a cell of the party, nearest first.
+    pub fn lying_near(&self) -> Option<usize> {
+        let (x, y) = self.player.cell();
+        self.here().items.iter().enumerate().filter(|(_, l)| (l.x as i32 - x).abs() <= 1 && (l.y as i32 - y).abs() <= 1).min_by_key(|(_, l)| (l.x as i32 - x).abs() + (l.y as i32 - y).abs()).map(|(n, _)| n)
     }
 }
 
@@ -241,54 +352,129 @@ impl World {
     /// Moves a thing from where it was picked up to where it is put. Nothing changes when the
     /// move cannot be made: a thing that does not fit, gear that does not go in that slot.
     /// A thing put where another is worn swaps with it.
-    pub fn arrange(&mut self, held: &Held, to: Spot) -> bool {
+    pub fn arrange(&mut self, bag: usize, held: &Held, to: Spot) -> bool {
+        self.ensure_bags();
+        // Only one's own gear goes in and out of one's own bag.
+        let own = |h: usize| h == bag;
+        if matches!(held, Held::Worn(h, _) if !own(*h)) || matches!(to, Spot::Worn(h, _) if !own(h)) || bag >= self.story.bags.len() {
+            return false;
+        }
+        let party = &mut self.party;
+        let story = &mut self.story.bags[bag];
+        arrange_in(party, story, held, to)
+    }
+
+    /// Heroes carry two weapons in reach; what else they started with goes into their bag.
+    pub fn tidy_gear(&mut self) {
+        self.ensure_bags();
+        for h in 0..self.party.len() {
+            while self.party[h].weapons.len() > 2 {
+                let extra = self.party[h].weapons.remove(2);
+                self.story.bags[h].stow(&extra);
+            }
+            self.story.bags[h].pack();
+        }
+    }
+}
+
+fn arrange_in(party: &mut [Character], story: &mut Bag, held: &Held, to: Spot) -> bool {
+    {
         match (held.clone(), to) {
             (Held::Item(i), Spot::Bag(x, y)) => {
-                let Some(item) = self.story.inventory.get(i) else { return false };
-                if !self.story.fits(item.size(), (x, y), Some(i)) {
+                let Some(item) = story.inventory.get(i) else { return false };
+                let size = item.size();
+                if x + size.0 > BAG_W || y + size.1 > BAG_H {
                     return false;
                 }
-                self.story.inventory[i].at = Some((x, y));
+                // Put down on one other thing, it takes that one's place, which is lifted out.
+                match story.overlapped(size, (x, y), Some(i)).as_slice() {
+                    [] => {}
+                    [other] => story.inventory[*other].at = None,
+                    _ => return false,
+                }
+                story.inventory[i].at = Some((x, y));
+                true
+            }
+            (Held::Item(i), Spot::Worn(h, Slot::Shield)) if story.inventory.get(i).is_some_and(|item| item.light > 0) && h < party.len() => {
+                // A torch or a lamp is carried in the hand a shield would be.
+                let before = story.inventory[i].at;
+                let mut item = story.inventory.remove(i);
+                if item.count > 1 {
+                    let mut rest = item.clone();
+                    rest.count -= 1;
+                    story.inventory.insert(i, rest);
+                    item.count = 1;
+                }
+                item.at = None;
+                if party[h].shield {
+                    party[h].shield = false;
+                    story.stow("shield");
+                }
+                if let Some(mut old) = story.held.take() {
+                    old.at = before.filter(|spot| story.fits(old.size(), *spot, None));
+                    story.inventory.push(old);
+                }
+                story.held = Some(item);
+                story.pack();
                 true
             }
             (Held::Item(i), Spot::Worn(h, slot)) => {
-                let Some(index) = self.story.inventory.get(i).and_then(|item| item.gear.clone()) else { return false };
-                let Some(hero) = self.party.get_mut(h) else { return false };
+                let Some(index) = story.inventory.get(i).and_then(|item| item.gear.clone()) else { return false };
+                let Some(hero) = party.get_mut(h) else { return false };
                 let mut trial = hero.clone();
                 let old = take_off(&mut trial, slot);
                 if !may_wear(&trial, slot, &index) {
                     return false;
                 }
                 // What was worn goes where the new thing lay, or wherever it fits.
-                let had = self.story.inventory.remove(i);
+                let had = story.inventory.remove(i);
                 if let Some(old) = &old {
-                    self.story.stow(old);
-                    let last = self.story.inventory.len() - 1;
+                    story.stow(old);
+                    let last = story.inventory.len() - 1;
                     if let Some(at) = had.at
-                        && self.story.fits(gear_size(old), at, Some(last))
+                        && story.fits(gear_size(old), at, Some(last))
                     {
-                        self.story.inventory[last].at = Some(at);
+                        story.inventory[last].at = Some(at);
                     }
                 }
                 put_on(&mut trial, slot, index);
-                *self.party.get_mut(h).expect("checked above") = trial;
+                *party.get_mut(h).expect("checked above") = trial;
+                true
+            }
+            (Held::Worn(h, slot), Spot::Bag(x, y)) if slot == Slot::Shield && story.held.is_some() => {
+                // A light taken out of the hand goes back into the bag.
+                let _ = h;
+                let size = story.held.as_ref().map_or((1, 1), Item::size);
+                if x + size.0 > BAG_W || y + size.1 > BAG_H || story.overlapped(size, (x, y), None).len() > 1 {
+                    return false;
+                }
+                if let Some(other) = story.overlapped(size, (x, y), None).first() {
+                    story.inventory[*other].at = None;
+                }
+                let Some(mut item) = story.held.take() else { return false };
+                item.at = Some((x, y));
+                story.inventory.push(item);
                 true
             }
             (Held::Worn(h, slot), Spot::Bag(x, y)) => {
-                let Some(index) = self.party.get(h).and_then(|hero| worn(hero, slot)) else { return false };
-                if !self.story.fits(gear_size(&index), (x, y), None) {
+                let Some(index) = party.get(h).and_then(|hero| worn(hero, slot)) else { return false };
+                let size = gear_size(&index);
+                if x + size.0 > BAG_W || y + size.1 > BAG_H {
                     return false;
                 }
-                let hero = self.party.get_mut(h).expect("checked above");
+                match story.overlapped(size, (x, y), None).as_slice() {
+                    [] => {}
+                    [other] => story.inventory[*other].at = None,
+                    _ => return false,
+                }
+                let hero = party.get_mut(h).expect("checked above");
                 take_off(hero, slot);
-                self.story.stow(&index);
-                let last = self.story.inventory.len() - 1;
-                self.story.inventory[last].at = Some((x, y));
+                story.inventory.push(Item { name: gear_name(&index, false), count: 1, gear: Some(index.clone()), at: Some((x, y)), ..Default::default() });
                 true
             }
             (Held::Worn(h, from), Spot::Worn(to_hero, to)) if h == to_hero => {
                 // Between the two weapon slots the weapons change places.
-                let Some(hero) = self.party.get_mut(h) else { return false };
+                let Some(hero) = party.get_mut(h) else { return false };
                 if matches!((from, to), (Slot::Main, Slot::Spare) | (Slot::Spare, Slot::Main)) && hero.weapons.len() > 1 {
                     hero.weapons.swap(0, 1);
                     return true;
@@ -299,16 +485,6 @@ impl World {
         }
     }
 
-    /// Heroes carry two weapons in reach; what else they started with goes into the bag.
-    pub fn tidy_gear(&mut self) {
-        for h in 0..self.party.len() {
-            while self.party[h].weapons.len() > 2 {
-                let extra = self.party[h].weapons.remove(2);
-                self.story.stow(&extra);
-            }
-        }
-        self.story.pack();
-    }
 }
 
 #[cfg(test)]
@@ -321,11 +497,12 @@ mod tests {
         let fighter = srd().class("fighter").unwrap();
         let skills: Vec<String> = fighter.skill_options.iter().take(fighter.skill_picks).cloned().collect();
         w.party.push(Character::create("Ann", "", "human", "fighter", [15, 14, 13, 12, 10, 8], &skills, &[]).unwrap());
+        w.ensure_bags();
         w
     }
 
     fn named(name: &str) -> Item {
-        Item { name: name.into(), description: String::new(), count: 1, gear: gear_named(name), at: None }
+        Item { name: name.into(), description: String::new(), count: 1, gear: gear_named(name), at: None, ..Default::default() }
     }
 
     #[test]
@@ -349,14 +526,14 @@ mod tests {
     fn things_given_fill_the_bag_down_each_column_and_never_overlap() {
         let mut w = world();
         for name in ["Longsword", "Ash ring", "Chain mail", "Old map", "Shield"] {
-            w.story.inventory.push(named(name));
+            w.story.bags[0].inventory.push(named(name));
         }
-        w.story.pack();
-        let at: Vec<_> = w.story.inventory.iter().map(|i| i.at.unwrap()).collect();
-        assert_eq!(at, [(0, 0), (0, 3), (0, 4), (0, 7), (1, 0)]);
+        w.story.bags[0].pack();
+        let at: Vec<_> = w.story.bags[0].inventory.iter().map(|i| i.at.unwrap()).collect();
+        assert_eq!(at, [(0, 0), (0, 3), (0, 4), (1, 0), (1, 2)]);
         for x in 0..BAG_W {
             for y in 0..BAG_H {
-                let on = w.story.inventory.iter().filter(|i| covers(i.at.unwrap(), i.size(), (x, y))).count();
+                let on = w.story.bags[0].inventory.iter().filter(|i| covers(i.at.unwrap(), i.size(), (x, y))).count();
                 assert!(on <= 1, "two things on {x},{y}");
             }
         }
@@ -365,12 +542,11 @@ mod tests {
     #[test]
     fn a_thing_moves_only_where_it_fits() {
         let mut w = world();
-        w.story.inventory = vec![named("Longsword"), named("Ash ring")];
-        w.story.pack();
-        assert!(!w.arrange(&Held::Item(1), Spot::Bag(0, 2)), "on the sword");
-        assert!(!w.arrange(&Held::Item(0), Spot::Bag(11, BAG_H - 2)), "past the bottom");
-        assert!(w.arrange(&Held::Item(0), Spot::Bag(11, BAG_H - 3)));
-        assert_eq!(w.story.item_at((11, BAG_H - 1)), Some(0));
+        w.story.bags[0].inventory = vec![named("Longsword"), named("Ash ring")];
+        w.story.bags[0].pack();
+        assert!(!w.arrange(0, &Held::Item(0), Spot::Bag(11, BAG_H - 2)), "past the bottom");
+        assert!(w.arrange(0, &Held::Item(0), Spot::Bag(11, BAG_H - 3)));
+        assert_eq!(w.story.bags[0].item_at((11, BAG_H - 1)), Some(0));
     }
 
     #[test]
@@ -378,27 +554,27 @@ mod tests {
         let mut w = world();
         let before = w.party[0].ac();
         assert_eq!(w.party[0].armor.as_deref(), Some("chain-mail"));
-        w.story.inventory = vec![named("Leather armor")];
-        w.story.pack();
-        assert!(w.arrange(&Held::Item(0), Spot::Worn(0, Slot::Body)));
+        w.story.bags[0].inventory = vec![named("Leather armor")];
+        w.story.bags[0].pack();
+        assert!(w.arrange(0, &Held::Item(0), Spot::Worn(0, Slot::Body)));
         assert_eq!(w.party[0].armor.as_deref(), Some("leather-armor"));
         assert!(w.party[0].ac() < before);
-        assert_eq!(w.story.inventory.len(), 1);
-        assert_eq!(w.story.inventory[0].gear.as_deref(), Some("chain-mail"));
-        assert!(w.story.inventory[0].at.is_some());
+        assert_eq!(w.story.bags[0].inventory.len(), 1);
+        assert_eq!(w.story.bags[0].inventory[0].gear.as_deref(), Some("chain-mail"));
+        assert!(w.story.bags[0].inventory[0].at.is_some());
     }
 
     #[test]
     fn a_weapon_taken_off_lies_where_it_was_put_and_a_ring_cannot_be_wielded() {
         let mut w = world();
         let sword = w.party[0].weapons[0].clone();
-        assert!(w.arrange(&Held::Worn(0, Slot::Main), Spot::Bag(5, 2)));
+        assert!(w.arrange(0, &Held::Worn(0, Slot::Main), Spot::Bag(5, 2)));
         assert!(!w.party[0].weapons.contains(&sword));
-        assert_eq!(w.story.item_at((5, 4)), Some(0));
-        w.story.inventory.push(named("Ash ring"));
-        w.story.pack();
-        assert!(!w.arrange(&Held::Item(1), Spot::Worn(0, Slot::Main)));
-        assert!(w.arrange(&Held::Item(0), Spot::Worn(0, Slot::Main)));
+        assert_eq!(w.story.bags[0].item_at((5, 4)), Some(0));
+        w.story.bags[0].inventory.push(named("Ash ring"));
+        w.story.bags[0].pack();
+        assert!(!w.arrange(0, &Held::Item(1), Spot::Worn(0, Slot::Main)));
+        assert!(w.arrange(0, &Held::Item(0), Spot::Worn(0, Slot::Main)));
         assert_eq!(w.party[0].weapons[0], sword);
     }
 
@@ -406,18 +582,57 @@ mod tests {
     fn a_shield_and_a_two_handed_weapon_do_not_go_together() {
         let mut w = world();
         assert!(w.party[0].shield);
-        w.story.inventory = vec![named("Greatsword")];
-        w.story.pack();
-        assert!(!w.arrange(&Held::Item(0), Spot::Worn(0, Slot::Main)));
-        assert!(w.arrange(&Held::Worn(0, Slot::Shield), Spot::Bag(6, 0)));
-        assert!(w.arrange(&Held::Item(0), Spot::Worn(0, Slot::Main)));
+        w.story.bags[0].inventory = vec![named("Greatsword")];
+        w.story.bags[0].pack();
+        assert!(!w.arrange(0, &Held::Item(0), Spot::Worn(0, Slot::Main)));
+        assert!(w.arrange(0, &Held::Worn(0, Slot::Shield), Spot::Bag(6, 0)));
+        assert!(w.arrange(0, &Held::Item(0), Spot::Worn(0, Slot::Main)));
+    }
+
+    #[test]
+    fn a_thing_put_down_on_another_lifts_that_one_as_in_the_old_games() {
+        let mut w = world();
+        w.story.bags[0].inventory = vec![named("Longsword"), named("Ash ring")];
+        w.story.bags[0].pack();
+        let ring_at = w.story.bags[0].inventory[1].at.unwrap();
+        // The ring onto the sword: the sword comes up.
+        assert!(w.arrange(0, &Held::Item(1), Spot::Bag(0, 1)));
+        assert_eq!(w.story.bags[0].inventory[1].at, Some((0, 1)));
+        assert_eq!(w.story.bags[0].inventory[0].at, None);
+        let _ = ring_at;
+        // Onto two things at once, nothing happens.
+        w.story.bags[0].inventory.push(named("Old map"));
+        w.story.bags[0].inventory[0].at = Some((5, 0));
+        w.story.bags[0].inventory[2].at = Some((5, 3));
+        let map = w.story.bags[0].inventory[2].clone();
+        let _ = map;
+        w.story.bags[0].inventory.push(named("Chain mail"));
+        w.story.bags[0].inventory[3].at = Some((8, 0));
+        assert!(!w.arrange(0, &Held::Item(3), Spot::Bag(5, 1)), "over the sword and the map");
+    }
+
+    #[test]
+    fn a_torch_is_carried_in_the_shield_hand_and_a_potion_heals() {
+        let mut w = world();
+        w.story.bags[0].inventory = vec![Item { name: "Torch".into(), count: 1, light: 4, kind: "light".into(), ..Default::default() }];
+        w.story.bags[0].pack();
+        assert!(w.party[0].shield);
+        assert!(w.arrange(0, &Held::Item(0), Spot::Worn(0, Slot::Shield)));
+        assert!(!w.party[0].shield, "the shield went into the bag");
+        assert_eq!(w.held_light(0).map(|i| i.name.as_str()), Some("Torch"));
+        assert!(w.story.bags[0].inventory.iter().any(|i| i.gear.as_deref() == Some("shield")));
+        w.party[0].hp = 3;
+        w.story.bags[0].inventory.push(Item { name: "Potion".into(), count: 2, heal: "2d4+2".into(), ..Default::default() });
+        let at = w.story.bags[0].inventory.len() - 1;
+        assert!(matches!(w.use_item(0, at, &mut rules::Rng::seeded(1)), Used::Healed(n) if n > 0));
+        assert_eq!(w.story.bags[0].inventory[at].count, 1);
     }
 
     #[test]
     fn the_two_weapon_slots_swap() {
         let mut w = world();
         let (a, b) = (w.party[0].weapons[0].clone(), w.party[0].weapons[1].clone());
-        assert!(w.arrange(&Held::Worn(0, Slot::Spare), Spot::Worn(0, Slot::Main)));
+        assert!(w.arrange(0, &Held::Worn(0, Slot::Spare), Spot::Worn(0, Slot::Main)));
         assert_eq!(w.party[0].weapons[..2], [b, a]);
     }
 
@@ -428,6 +643,6 @@ mod tests {
         w.party[0].weapons.push("dagger".into());
         w.tidy_gear();
         assert_eq!(w.party[0].weapons.len(), 2);
-        assert_eq!(w.story.inventory.iter().filter(|i| i.gear.is_some()).count(), 2);
+        assert_eq!(w.story.bags[0].inventory.iter().filter(|i| i.gear.is_some()).count(), 2);
     }
 }

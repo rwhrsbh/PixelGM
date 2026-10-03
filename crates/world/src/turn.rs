@@ -221,7 +221,7 @@ mod tests {
         let outcome = w.choose(&turn.options[0]);
         assert_eq!(outcome, turn.options[0].outcome);
         assert_eq!(w.story.log.len(), 4);
-        assert_eq!(w.story.inventory.len(), 1);
+        assert_eq!(w.story.bags[0].inventory.len(), 1);
     }
 
     #[test]

@@ -43,9 +43,18 @@ pub enum Effect {
         name: String,
         #[serde(default)]
         description: String,
+        /// The hero who gets it; the one who acted when empty.
+        #[serde(default)]
+        to: String,
+        #[serde(flatten)]
+        traits: ItemTraits,
     },
-    /// The party loses an item.
-    Take { name: String },
+    /// The party loses an item: from the hero named, or whoever has it.
+    Take {
+        name: String,
+        #[serde(default)]
+        from: String,
+    },
     /// A thing looks different from now on.
     Describe { id: String, description: String },
     Attitude { id: String, attitude: Attitude },
@@ -240,6 +249,67 @@ pub struct Item {
     /// The cell of the bag its top left corner lies in; none when the bag had no room.
     #[serde(default)]
     pub at: Option<(u8, u8)>,
+    /// What sort of thing it is: weapon, armor, shield, light, potion, food, throwable, key,
+    /// tool, junk, quest… Empty when the name says enough.
+    #[serde(default)]
+    pub kind: String,
+    /// Cells across and down, when the master gave them.
+    #[serde(default)]
+    pub size_cells: Option<(u8, u8)>,
+    /// The master's own picture of it, rows of palette indices.
+    #[serde(default)]
+    pub rows: Vec<String>,
+    /// Dice of healing when used up, dice of harm when thrown, cells of light when lit.
+    #[serde(default)]
+    pub heal: String,
+    #[serde(default)]
+    pub damage: String,
+    #[serde(default)]
+    pub light: u8,
+}
+
+/// One hero's bag: the grid of things, and the light in the off hand.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct Bag {
+    pub inventory: Vec<Item>,
+    pub held: Option<Item>,
+}
+
+/// What the master may say about a thing it gives, beyond its name.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct ItemTraits {
+    pub kind: String,
+    /// [cells across, cells down], or "1x3".
+    pub size: Value,
+    pub rows: Vec<String>,
+    pub heal: String,
+    pub damage: String,
+    pub light: Value,
+}
+
+impl ItemTraits {
+    fn size(&self) -> Option<(u8, u8)> {
+        let pair = match &self.size {
+            Value::Array(v) if v.len() >= 2 => Some((v[0].as_f64()?, v[1].as_f64()?)),
+            Value::String(s) => {
+                let (a, b) = s.split_once(['x', 'х', '*', ' '])?;
+                Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+            }
+            _ => None,
+        }?;
+        Some((pair.0.round().clamp(1.0, 4.0) as u8, pair.1.round().clamp(1.0, 4.0) as u8))
+    }
+
+    fn light(&self) -> u8 {
+        match &self.light {
+            Value::Number(n) => n.as_f64().unwrap_or(0.0).round().clamp(0.0, 8.0) as u8,
+            Value::Bool(true) => 4,
+            Value::String(s) => s.trim().parse::<f64>().map_or(0, |n| n.round().clamp(0.0, 8.0) as u8),
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -260,7 +330,14 @@ pub struct Line {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
 pub struct Story {
+    /// What the party carried before each hero had a bag of their own; moved into the first
+    /// hero's bag when a save from then is opened.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub inventory: Vec<Item>,
+    /// Each hero's bag, by the hero's place in the party.
+    #[serde(default)]
+    pub bags: Vec<Bag>,
+
     /// The story since the last chapter was written, word for word.
     pub log: Vec<Line>,
     /// Older story, one detailed summary per chapter.
@@ -313,23 +390,44 @@ impl Story {
         }
     }
 
-    fn give(&mut self, name: &str, description: &str) {
+}
+
+impl Bag {
+    pub fn give_with(&mut self, name: &str, description: &str, traits: &ItemTraits) {
         let name = name.trim();
         if name.is_empty() {
             return;
         }
-        // Gear lies apart, one piece to a place; other things of a name are one heap.
         let gear = crate::bag::gear_named(name);
-        match self.inventory.iter_mut().find(|i| gear.is_none() && i.gear.is_none() && i.name.to_lowercase() == name.to_lowercase()) {
-            Some(item) => item.count += 1,
+        let item = Item {
+            name: name.to_string(),
+            description: description.trim().to_string(),
+            count: 1,
+            gear,
+            at: None,
+            kind: traits.kind.trim().to_lowercase(),
+            size_cells: traits.size(),
+            rows: traits.rows.clone(),
+            heal: traits.heal.trim().to_string(),
+            damage: traits.damage.trim().to_string(),
+            light: traits.light(),
+        };
+        self.receive(item);
+    }
+
+    /// A thing into the bag: onto a heap of the same name, or a place of its own. Gear lies
+    /// apart, one piece to a place.
+    pub fn receive(&mut self, item: Item) {
+        match self.inventory.iter_mut().find(|i| item.gear.is_none() && i.gear.is_none() && i.name.to_lowercase() == item.name.to_lowercase()) {
+            Some(heap) => heap.count += item.count.max(1),
             None => {
-                self.inventory.push(Item { name: name.to_string(), description: description.trim().to_string(), count: 1, gear, at: None });
+                self.inventory.push(Item { at: None, count: item.count.max(1), ..item });
                 self.pack();
             }
         }
     }
 
-    fn take(&mut self, name: &str) -> bool {
+    pub fn take(&mut self, name: &str) -> bool {
         let wanted = name.trim().to_lowercase();
         let Some(at) = self.inventory.iter().position(|i| i.name.to_lowercase() == wanted) else { return false };
         if self.inventory[at].count > 1 {
@@ -399,6 +497,11 @@ impl World {
         let mut notes = Vec::new();
         let here = self.current.clone();
         let resolve = |id: &str| if id == "self" { me.unwrap_or("self").to_string() } else { slug(id) };
+        self.ensure_bags();
+        // Whose bag a thing goes into: the hero named, or the one who acted.
+        let names: Vec<String> = self.party.iter().map(|h| slug(&h.name)).collect();
+        let acting = self.acting.filter(|a| *a < self.party.len()).unwrap_or(0);
+        let bag_of = |to: &str| names.iter().position(|n| !to.trim().is_empty() && *n == slug(to)).unwrap_or(acting);
         let mut moved_party: Option<(usize, usize)> = None;
         let mut travel: Option<(String, String)> = None;
         // Where the party stands, for what is left on the ground with no cell given.
@@ -463,9 +566,17 @@ impl World {
                     location.props.retain(|p| p.id != id);
                     location.creatures.retain(|c| c.id != id);
                 }
-                Effect::Give { name, description } => self.story.give(name, description),
-                Effect::Take { name } => {
-                    if !self.story.take(name) {
+                Effect::Give { name, description, to, traits } => {
+                    let b = bag_of(to);
+                    if let Some(bag) = self.story.bags.get_mut(b) {
+                        bag.give_with(name, description, traits);
+                    }
+                }
+                Effect::Take { name, from } => {
+                    // The named hero's bag first, then the one who acted, then anyone's.
+                    let first = bag_of(from);
+                    let order: Vec<usize> = std::iter::once(first).chain(0..self.story.bags.len()).collect();
+                    if !order.into_iter().any(|b| self.story.bags.get_mut(b).is_some_and(|bag| bag.take(name))) {
                         notes.push(format!("take: the party has no '{name}'"));
                     }
                 }
@@ -546,7 +657,7 @@ impl World {
                             location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone() });
                         }
                     } else {
-                        location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: Vec::new() });
+                        location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: Vec::new(), body: None });
                     }
                 }
                 Effect::Exit { x, y, to, label } => {
@@ -722,7 +833,7 @@ mod tests {
     fn a_malformed_effect_is_dropped_and_the_rest_are_kept() {
         let mut notes = Vec::new();
         let read = read_effects(json!([{ "op": "fact", "text": "a" }, { "op": "explode" }, { "text": "no op" }, { "op": "give", "name": "Key" }]).as_array().unwrap(), &mut notes);
-        assert_eq!(read, [Effect::Fact { text: "a".into() }, Effect::Give { name: "Key".into(), description: String::new() }]);
+        assert_eq!(read, [Effect::Fact { text: "a".into() }, Effect::Give { name: "Key".into(), description: String::new(), to: String::new(), traits: ItemTraits::default() }]);
         assert_eq!(notes.len(), 2);
     }
 
@@ -734,7 +845,7 @@ mod tests {
         let outcome = w.perform("cat", 1).unwrap();
         assert!(outcome.contains("slips away"));
         assert_eq!(w.here().creatures.len(), before - 1);
-        assert_eq!(w.story.inventory, [Item { name: "Cat hair".into(), description: "A tuft of grey fur.".into(), count: 1, gear: None, at: Some((0, 0)) }]);
+        assert_eq!(w.story.bags[0].inventory, [Item { name: "Cat hair".into(), description: "A tuft of grey fur.".into(), count: 1, gear: None, at: Some((0, 0)), ..Default::default() }]);
         assert_eq!(w.story.log.len(), 2);
         assert_eq!(w.story.log[0].speaker, Speaker::Player);
         // The cat is gone, and so are its actions.
@@ -754,10 +865,10 @@ mod tests {
     fn items_stack_and_are_taken_one_at_a_time() {
         let mut w = world();
         let notes = w.apply(&effects(json!([{ "op": "give", "name": "Arrow" }, { "op": "give", "name": "arrow" }, { "op": "take", "name": "ARROW" }, { "op": "take", "name": "Sword" }])), None);
-        assert_eq!(w.story.inventory[0].count, 1);
+        assert_eq!(w.story.bags[0].inventory[0].count, 1);
         assert_eq!(notes, ["take: the party has no 'Sword'"]);
         w.apply(&effects(json!([{ "op": "take", "name": "Arrow" }])), None);
-        assert!(w.story.inventory.is_empty());
+        assert!(w.story.bags[0].inventory.is_empty());
     }
 
     #[test]

@@ -417,11 +417,46 @@ fn die(mut commands: Commands, time: Res<Time>, mut fx: ResMut<Fx>, mut images: 
     }
 }
 
+/// A thing thrown out of the bag onto the ground, to be seen flying there.
+#[derive(Message, Clone)]
+pub struct Thrown {
+    pub item: world::Item,
+    pub cell: (usize, usize),
+}
+
+#[derive(Component)]
+struct Flying {
+    age: f32,
+    from: Vec2,
+    to: Vec2,
+}
+
+fn throw_things(mut commands: Commands, mut thrown: MessageReader<Thrown>, mut images: ResMut<Assets<Image>>, game: Option<Res<Game>>, time: Res<Time>, mut flying: Query<(Entity, &mut Flying, &mut Transform)>) {
+    for t in thrown.read() {
+        let Some(game) = game.as_ref() else { continue };
+        let tile = world::TILE as f32;
+        let from = on_screen(game.world.player.x + 4.0, game.world.player.y - 8.0);
+        let to = on_screen((t.cell.0 as f32 + 0.5) * tile + 6.0, (t.cell.1 as f32 + 0.8) * tile);
+        let image = images.add(crate::icons::icon(&t.item).into_image());
+        commands.spawn((DespawnOnExit(Screen::Play), Flying { age: 0.0, from, to }, Sprite::from_image(image), Transform::from_translation(from.extend(1.9))));
+    }
+    for (entity, mut fly, mut transform) in &mut flying {
+        fly.age += time.delta_secs();
+        let s = (fly.age / 0.45).min(1.0);
+        let at = fly.from.lerp(fly.to, s) + Vec2::Y * (s * std::f32::consts::PI).sin() * 36.0;
+        transform.translation = at.round().extend(1.9);
+        transform.rotation = Quat::from_rotation_z(-s * 6.0);
+        if s >= 1.0 {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 pub struct FxPlugin;
 
 impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Fx>().add_systems(Startup, spawn_wince).add_systems(Update, (dust, spawn, actors, floats, specks, shake, wince, typewriter, pop_in, die).chain());
+        app.init_resource::<Fx>().add_message::<Thrown>().add_systems(Update, throw_things).add_systems(Startup, spawn_wince).add_systems(Update, (dust, spawn, actors, floats, specks, shake, wince, typewriter, pop_in, die).chain());
     }
 }
 

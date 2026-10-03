@@ -173,8 +173,6 @@ texts! {
     HeroName: "Имя", "Name";
     HeroStory: "О герое", "About";
     HeroRace: "Народ", "People";
-    BagTitle: "Сумка отряда", "The party's bag";
-    BagHint: "ЛКМ — взять/положить · ПКМ — отмена", "Click to take or put · right click to let go";
     BagNoRoom: "Не влезло в сумку:", "No room in the bag:";
     BagEmptySlot: "пусто", "empty";
     BagDamage: "урон", "damage";
@@ -214,6 +212,11 @@ texts! {
     HudFallen: "пал", "fallen";
     HudAway: "нет", "away";
     WalkUpTo: "подойдите к:", "walk up to";
+    BagHeals: "лечит", "heals";
+    BagLight: "свет, клеток:", "light, cells:";
+    BagUseHint: "ПКМ — применить, клик за сумкой — бросить", "Right click: use; click outside: drop";
+    UsesThing: "использует", "uses";
+    PickUp: "поднять", "pick up";
     Fold: "Свернуть", "Fold";
     Unfold: "Развернуть", "Unfold";
     FoldedHint: "Рассказ свёрнут (H)", "The telling is folded (H)";

@@ -94,6 +94,10 @@ pub struct Prop {
     /// What the players can do with it without asking the game master.
     #[serde(default)]
     pub actions: Vec<Action>,
+    /// When this is the body of a creature that died: the creature, to rise again if the
+    /// story brings it back.
+    #[serde(default)]
+    pub body: Option<Box<Creature>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -160,10 +164,21 @@ pub struct Location {
     /// What has been left on the ground.
     #[serde(default)]
     pub marks: Vec<Mark>,
+    /// Things lying on the ground, dropped or left by the story.
+    #[serde(default)]
+    pub items: Vec<Lying>,
     /// The cells the party has seen, one row of bits to a row of the map: in the dark, what
     /// was never seen stays black.
     #[serde(default)]
     pub seen: Vec<u32>,
+}
+
+/// A thing lying on a cell of a place.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct Lying {
+    pub x: usize,
+    pub y: usize,
+    pub item: crate::story::Item,
 }
 
 /// Something left on the ground of a cell.
@@ -298,6 +313,9 @@ pub struct World {
     /// The place the fight in progress is in.
     #[serde(default)]
     pub fight_place: String,
+    /// The hero whose player the master is answering, for whose bag a thing goes into.
+    #[serde(skip)]
+    pub acting: Option<usize>,
     /// A place the story sent the party to, to be gone to once the telling is read.
     #[serde(skip)]
     pub travel: Option<String>,

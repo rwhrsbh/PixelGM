@@ -209,7 +209,7 @@ fn block(p: &mut Pixels, x0: i32, y0: i32, x1: i32, y1: i32, c: Rgba) {
 }
 
 /// One frame of a hero.
-fn draw(hero: &Character, facing: Facing, step: usize) -> Pixels {
+fn draw(hero: &Character, facing: Facing, step: usize, light: bool) -> Pixels {
     let look = hero.look;
     let t = Tones::of(&look);
     let f = frame_of(hero, &look);
@@ -494,9 +494,20 @@ fn draw(hero: &Character, facing: Facing, step: usize) -> Pixels {
     }
 
     // The shield on the left arm, the weapon in the right hand.
-    if hero.shield && !side {
+    if hero.shield && !side && !light {
         let (sx, flat) = if back { (cx - half - 6, true) } else { (cx + half + 1, false) };
         shield(&mut p, &t, sx, arm_top + 2 - swing, flat);
+    }
+    // A torch in the off hand, its flame above the fist.
+    if light {
+        let (tx, ty) = match facing {
+            Facing::Down => (cx + half + 1, arm_top + arm_len - 1 - swing),
+            Facing::Up => (cx - half - 2, arm_top + arm_len - 1 + swing),
+            _ => (cx - 3 - swing * 2, arm_top + arm_len - 1),
+        };
+        fill(&mut p, tx, ty - 9, tx + 2, ty + 3, t.wood);
+        fill(&mut p, tx - 1, ty - 14, tx + 3, ty - 9, [255, 168, 60, 255]);
+        fill(&mut p, tx, ty - 16, tx + 2, ty - 12, [255, 236, 150, 255]);
     }
     let hand_at = match facing {
         Facing::Down => (cx - half - 2, arm_top + arm_len - 1 + swing),
@@ -674,10 +685,15 @@ fn weapon(p: &mut Pixels, t: &Tones, arm: Arm, (hx, hy): (i32, i32), side: bool,
 
 /// Every frame of a hero: three directions (the fourth is the third mirrored) of four steps.
 pub fn frames(hero: &Character) -> Vec<Pixels> {
+    frames_holding(hero, false)
+}
+
+/// Every frame, with a lit torch in the off hand when `light`.
+pub fn frames_holding(hero: &Character, light: bool) -> Vec<Pixels> {
     let mut all = Vec::new();
     for facing in [Facing::Down, Facing::Up, Facing::Right, Facing::Left] {
         for step in 0..STEPS {
-            all.push(draw(hero, facing, step));
+            all.push(draw(hero, facing, step, light));
         }
     }
     all
@@ -734,22 +750,22 @@ mod tests {
         let fighter = hero("fighter", "human");
         let wizard = hero("wizard", "human");
         let differs = |a: &Pixels, b: &Pixels| (0..H).filter(|y| (0..W).any(|x| a.get(x, *y) != b.get(x, *y))).count();
-        let (f, w) = (draw(&fighter, Facing::Down, 1), draw(&wizard, Facing::Down, 1));
+        let (f, w) = (draw(&fighter, Facing::Down, 1, false), draw(&wizard, Facing::Down, 1, false));
         assert!(differs(&f, &w) > 10, "chain and a sword are not a robe and a staff");
         let mut red = fighter.clone();
         red.look.hair_color = 10;
         red.look.hair = 2;
-        assert!(differs(&f, &draw(&red, Facing::Down, 1)) > 2);
+        assert!(differs(&f, &draw(&red, Facing::Down, 1, false)) > 2);
         let mut helmed = fighter.clone();
         helmed.look.helmet = true;
-        assert!(differs(&f, &draw(&helmed, Facing::Down, 1)) > 2);
+        assert!(differs(&f, &draw(&helmed, Facing::Down, 1, false)) > 2);
         assert_ne!(key(&fighter), key(&helmed));
     }
 
     #[test]
     fn short_peoples_are_shorter() {
-        let tall = draw(&hero("fighter", "human"), Facing::Down, 1);
-        let short = draw(&hero("fighter", "dwarf"), Facing::Down, 1);
+        let tall = draw(&hero("fighter", "human"), Facing::Down, 1, false);
+        let short = draw(&hero("fighter", "dwarf"), Facing::Down, 1, false);
         let top = |p: &Pixels| (0..H).find(|y| (0..W).any(|x| p.get(x, *y)[3] != 0)).unwrap();
         assert!(top(&short) > top(&tall));
     }

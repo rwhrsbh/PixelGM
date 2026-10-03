@@ -201,6 +201,18 @@ impl World {
     /// The story brings a dead hero back, on one hit point.
     pub(crate) fn revive(&mut self, hero: &str) -> bool {
         let wanted = hero.trim().to_lowercase();
+        // A creature's body, by its own id or the body's: it gets up where it lay.
+        let here = self.current.clone();
+        if let Some(place) = self.locations.get_mut(&here) {
+            let id = crate::build::slug(&wanted);
+            if let Some(at) = place.props.iter().position(|p| p.body.is_some() && (p.id == id || p.id == format!("{id}_body"))) {
+                let prop = place.props.remove(at);
+                let mut creature = *prop.body.expect("found by its body");
+                (creature.x, creature.y) = (prop.x, prop.y);
+                place.creatures.push(creature);
+                return true;
+            }
+        }
         let found = self.party.iter_mut().find(|h| h.dead && (wanted.is_empty() || h.name.to_lowercase() == wanted));
         match found {
             Some(hero) => {
@@ -521,7 +533,24 @@ impl World {
         if let Some(location) = self.locations.get_mut(&here) {
             for c in fight.combatants.iter().filter(|c| c.side == Side::Enemy) {
                 if c.dead {
-                    location.creatures.retain(|creature| creature.id != c.id);
+                    // The dead stay where they fell, as a body that can be searched — or raised.
+                    if let Some(at) = location.creatures.iter().position(|creature| creature.id == c.id) {
+                        let mut dead = location.creatures.remove(at);
+                        (dead.x, dead.y) = (c.x.max(0) as usize, c.y.max(0) as usize);
+                        let russian = self.language.to_lowercase().starts_with("ru") || self.language.contains("усск");
+                        let name = if russian { format!("Тело: {}", dead.name) } else { format!("Body of {}", dead.name) };
+                        location.props.push(crate::model::Prop {
+                            id: format!("{}_body", dead.id),
+                            name,
+                            description: dead.description.clone(),
+                            x: dead.x,
+                            y: dead.y,
+                            blocking: false,
+                            sprite: dead.sprite.clone(),
+                            actions: Vec::new(),
+                            body: Some(Box::new(dead)),
+                        });
+                    }
                 } else if let Some(creature) = location.creatures.iter_mut().find(|creature| creature.id == c.id) {
                     (creature.x, creature.y) = (c.x.max(0) as usize, c.y.max(0) as usize);
                 }
@@ -695,7 +724,7 @@ mod tests {
         apply(&mut w, check(10));
         assert!(w.pending.is_some());
         assert!(w.story.facts.is_empty(), "the fact comes after the check");
-        assert!(w.story.inventory.is_empty());
+        assert!(w.story.bags[0].inventory.is_empty());
     }
 
     #[test]
@@ -706,7 +735,7 @@ mod tests {
         let done = w.roll_check(&mut Rng::seeded(1)).unwrap();
         assert!(done.success && done.narration == "The door gives." && done.hero == "Brak");
         assert_eq!(done.roll.bonus, 5);
-        assert_eq!(w.story.inventory.len(), 1);
+        assert_eq!(w.story.bags[0].inventory.len(), 1);
         assert_eq!(w.story.facts, ["The door was tried."]);
         assert!(w.pending.is_none());
 
@@ -716,7 +745,7 @@ mod tests {
         let done = w.roll_check(&mut Rng::seeded(1)).unwrap();
         assert!(!done.success);
         assert_eq!(w.party[0].hp, w.party[0].max_hp - 2);
-        assert!(w.story.inventory.is_empty());
+        assert!(w.story.bags[0].inventory.is_empty());
         assert_eq!(w.roll_check(&mut Rng::seeded(1)), None, "nothing left to roll");
     }
 
@@ -795,6 +824,13 @@ mod tests {
         assert_eq!(w.player.cell(), (3, 3));
         assert!(w.fight.is_none());
         assert_eq!(w.end_fight(), None);
+        // The body lies where the creature fell, and the story can raise it.
+        let body = w.here().props.iter().find(|p| p.body.is_some()).expect("a body is left");
+        assert_eq!(body.id, "cat_body");
+        assert!(w.story.facts.iter().any(|f| f.contains("killed")), "the master is told");
+        apply(&mut w, json!([{ "op": "revive", "hero": "cat" }]));
+        assert_eq!(w.here().creatures.len(), 1);
+        assert!(w.here().props.iter().all(|p| p.body.is_none()));
     }
 
     #[test]
