@@ -17,6 +17,8 @@ mod newgame;
 mod play;
 mod post;
 mod motion;
+mod music;
+mod provider;
 mod party_hud;
 mod graphics;
 mod weather;
@@ -72,6 +74,6 @@ fn main() -> AppExit {
         hero::HeroPlugin,
         fight::FightPlugin,
     ))
-    .add_plugins((translate::TranslatePlugin, bag_ui::BagPlugin, post::PostPlugin, motion::MotionPlugin, party_hud::PartyHudPlugin, graphics::GraphicsPlugin, weather::WeatherPlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
+    .add_plugins((translate::TranslatePlugin, bag_ui::BagPlugin, post::PostPlugin, motion::MotionPlugin, music::MusicPlugin, provider::ProviderPlugin, party_hud::PartyHudPlugin, graphics::GraphicsPlugin, weather::WeatherPlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
     app.run()
 }

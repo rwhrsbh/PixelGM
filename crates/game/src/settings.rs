@@ -17,6 +17,7 @@ enum Choice {
     Window,
     Size,
     Fill,
+    OnlineMusic,
     Thinking,
     Fallback,
     Predraw,
@@ -33,6 +34,7 @@ impl Choice {
             Choice::Window => T::SetWindow,
             Choice::Size => T::SetSize,
             Choice::Fill => T::SetFill,
+            Choice::OnlineMusic => T::SetOnlineMusic,
             Choice::Thinking => T::SetThinking,
             Choice::Fallback => T::SetFallback,
             Choice::Predraw => T::SetPredraw,
@@ -51,6 +53,7 @@ impl Choice {
             Choice::Initiative => Some(T::InitiativeHint),
             Choice::Voice => Some(T::VoiceHint),
             Choice::Fill => Some(T::FillHint),
+            Choice::OnlineMusic => Some(T::OnlineMusicHint),
             _ => None,
         }
     }
@@ -96,6 +99,13 @@ impl Choice {
                     T::FillSharp
                 }
             }
+            Choice::OnlineMusic => {
+                if s.online_music {
+                    T::Yes
+                } else {
+                    T::No
+                }
+            }
             Choice::Music => volume_name(s.music),
             Choice::Sound => volume_name(s.sound),
             Choice::Voice => {
@@ -119,6 +129,7 @@ impl Choice {
             Choice::Window => s.fullscreen = !s.fullscreen,
             Choice::Size => s.window_size = (s.window_size + 1) % (crate::screen::SIZES.len() as u8 + 1),
             Choice::Fill => s.fill = !s.fill,
+            Choice::OnlineMusic => s.online_music = !s.online_music,
             Choice::Thinking => {
                 s.thinking = match s.thinking {
                     ThinkingSetting::Off => ThinkingSetting::Low,
@@ -153,14 +164,17 @@ fn volume_name(level: u8) -> T {
     [T::Volume0, T::Volume1, T::Volume2, T::Volume3, T::Volume4][level.min(4) as usize]
 }
 
-const CHOICES: [Choice; 11] = [Choice::Language, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
+const CHOICES: [Choice; 12] = [Choice::Language, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
 
 fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
     commands.spawn(screen_root(Screen::Settings)).with_children(|root| {
         let sheet = Node { margin: UiRect::top(px(8)), width: px(440), flex_direction: FlexDirection::Column, row_gap: px(5), ..default() };
         spawn_panel(root, &art, sheet, |sheet| {
             sheet.spawn((Text::default(), T::Settings, fonts.title(1), TextColor(color(INK))));
-            sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Graphics, true, crate::menu::Nav::Go(Screen::Graphics)));
+            sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                button(line, &art, &fonts, T::Graphics, true, crate::menu::Nav::Go(Screen::Graphics));
+                button(line, &art, &fonts, T::ProviderOpen, true, crate::menu::Nav::Go(Screen::Provider));
+            });
             // More settings than fit on the table at once: the list scrolls.
             sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(5), ..default() }, 196.0)).with_children(|sheet| {
             for choice in CHOICES {
@@ -302,7 +316,7 @@ mod tests {
             let mut s = Settings::default();
             let before = s.clone();
             choice.advance(&mut s);
-            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade, before.window_size != s.window_size, before.fill != s.fill];
+            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade, before.window_size != s.window_size, before.fill != s.fill, before.online_music != s.online_music];
             assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{choice:?}");
         }
     }

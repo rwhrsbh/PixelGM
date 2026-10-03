@@ -84,12 +84,12 @@ const FIELD_BORDER: f32 = 4.0;
 
 /// Whether there is anyone to draw a world: a key of the host's, or guests whose keys can
 /// be asked.
-fn can_ask(master: &Master, book: &KeyBook, session: &Session) -> bool {
-    master.fake || book.entries.iter().any(|e| e.health == Health::Working || e.health == Health::Checking) || !session.players().is_empty()
+fn can_ask(master: &Master, book: &KeyBook, session: &Session, settings: &Settings) -> bool {
+    master.fake || settings.custom().is_some() || book.entries.iter().any(|e| e.health == Health::Working || e.health == Health::Checking) || !session.players().is_empty()
 }
 
-fn spawn_form(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, book: Res<KeyBook>, master: Res<Master>, making: Res<Making>, session: Res<Session>) {
-    build_form(&mut commands, &art, &fonts, &making, can_ask(&master, &book, &session));
+fn spawn_form(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, book: Res<KeyBook>, master: Res<Master>, making: Res<Making>, session: Res<Session>, settings: Res<Settings>) {
+    build_form(&mut commands, &art, &fonts, &making, can_ask(&master, &book, &session, &settings));
 }
 
 /// A key may start working, or a guest sit down, while the form is open: the form is drawn
@@ -107,8 +107,9 @@ fn refresh_form(
     typed: Query<&EditableText, With<WishInput>>,
     fresh: Query<(), Added<WishInput>>,
     mut built: Local<Option<bool>>,
+    settings: Res<Settings>,
 ) {
-    let now = can_ask(&master, &book, &session);
+    let now = can_ask(&master, &book, &session, &settings);
     if !fresh.is_empty() || *built == Some(now) {
         *built = Some(now);
         return;

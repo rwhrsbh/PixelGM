@@ -4,10 +4,10 @@
 //! something hostile in it, a fight.
 
 use crate::menu::Screen;
-use crate::play::{Game, HeroPose, Phase};
+use crate::play::{HeroPose, Phase};
 use crate::store::Settings;
 use crate::widgets::Activate;
-use bevy::audio::{AudioSinkPlayback, Volume};
+use bevy::audio::Volume;
 use bevy::prelude::*;
 use std::collections::HashMap;
 
@@ -55,9 +55,9 @@ pub enum Track {
 pub struct Muted(pub bool);
 
 #[derive(Resource)]
-struct Bank {
+pub struct Bank {
     sfx: HashMap<Sfx, Vec<Handle<AudioSource>>>,
-    music: HashMap<Track, Handle<AudioSource>>,
+    pub music: HashMap<Track, Handle<AudioSource>>,
 }
 
 macro_rules! sound {
@@ -113,10 +113,8 @@ pub fn level(setting: u8, ceiling: f32) -> f32 {
     setting.min(4) as f32 / 4.0 * ceiling
 }
 
-const MUSIC_CEILING: f32 = 0.45;
 const SOUND_CEILING: f32 = 0.9;
 /// Volume gained or lost per second while one track gives way to another.
-const FADE_PER_SECOND: f32 = 1.2;
 const STEP_SECONDS: f32 = 0.28;
 
 fn play_sounds(mut commands: Commands, mut asked: MessageReader<Play>, bank: Res<Bank>, settings: Res<Settings>, muted: Res<Muted>, mut turn: Local<usize>) {
@@ -135,62 +133,6 @@ fn play_sounds(mut commands: Commands, mut asked: MessageReader<Play>, bank: Res
 }
 
 /// The track playing, and how loud it is on its way in or out.
-#[derive(Component)]
-struct Music {
-    track: Track,
-    loudness: f32,
-    leaving: bool,
-}
-
-/// What should be playing now.
-fn wanted_track(screen: Screen, phase: Option<&Phase>, game: Option<&Game>) -> Track {
-    if screen != Screen::Play {
-        return Track::Menu;
-    }
-    match (phase, game) {
-        (Some(Phase::Fighting), _) => Track::Fight,
-        (_, Some(game)) if game.world.hostiles().next().is_some() => Track::Tense,
-        _ => Track::Calm,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn music(
-    mut commands: Commands,
-    time: Res<Time>,
-    bank: Res<Bank>,
-    settings: Res<Settings>,
-    muted: Res<Muted>,
-    screen: Res<State<Screen>>,
-    phase: Option<Res<Phase>>,
-    game: Option<Res<Game>>,
-    mut playing: Query<(Entity, &mut Music, Option<&mut AudioSink>)>,
-) {
-    let ceiling = if muted.0 { 0.0 } else { level(settings.music, MUSIC_CEILING) };
-    let wanted = wanted_track(*screen.get(), phase.as_deref(), game.as_deref());
-    let step = FADE_PER_SECOND * time.delta_secs();
-    let mut on_air = false;
-    for (entity, mut track, sink) in &mut playing {
-        if track.track == wanted && !track.leaving {
-            on_air = true;
-            track.loudness = (track.loudness + step).min(1.0);
-        } else {
-            track.leaving = true;
-            track.loudness -= step;
-            if track.loudness <= 0.0 {
-                commands.entity(entity).despawn();
-                continue;
-            }
-        }
-        if let Some(mut sink) = sink {
-            sink.set_volume(Volume::Linear(track.loudness * ceiling));
-        }
-    }
-    if !on_air && ceiling > 0.0 {
-        commands.spawn((AudioPlayer(bank.music[&wanted].clone()), PlaybackSettings::LOOP.with_volume(Volume::SILENT), Music { track: wanted, loudness: 0.0, leaving: false }));
-    }
-}
-
 /// Sounds asked for through the effects, by code that cannot write a message itself.
 fn cues(mut fx: ResMut<crate::fx::Fx>, mut sounds: MessageWriter<Play>) {
     if fx.cues.is_empty() {
@@ -243,7 +185,7 @@ pub struct AudioPlugin;
 
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Bank>().init_resource::<Muted>().add_message::<Play>().add_systems(Update, (cues, phase_sounds, footsteps, play_sounds, music).chain()).add_observer(click);
+        app.init_resource::<Bank>().init_resource::<Muted>().add_message::<Play>().add_systems(Update, (cues, phase_sounds, footsteps, play_sounds).chain()).add_observer(click);
     }
 }
 
@@ -257,19 +199,5 @@ mod tests {
         assert_eq!(level(2, 0.8), 0.4);
         assert_eq!(level(4, 0.8), 0.8);
         assert_eq!(level(9, 0.8), 0.8, "a setting past the top is the top");
-    }
-
-    #[test]
-    fn the_music_follows_the_screen_and_the_fight() {
-        assert_eq!(wanted_track(Screen::Main, None, None), Track::Menu);
-        assert_eq!(wanted_track(Screen::Settings, Some(&Phase::Fighting), None), Track::Menu);
-        assert_eq!(wanted_track(Screen::Play, Some(&Phase::Fighting), None), Track::Fight);
-        assert_eq!(wanted_track(Screen::Play, Some(&Phase::Walking), None), Track::Calm);
-        let draft: world::WorldDraft = serde_json::from_str(&world::fake::world("a")).unwrap();
-        let mut w = world::build_world(&draft, "a", "English").unwrap().0;
-        let game = |world: world::World| Game { world, world_id: "a".into() };
-        assert_eq!(wanted_track(Screen::Play, Some(&Phase::Walking), Some(&game(w.clone()))), Track::Calm);
-        w.here_mut().creatures[0].attitude = world::Attitude::Hostile;
-        assert_eq!(wanted_track(Screen::Play, Some(&Phase::Walking), Some(&game(w))), Track::Tense);
     }
 }

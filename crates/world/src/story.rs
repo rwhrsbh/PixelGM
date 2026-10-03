@@ -139,6 +139,8 @@ pub enum Effect {
     Light { light: String },
     /// The sky changes here: clear, sun, rain, storm, snow or fog.
     Weather { weather: String },
+    /// The music changes here, to a mood.
+    Music { mood: String },
     /// Something is left on the ground of a cell: blood, a stain, a scorch, a puddle, a heap.
     /// With no cell it is where the party stands; with an id, under that thing.
     Mark {
@@ -769,6 +771,7 @@ impl World {
                     self.cues.drain(..extra);
                 }
                 Effect::Weather { weather } => location.weather = weather.trim().to_lowercase(),
+                Effect::Music { mood } => location.mood = mood.trim().to_lowercase(),
                 Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight | Effect::Deed { .. } | Effect::Revive { .. } => {}
             }
         }

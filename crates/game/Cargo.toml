@@ -5,13 +5,14 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "png", "system_clipboard", "bevy_audio", "vorbis", "wav", "tonemapping_luts", "zstd_rust"] }
+bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "png", "system_clipboard", "bevy_audio", "vorbis", "wav", "tonemapping_luts", "zstd_rust", "mp3"] }
 llm = { path = "../llm" }
 world = { path = "../world" }
 rules = { path = "../rules" }
 net = { path = "../net" }
 serde.workspace = true
 serde_json.workspace = true
+ureq = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_UI_Input_KeyboardAndMouse"] }

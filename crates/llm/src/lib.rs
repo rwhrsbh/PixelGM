@@ -5,6 +5,7 @@
 pub mod catalog;
 pub mod client;
 pub mod dispatch;
+pub mod openai;
 pub mod pool;
 pub mod thinking;
 

@@ -202,6 +202,7 @@ pub fn language_name(lang: Lang) -> &'static str {
 }
 
 struct Call {
+    custom: Option<llm::openai::Custom>,
     gm: Gm,
     store: Store,
     thinking: ThinkingSetting,
@@ -217,6 +218,27 @@ impl Call {
         let mut last = String::new();
         for _ in 0..self.attempts {
             let started = Instant::now();
+            // A provider of the player's own takes the place of Gemini.
+            if let Some(custom) = &self.custom {
+                let text = match custom.complete(&system, prompt) {
+                    Ok(text) => {
+                        info!("the master answered: {} (own provider) in {:.1} s, {} characters for a prompt of {}", custom.model, started.elapsed().as_secs_f32(), text.chars().count(), prompt.chars().count());
+                        text
+                    }
+                    Err(error) => {
+                        warn!("the own provider did not answer after {:.1} s: {error}", started.elapsed().as_secs_f32());
+                        last = format!("{}: {error}", custom.model);
+                        continue;
+                    }
+                };
+                self.store.log_answer(&custom.model, &text);
+                match world::read_answer::<T>(&text) {
+                    Ok(value) => return Ok(value),
+                    Err(e) => last = format!("{}: {e}", custom.model),
+                }
+                warn!("the game master's answer could not be read ({last})");
+                continue;
+            }
             let (text, model) = match self.gm.dispatcher.generate(&request, self.lowest) {
                 Ok((reply, model)) => {
                     info!("the master answered: {} in {:.1} s, {} characters for a prompt of {}", model.id, started.elapsed().as_secs_f32(), reply.text.chars().count(), prompt.chars().count());
@@ -268,6 +290,7 @@ impl Master {
         // Work nobody is waiting for uses only the best tier and is not retried.
         let unhurried = matches!(ask, Ask::Location { ahead: true, .. } | Ask::Event { .. } | Ask::Portrait { .. });
         let call = Call {
+            custom: settings.custom(),
             gm: gm.clone(),
             store: store.clone(),
             thinking: settings.thinking,

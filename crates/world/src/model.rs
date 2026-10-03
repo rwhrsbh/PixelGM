@@ -204,6 +204,10 @@ pub struct Location {
     /// What is hidden here.
     #[serde(default)]
     pub secrets: Vec<Secret>,
+    /// The mood of the music here, as the master set it: calm, explore, tense, battle, boss,
+    /// mystery, horror, sad, tavern, triumph, dungeon. Empty lets the game choose.
+    #[serde(default)]
+    pub mood: String,
     /// The cells the party has seen, one row of bits to a row of the map: in the dark, what
     /// was never seen stays black.
     #[serde(default)]

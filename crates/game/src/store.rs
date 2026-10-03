@@ -43,6 +43,14 @@ pub struct Settings {
     /// The picture fills the window at any scale, with no bars, rather than keeping every
     /// pixel the same size.
     pub fill: bool,
+    /// Fetch music from the network as it is wanted; off, only what is on disk plays.
+    pub online_music: bool,
+    /// A service of one's own speaking the OpenAI protocol, used instead of Gemini when on.
+    pub custom_on: bool,
+    pub custom_url: String,
+    pub custom_model: String,
+    /// The key, sealed to this user of this machine, in hex.
+    pub custom_key: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -53,9 +61,25 @@ pub enum Initiative {
     Often,
 }
 
+impl Settings {
+    /// The custom provider, when it is on and complete enough to ask.
+    pub fn custom(&self) -> Option<llm::openai::Custom> {
+        if !self.custom_on || self.custom_url.trim().is_empty() || self.custom_model.trim().is_empty() {
+            return None;
+        }
+        let key = crate::secret::from_hex(&self.custom_key).and_then(|blob| crate::secret::unprotect(&blob).ok()).and_then(|plain| String::from_utf8(plain).ok()).unwrap_or_default();
+        Some(llm::openai::Custom { url: self.custom_url.clone(), model: self.custom_model.clone(), key })
+    }
+
+    /// Seals and keeps the custom provider's key.
+    pub fn set_custom_key(&mut self, key: &str) {
+        self.custom_key = if key.trim().is_empty() { String::new() } else { crate::secret::protect(key.trim().as_bytes()).map(|blob| crate::secret::to_hex(&blob)).unwrap_or_default() };
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true }
+        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, online_music: true, custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new() }
     }
 }
 
@@ -300,7 +324,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false };
+        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, online_music: false, custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new() };
         store.save_settings(&settings).unwrap();
         assert_eq!(store.load_settings(), settings);
     }

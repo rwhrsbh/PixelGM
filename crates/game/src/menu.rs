@@ -16,6 +16,8 @@ pub enum Screen {
     Settings,
     /// Every effect over the picture, with a preview.
     Graphics,
+    /// A game master of one's own instead of Gemini.
+    Provider,
     /// The form where the host says what world they want.
     NewGame,
     /// Waiting for the game master to invent and draw the world.

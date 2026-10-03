@@ -19,6 +19,7 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "light", "light": "day|dusk|night|dark"} — time passes here: the hour and the light change
   {"op": "weather", "weather": "clear|sun|rain|storm|snow|fog"} — the sky over this place changes
   {"op": "mark", "x": 0, "y": 0, "kind": "blood|dung|puddle|scorch|ash|slime|vomit|wine|paint|rubble|coins|bones", "color": "#rrggbb"} — something is left on the ground of a cell; without x and y it is where the party stands; "id" instead puts it under that thing; "color" is optional
+  {"op": "music", "mood": "calm|explore|tense|battle|boss|mystery|horror|sad|tavern|triumph|dungeon"} — the music of this place changes with what happens: dread creeping in, a celebration, grief
   {"op": "clean", "x": 0, "y": 0} — what was left on a cell is picked up or washed away (with "give" when the party takes it)
   {"op": "travel", "to": "place_id", "name": "for a new place"} — the party goes to another place
   {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
@@ -88,6 +89,7 @@ const LOCATION_SHAPE: &str = r##"{
   "id": "snake_case", "name": "…", "description": "two or three sentences the players read on arrival",
   "light": "day, dusk, night or dark (a cave, a cellar): the hour and the light of the place",
   "weather": "clear, sun, rain, storm, snow or fog; clear indoors and underground",
+  "mood": "the music of the place: calm, explore, tense, mystery, horror, sad, tavern, dungeon",
   "legend": {".": "grass", "#": "stone_wall", "+": "door"},
   "map": ["30 characters", "… 16 rows in all"],
   "spawn": [x, y],
