@@ -103,6 +103,18 @@ pub enum Effect {
         #[serde(default)]
         done: bool,
     },
+    /// Time passes: so many hours.
+    Time {
+        #[serde(default)]
+        hours: Value,
+    },
+    /// Coins change hands: a hero gains them, or with a negative amount pays them.
+    Gold {
+        #[serde(deserialize_with = "lenient_int")]
+        amount: i64,
+        #[serde(default)]
+        to: String,
+    },
     /// The ground or the whole scene shakes, for so many seconds.
     Shake {
         #[serde(default)]
@@ -347,6 +359,8 @@ pub struct Bag {
     pub worn_as: Vec<Item>,
     /// The names of the things kept at hand, a key each; empty for a free slot.
     pub quick: Vec<String>,
+    /// Coins: each hero's own.
+    pub gold: u32,
 }
 
 /// What the master may say about a thing it gives, beyond its name.
@@ -612,6 +626,9 @@ impl World {
         let mut moved: Vec<(usize, (usize, usize))> = Vec::new();
         let mut travel: Option<(String, String, Vec<usize>)> = None;
         let mut travel_look = String::new();
+        let mut until: Option<String> = None;
+        let mut passed = 0u32;
+        let mut gold: Vec<(usize, i64)> = Vec::new();
         // The heroes in this scene: those the word "party" means here.
         let present: Vec<usize> = (0..self.party.len()).filter(|i| !self.party[*i].dead && self.takes_part(*i) && self.hero_place(*i) == here).collect();
         let present = if present.is_empty() { (0..self.party.len().min(1)).collect() } else { present };
@@ -814,7 +831,19 @@ impl World {
                     }
                 }
                 Effect::Fact { text } => self.story.remember(text),
-                Effect::Light { light } => location.light = light.trim().to_lowercase(),
+                Effect::Light { light } => {
+                    let light = light.trim().to_lowercase();
+                    match light.as_str() {
+                        // The hour is the world's: the clock moves on to it.
+                        "day" | "dusk" | "night" => until = Some(light),
+                        _ => location.light = light,
+                    }
+                }
+                Effect::Time { hours } => passed += (hours.as_f64().unwrap_or(0.0).clamp(0.0, 240.0) * 60.0) as u32,
+                Effect::Gold { amount, to } => {
+                    let hero = if to.trim().is_empty() { acting } else { bag_of(to) };
+                    gold.push((hero, (*amount).clamp(-1_000_000, 1_000_000)));
+                }
                 Effect::Clean { x, y } => {
                     let cell = if *x >= 0 && *y >= 0 { clamp_cell(*x, *y) } else { party_cell };
                     // Beside the party counts too: what one picks up is rarely exactly underfoot.
@@ -915,6 +944,17 @@ impl World {
             }
         }
         self.moves.extend(moved);
+        if passed > 0 {
+            self.pass(passed);
+        }
+        if let Some(light) = until {
+            self.pass_until(&light);
+        }
+        for (hero, amount) in gold {
+            if let Some(bag) = self.story.bags.get_mut(hero) {
+                bag.gold = (bag.gold as i64 + amount).clamp(0, u32::MAX as i64) as u32;
+            }
+        }
         if let Some((to, name, heroes)) = travel {
             // A place nobody has heard of yet is named now and drawn when the party arrives.
             if !self.locations.contains_key(&to) && !self.stubs.contains_key(&to) {

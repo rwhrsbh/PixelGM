@@ -621,6 +621,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         moves: Vec::new(),
         acting: None,
         quest: draft.quest.quest(),
+        clock: crate::model::morning(),
         facing: (0, 0),
         title: fallback(&draft.title, &built.location.name),
         summary: draft.summary.trim().to_string(),

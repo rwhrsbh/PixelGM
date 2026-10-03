@@ -57,6 +57,8 @@ pub enum Intent {
     Arrange { held: world::bag::Held, to: world::bag::Spot },
     /// One of a thing in the bag used.
     UseItem { index: usize },
+    /// Coins laid on the ground of a cell.
+    DropGold { amount: u32, cell: (usize, usize) },
     /// A thing put on a quick slot, by name; an empty name clears the slot.
     Quick { slot: usize, name: String },
     /// One of a thing in the bag thrown on the ground of a cell.
@@ -482,6 +484,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                 }
                 if !world.owners.contains(name) {
                     world.party.push(*hero);
+                    world.outfit(world.party.len() - 1);
                     world.owners.push(name.clone());
                     world.tidy_gear();
                 }

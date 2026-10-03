@@ -660,6 +660,7 @@ fn on_activate(
                         world.owners[old] = String::new();
                     }
                     world.party.push(hero);
+                    world.outfit(world.party.len() - 1);
                     world.owners.push(owner);
                     world.tidy_gear();
                     next.set(Screen::Play);

@@ -255,6 +255,10 @@ texts! {
     Spells: "Заклинания", "Spells";
     FightItems: "Предметы", "Items";
     SheetSize: "Размер", "Size";
+    GoldCount: "Золото:", "Gold:";
+    NotSafe: "Здесь небезопасно: рядом враги", "It is not safe here: enemies are near";
+    NeedRation: "Нечего есть: нужен паёк на каждого", "Nothing to eat: each needs a ration";
+    DayWord: "День", "Day";
     ModeStory: "Режим: сюжет", "Mode: story";
     ModeSandbox: "Режим: песочница", "Mode: sandbox";
     LiveOn: "Живой мир: да", "Live world: on";

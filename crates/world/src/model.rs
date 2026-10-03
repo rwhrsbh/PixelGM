@@ -370,6 +370,9 @@ pub struct World {
     /// The main quest and the side tasks.
     #[serde(default)]
     pub quest: Quest,
+    /// Minutes since midnight of the first day. It runs a minute to a second of play.
+    #[serde(default = "morning")]
+    pub clock: u32,
     /// Which way the hero on this screen looks: a step along x or y. Told to the master, so
     /// that "the wall in front of me" is a cell it can name.
     #[serde(skip)]
@@ -409,6 +412,67 @@ pub struct World {
 
 fn yes() -> bool {
     true
+}
+
+/// A world begins at eight in the morning of its first day.
+pub fn morning() -> u32 {
+    8 * 60
+}
+
+impl World {
+    /// The day, from 1, and the hour and minute of it.
+    pub fn time(&self) -> (u32, u32, u32) {
+        (self.clock / 1440 + 1, self.clock % 1440 / 60, self.clock % 60)
+    }
+
+    /// What the sky gives at this hour: day, dusk or night.
+    pub fn daylight(&self) -> &'static str {
+        match self.clock % 1440 / 60 {
+            6..=17 => "day",
+            5 | 18..=20 => "dusk",
+            _ => "night",
+        }
+    }
+
+    pub fn is_night(&self) -> bool {
+        self.daylight() == "night"
+    }
+
+    /// Time passes. The place the party is in takes the light of the new hour, unless it
+    /// has none of its own to lose (a cave, a cellar: "dark").
+    pub fn pass(&mut self, minutes: u32) {
+        self.clock = self.clock.saturating_add(minutes);
+        self.sync_light();
+    }
+
+    /// Gives the place the party is in the light of the hour. `true` when it changed.
+    pub fn sync_light(&mut self) -> bool {
+        let light = self.daylight();
+        let here = self.current.clone();
+        match self.locations.get_mut(&here) {
+            Some(place) if place.light != "dark" && place.light != light => {
+                place.light = light.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The clock is put forward to the next hour of the kind named: a master who says
+    /// "night falls" moves time, it does not paint one place dark.
+    pub fn pass_until(&mut self, light: &str) {
+        let hour = match light {
+            "day" => 9,
+            "dusk" => 18,
+            "night" => 22,
+            _ => return,
+        };
+        if self.daylight() != light {
+            let now = self.clock % 1440;
+            let target = hour * 60;
+            self.pass(if target > now { target - now } else { 1440 - now + target });
+        }
+    }
 }
 
 /// How hard the game is on the party; chosen with the world and kept.

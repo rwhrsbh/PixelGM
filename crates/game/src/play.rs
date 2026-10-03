@@ -2725,13 +2725,24 @@ fn on_activate(
             autosave(&store, &game);
         }
         (PlayAction::Rest, _) => {
-            game.world.long_rest();
-            *toast = Toast { text: Some(T::Rested), left: 3.0 };
-            autosave(&store, &game);
+            match game.world.can_rest_long() {
+                Ok(()) => {
+                    game.world.eat_rations();
+                    game.world.long_rest();
+                    game.world.pass(8 * 60);
+                    *toast = Toast { text: Some(T::Rested), left: 3.0 };
+                    redraw.0 = true;
+                    autosave(&store, &game);
+                }
+                Err(world::bag::RestTrouble::NotSafe) => *toast = Toast { text: Some(T::NotSafe), left: 4.0 },
+                Err(world::bag::RestTrouble::NoRation) => *toast = Toast { text: Some(T::NeedRation), left: 4.0 },
+            }
             *phase = Phase::Walking;
         }
         (PlayAction::ShortRest, _) => {
             game.world.short_rest(&mut Rng::from_clock());
+            game.world.pass(60);
+            redraw.0 = true;
             *toast = Toast { text: Some(T::ShortRested), left: 3.0 };
             autosave(&store, &game);
             *phase = Phase::Walking;
@@ -2843,6 +2854,65 @@ fn on_activate(
 fn hero_of<'a>(world: &'a World, player: &str) -> Option<&'a str> {
     let index = world.owners.iter().position(|o| o == player)?;
     world.party.get(index).map(|h| h.name.as_str())
+}
+
+/// The world's clock runs a minute to a second of play, on the host's machine. Alone it
+/// stops with the game paused or the window out of sight; a fight counts its own rounds.
+fn run_clock(time: Res<Time>, mut game: ResMut<Game>, phase: Res<Phase>, session: Res<Session>, window: Single<&Window, With<bevy::window::PrimaryWindow>>, mut redraw: ResMut<Redraw>, mut since: Local<f32>) {
+    if session.is_client() || game.world.party.is_empty() || matches!(*phase, Phase::Fighting | Phase::Drawing { .. } | Phase::Stuck { .. }) {
+        return;
+    }
+    let alone = matches!(*session, Session::Solo);
+    if alone && (*phase == Phase::Paused || !window.focused && window.visible) {
+        return;
+    }
+    *since += time.delta_secs();
+    if *since < 1.0 {
+        return;
+    }
+    let minutes = since.floor();
+    *since -= minutes;
+    // The minutes go by unseen; the picture is drawn again only when the light changes.
+    let world = &mut game.bypass_change_detection().world;
+    world.clock = world.clock.saturating_add(minutes as u32);
+    if world.sync_light() {
+        game.set_changed();
+        redraw.0 = true;
+    }
+}
+
+#[derive(Component)]
+struct ClockFace;
+
+/// The day and the hour, in the corner of the map by the party.
+fn clock_face(mut commands: Commands, game: Res<Game>, lang: Res<Lang>, fonts: Res<Fonts>, mut faces: Query<&mut Text, With<ClockFace>>) {
+    let (day, hour, minute) = game.world.time();
+    let mark = match game.world.daylight() {
+        "day" => "",
+        "dusk" => " ~",
+        _ => " *",
+    };
+    let shown = format!("{} {day} · {hour:02}:{minute:02}{mark}", T::DayWord.text(*lang));
+    match faces.single_mut() {
+        Ok(mut text) => {
+            if text.0 != shown {
+                text.0 = shown;
+            }
+        }
+        Err(_) => {
+            commands.spawn((
+                ClockFace,
+                DespawnOnExit(Screen::Play),
+                Node { position_type: PositionType::Absolute, right: px(crate::view::COLUMN + 3.0), top: px(3), padding: UiRect::axes(px(4), px(1)), ..default() },
+                BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.72)),
+                Text::new(shown),
+                fonts.body(),
+                TextColor(color(PARCHMENT)),
+                GlobalZIndex(7),
+                Pickable::IGNORE,
+            ));
+        }
+    }
 }
 
 /// The main quest and the open side tasks, a line each, for the journal.
@@ -3066,6 +3136,15 @@ fn guests(
             Intent::Arrange { held, to } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     game.world.arrange(hero, &held, to);
+                }
+                None
+            }
+            Intent::DropGold { amount, cell } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    let home = enter_scene(&mut game, &mut table, &player);
+                    game.world.drop_gold(hero, amount, cell);
+                    leave_scene(&mut game, &mut table, Some(home));
+                    redraw.0 = true;
                 }
                 None
             }
@@ -3520,6 +3599,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Approach>()
             .init_resource::<UseFor>()
             .add_observer(on_resize)
+            .add_systems(Update, (run_clock, clock_face).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, goal_line.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, number_keys.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, keep_facing.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))

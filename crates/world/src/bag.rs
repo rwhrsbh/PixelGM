@@ -303,6 +303,13 @@ impl World {
     }
 }
 
+/// Why the party cannot sleep here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestTrouble {
+    NotSafe,
+    NoRation,
+}
+
 /// What using a thing came to.
 #[derive(Debug, PartialEq)]
 pub enum Used {
@@ -330,6 +337,81 @@ impl World {
             bag.remove(i);
         }
         Used::Healed(healed)
+    }
+
+    /// A hero who joins sets out with a little money and food for two nights.
+    pub fn outfit(&mut self, hero: usize) {
+        self.ensure_bags();
+        let ration = Item { name: self.ration_name().to_string(), description: String::new(), count: 2, kind: "food".into(), ..Default::default() };
+        if let Some(bag) = self.story.bags.get_mut(hero) {
+            bag.gold += 15;
+            bag.receive(ration);
+        }
+    }
+
+    fn ration_name(&self) -> &'static str {
+        if self.language.to_lowercase().starts_with("ru") || self.language.to_lowercase().contains("рус") { "Паёк" } else { "Ration" }
+    }
+
+    pub fn gold_name(&self) -> &'static str {
+        if self.language.to_lowercase().starts_with("ru") || self.language.to_lowercase().contains("рус") { "Золото" } else { "Gold" }
+    }
+
+    /// Lays coins from a hero's purse on the ground of a cell, as a heap to be picked up.
+    pub fn drop_gold(&mut self, hero: usize, amount: u32, cell: (usize, usize)) -> bool {
+        self.ensure_bags();
+        let name = self.gold_name().to_string();
+        let Some(bag) = self.story.bags.get_mut(hero) else { return false };
+        let amount = amount.min(bag.gold);
+        if amount == 0 {
+            return false;
+        }
+        bag.gold -= amount;
+        let here = self.current.clone();
+        let Some(place) = self.locations.get_mut(&here) else { return false };
+        match place.items.iter_mut().find(|l| l.item.kind == "gold" && (l.x, l.y) == cell) {
+            Some(heap) => heap.item.count += amount,
+            None => place.items.push(crate::model::Lying { item: Item { name, count: amount, kind: "gold".into(), ..Default::default() }, x: cell.0, y: cell.1 }),
+        }
+        true
+    }
+
+    /// Whether the party may sleep here, and what stops it: something hostile in the place,
+    /// or a hero with nothing to eat (where the world asks for rations).
+    pub fn can_rest_long(&self) -> Result<(), RestTrouble> {
+        if self.hostiles().next().is_some() {
+            return Err(RestTrouble::NotSafe);
+        }
+        if self.table.difficulty != crate::model::Difficulty::Casual {
+            let fed = |hero: usize| self.story.bags.get(hero).is_some_and(|b| b.inventory.iter().any(|i| i.kind == "food"));
+            if (0..self.party.len()).any(|i| self.takes_part(i) && !self.party[i].dead && !fed(i)) {
+                return Err(RestTrouble::NoRation);
+            }
+        }
+        Ok(())
+    }
+
+    /// Each hero eats, where rations are asked for.
+    pub fn eat_rations(&mut self) {
+        if self.table.difficulty == crate::model::Difficulty::Casual {
+            return;
+        }
+        for hero in 0..self.party.len() {
+            if !self.takes_part(hero) || self.party[hero].dead {
+                continue;
+            }
+            let Some(bag) = self.story.bags.get_mut(hero) else { continue };
+            // What heals nothing is eaten first: a healing fruit is kept for a wound.
+            let mut food: Vec<usize> = (0..bag.inventory.len()).filter(|i| bag.inventory[*i].kind == "food").collect();
+            food.sort_by_key(|i| !bag.inventory[*i].heal.trim().is_empty());
+            if let Some(i) = food.first().copied() {
+                if bag.inventory[i].count > 1 {
+                    bag.inventory[i].count -= 1;
+                } else {
+                    bag.inventory.remove(i);
+                }
+            }
+        }
     }
 
     /// Lays one of a thing from the bag on the ground of a cell of this place.
@@ -361,6 +443,8 @@ impl World {
         }
         let lying = place.items.remove(n);
         match self.story.bags.get_mut(hero) {
+            // Coins go into the purse, not the bag.
+            Some(bag) if lying.item.kind == "gold" => bag.gold = bag.gold.saturating_add(lying.item.count),
             Some(bag) => bag.receive(lying.item),
             None => return false,
         }
@@ -803,6 +887,33 @@ mod tests {
         // A quick slot holds a thing by name.
         w.set_quick(0, 2, "Potion");
         assert_eq!(w.quick_item(0, 2), None);
+    }
+
+    #[test]
+    fn a_night_needs_safety_and_food_and_coins_lie_in_a_heap() {
+        let mut w = world();
+        w.outfit(0);
+        assert_eq!(w.story.bags[0].gold, 15);
+        assert_eq!(w.can_rest_long(), Ok(()));
+        w.eat_rations();
+        w.eat_rations();
+        assert_eq!(w.can_rest_long(), Err(RestTrouble::NoRation));
+        w.table.difficulty = crate::model::Difficulty::Casual;
+        assert_eq!(w.can_rest_long(), Ok(()));
+        w.apply(&crate::story::read_effects(&[serde_json::json!({ "op": "attitude", "id": "cat", "attitude": "hostile" })], &mut Vec::new()), None);
+        assert_eq!(w.can_rest_long(), Err(RestTrouble::NotSafe));
+        // Coins are laid down as a heap and go back into a purse, not a bag.
+        assert!(w.drop_gold(0, 10, (3, 3)) && w.drop_gold(0, 99, (3, 3)));
+        assert_eq!((w.story.bags[0].gold, w.here().items.last().unwrap().item.count), (0, 15));
+        let n = w.here().items.len() - 1;
+        let things = w.story.bags[0].inventory.len();
+        assert!(w.pick_up(0, n));
+        assert_eq!((w.story.bags[0].gold, w.story.bags[0].inventory.len()), (15, things));
+        // The master pays and takes; the clock moves on to the hour it names.
+        w.apply(&crate::story::read_effects(&[serde_json::json!({ "op": "gold", "amount": -5 }), serde_json::json!({ "op": "light", "light": "night" }), serde_json::json!({ "op": "time", "hours": 1 })], &mut Vec::new()), None);
+        assert_eq!(w.story.bags[0].gold, 10);
+        assert_eq!(w.time(), (1, 22, 0));
+        assert_eq!((w.daylight(), w.here().light.as_str()), ("night", "night"));
     }
 
     #[test]

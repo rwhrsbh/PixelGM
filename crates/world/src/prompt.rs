@@ -16,7 +16,7 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "give", "name": "…", "description": "…", "kind": "weapon|armor|light|potion|food|throwable|key|tool|junk|quest", "size": [1, 2], "heal": "2d4+2", "damage": "1d6", "light": 4, "rows": ["…"]} — the party gains an item. "rows" is REQUIRED on every "give" and on every thing in a container's "contents": always draw the thing yourself — 16 rows of 16 palette characters for each cell of its size, '0' transparent, the thing filling most of the picture, recognisable at a glance — the player sees it in the bag and on the ground, and a thing without a picture is a mistake. The rest besides name is optional: "size" is cells across and down in the bag (1 to 4), "heal" what drinking or eating it heals, "damage" what throwing it does, "light" how many cells it lights when held, "rows" your picture of it (required), 16 pixels to a cell; a weapon, armour or shield the hero can wield or wear ALWAYS takes "kind": "weapon" or "armor" and "gear": the D&D 5e SRD index it works as (longsword, dagger, greataxe, shortbow, leather-armor, chain-mail, breastplate, plate-armor, shield, …) — its own name and picture stay, the rules come from that index
   {"op": "take", "name": "…"} — the party loses an item (used up, given away, broken)
   {"op": "describe", "id": "…", "description": "…"} — a thing looks different from now on
-  {"op": "light", "light": "day|dusk|night|dark"} — time passes here: the hour and the light change
+  {"op": "light", "light": "day|dusk|night|dark"} — "day", "dusk" or "night" puts the world's clock forward to that hour; "dark" makes this one place lightless for good (a cave, a cellar)
   {"op": "weather", "weather": "clear|sun|rain|storm|snow|fog"} — the sky over this place changes
   {"op": "mark", "x": 0, "y": 0, "kind": "blood|dung|puddle|scorch|ash|slime|vomit|wine|paint|rubble|coins|bones", "color": "#rrggbb"} — something is left on the ground of a cell; without x and y it is where the party stands; "id" instead puts it under that thing; "color" is optional
   {"op": "music", "mood": "calm|explore|tense|battle|boss|mystery|horror|sad|tavern|triumph|dungeon"} — the music of this place changes with what happens: dread creeping in, a celebration, grief
@@ -24,6 +24,8 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "quest", "goal": "what the players must do next", "advance": true, "done": "won|lost"} — the main quest moves: "goal" changes what the players are told, "advance" goes to the next act, "done" ends it
   {"op": "quest_new", "title": "…", "goal": "…", "acts": ["…"], "ending": "…", "failure": "…"} — a new main quest, when there is none or the last one is over
   {"op": "task", "name": "…", "step": "what to do next", "done": false} — a side task someone gave the party: new, moved on, or done
+  {"op": "time", "hours": 2} — time passes: a long talk, a search, a wait, a march (the clock also runs by itself, a minute a second)
+  {"op": "gold", "amount": 25, "to": "hero name"} — coins: a hero is paid, finds or is given them; a negative amount is what they pay or lose
   {"op": "shake", "seconds": 1.5} — the whole screen shakes: an earthquake, an explosion, a roar, a collapse, a giant's step, a heavy blow
   {"op": "travel", "to": "place_id", "name": "for a new place", "description": "what a new place looks like", "who": ["hero name"]} — heroes go to another place; "who" lists those who go, everyone here when left out
   {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
@@ -201,6 +203,8 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
             let _ = writeln!(text, "SIDE TASKS open: {}", open.join("; "));
         }
     }
+    let (day, hour, minute) = world.time();
+    let _ = writeln!(text, "\nTIME: day {day}, {hour:02}:{minute:02} ({}).{}", world.daylight(), if world.is_night() { " It is night: honest folk sleep, shops are shut, and the dark is more dangerous." } else { "" });
     let _ = writeln!(text, "\nPLACE \"{}\": {}. {}", world.current, here.name, here.description);
     for prop in &here.props {
         let held = prop.chest.as_ref().map(|c| if c.open { " (opened)".to_string() } else if c.lock > 0 { format!(" (locked, lock {}{})", c.lock, if c.key.is_empty() { String::new() } else { format!(", key: {}", c.key) }) } else { " (shut)".to_string() }).unwrap_or_default();

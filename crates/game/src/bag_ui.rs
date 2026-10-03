@@ -63,6 +63,8 @@ enum Target {
     Loose(usize),
     PrevHero,
     NextHero,
+    /// The purse: a click lays ten coins on the ground, to be picked up by another.
+    Gold,
 }
 
 #[derive(Component)]
@@ -131,6 +133,12 @@ fn bag(world: &World, hero: usize) -> &[Item] {
 }
 
 fn fingerprint(world: &World, state: &BagState, hero: Option<usize>, lang: Lang) -> String {
+    let gold = world.story.bags.get(state.hero).map_or(0, |b| b.gold);
+    let rest = fingerprint_things(world, state, hero, lang);
+    format!("{gold}|{rest}")
+}
+
+fn fingerprint_things(world: &World, state: &BagState, hero: Option<usize>, lang: Lang) -> String {
     let h = hero.unwrap_or(0);
     let worn: Vec<_> = hero.and_then(|h| world.party.get(h)).map(|h| Slot::ALL.map(|s| worn(h, s))).into_iter().collect();
     format!("{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}", bag(world, h), world.held_light(h), worn, hero, state.held, lang, hero.and_then(|h| world.party.get(h)).map(|h| (h.hp, h.max_hp, h.look)))
@@ -290,6 +298,10 @@ fn build(
             if let Some(hero) = hero {
                 let name = format!("{} · {} {} · {} {}/{}", hero.name, T::ArmorClass.text(*lang), hero.ac(), T::HitPoints.text(*lang), hero.hp, hero.max_hp);
                 panel.spawn((abs(10.0, 6.0, 200.0, 10.0), Text::new(name), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
+                let gold = world.story.bags.get(state.hero).map_or(0, |b| b.gold);
+                panel.spawn((Node { padding: UiRect::horizontal(px(3)), align_items: AlignItems::Center, ..abs(124.0, 96.0, 100.0, 12.0) }, Button, Target::Gold, BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
+                    b.spawn((Text::new(format!("{} {gold}", T::GoldCount.text(*lang))), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
+                });
                 if mine.len() > 1 {
                     for (left, target, mark) in [(198.0, Target::PrevHero, "<"), (214.0, Target::NextHero, ">")] {
                         panel.spawn((abs(left, 4.0, 14.0, 12.0), Button, target, BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
@@ -438,6 +450,22 @@ fn press(
         }
         let world = &mut game.world;
         let to = match (*target, &state.held) {
+            (Target::Gold, _) => {
+                // Ten coins, or what is left, laid beside the hero.
+                let (cx, cy) = world.player.cell();
+                let here = world.here();
+                let free = |(x, y): (i32, i32)| (0..world::MAP_W as i32).contains(&x) && (0..world::MAP_H as i32).contains(&y) && !here.blocked(x, y, &world.tiles) && here.exit_at(x as usize, y as usize).is_none();
+                let around = [(1, 0), (0, 1), (-1, 0), (1, 1), (-1, 1), (0, -1), (1, -1), (-1, -1)];
+                let spot = around.iter().map(|(dx, dy)| (cx + dx, cy + dy)).find(|c| free(*c)).unwrap_or((cx, cy));
+                let cell = (spot.0.max(0) as usize, spot.1.max(0) as usize);
+                if session.is_client() {
+                    session.intend(Intent::DropGold { amount: 10, cell });
+                }
+                let done = world.drop_gold(hero, 10, cell);
+                sound.write(Play(if done { Sfx::Item } else { Sfx::Error }));
+                state.built.clear();
+                continue;
+            }
             (Target::PrevHero | Target::NextHero, _) => {
                 if let Some(at) = mine.iter().position(|h| *h == hero) {
                     let step = if matches!(target, Target::NextHero) { 1 } else { mine.len() - 1 };
