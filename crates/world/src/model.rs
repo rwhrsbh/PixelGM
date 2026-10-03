@@ -360,6 +360,9 @@ pub struct World {
     /// The hero whose player the master is answering, for whose bag a thing goes into.
     #[serde(skip)]
     pub acting: Option<usize>,
+    /// The main quest and the side tasks.
+    #[serde(default)]
+    pub quest: Quest,
     /// Which way the hero on this screen looks: a step along x or y. Told to the master, so
     /// that "the wall in front of me" is a cell it can name.
     #[serde(skip)]
@@ -401,6 +404,55 @@ fn yes() -> bool {
     true
 }
 
+/// How hard the game is on the party; chosen with the world and kept.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Difficulty {
+    /// A beaten party wakes with a hit point each.
+    Casual,
+    /// A hero can die.
+    #[default]
+    Honest,
+    /// Death is final and there is one save.
+    Hardcore,
+}
+
+/// Something the party was asked to do on the side.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct Task {
+    pub name: String,
+    /// What is to be done next.
+    pub step: String,
+    pub done: bool,
+}
+
+/// The main quest of a world in story mode. The players see its name and the goal; the acts
+/// and the endings are the master's own, to steer by.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct Quest {
+    pub title: String,
+    /// What the party is to do now, as the players are told.
+    pub goal: String,
+    /// The turns of the story, in order: hidden from the players.
+    pub acts: Vec<String>,
+    /// The act being played, from 0.
+    pub act: usize,
+    pub ending: String,
+    pub failure: String,
+    /// Won (`true`) or lost, once it is over.
+    pub done: Option<bool>,
+    pub tasks: Vec<Task>,
+    /// Main quests finished before this one.
+    pub chapters_done: u32,
+}
+
+impl Quest {
+    pub fn is_set(&self) -> bool {
+        !self.goal.trim().is_empty() || !self.acts.is_empty()
+    }
+}
+
 /// The host's choices about the rules of a table.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(default)]
@@ -413,6 +465,11 @@ pub struct TableRules {
     pub method: rules::AbilityMethod,
     /// The 2024 edition of the reference rules instead of the 2014 one. Still a beta.
     pub srd_2024: bool,
+    /// No main quest: the party wanders where it likes. Story mode is the rule.
+    pub sandbox: bool,
+    /// The master works in the background too: people speak and move, threats ripen.
+    pub live: bool,
+    pub difficulty: Difficulty,
 }
 
 /// Abilities offered to one hero. The player picks one.

@@ -176,6 +176,7 @@ pub fn world(request: &str) -> String {
     let seed = seed_of(request);
     let (east, south) = ((MAP_W - 1, 8), (14, MAP_H - 1));
     json!({
+        "quest": { "title": "The Silent Bell", "goal": "Find out who keeps the fire alive.", "acts": ["The party learns the keeper went east.", "The keeper is found on the road.", "The bell is rung."], "ending": "The hollow wakes.", "failure": "The fire dies." },
         "title": "Test Hollow",
         "summary": format!("A quiet hollow made by rule for testing. The host asked for: {request}"),
         "tone": "calm",
@@ -221,6 +222,7 @@ pub fn turn(said: &str) -> String {
         "narration": format!("You said: {said}. The hollow listens, and something in it answers."),
         "effects": [
             { "op": "fact", "text": "The party made itself heard." },
+            { "op": "task", "name": "The cat's errand", "step": "Follow the cat." },
             { "op": "animate", "id": "party", "motion": "crouch" },
             { "op": "mark", "kind": "dung" },
             { "op": "move", "id": "cat", "x": 13, "y": 9 },

@@ -27,6 +27,9 @@ enum Action {
     Limits,
     Method,
     Edition,
+    Story,
+    Live,
+    Difficulty,
 }
 
 #[derive(Component)]
@@ -69,6 +72,22 @@ fn method_label(making: &Making) -> T {
         rules::AbilityMethod::PointBuy => T::MethodPointBuy,
         rules::AbilityMethod::StandardArray => T::MethodArray,
         rules::AbilityMethod::Roll => T::MethodRoll,
+    }
+}
+
+fn story_label(making: &Making) -> T {
+    if making.table.sandbox { T::ModeSandbox } else { T::ModeStory }
+}
+
+fn live_label(making: &Making) -> T {
+    if making.table.live { T::LiveOn } else { T::LiveOff }
+}
+
+fn difficulty_label(making: &Making) -> T {
+    match making.table.difficulty {
+        world::Difficulty::Casual => T::DifficultyCasual,
+        world::Difficulty::Honest => T::DifficultyHonest,
+        world::Difficulty::Hardcore => T::DifficultyHardcore,
     }
 }
 
@@ -151,6 +170,11 @@ fn build_form(commands: &mut Commands, art: &Art, fonts: &Fonts, making: &Making
                 button(line, art, fonts, sex_label(making), true, Action::Sex);
             });
             sheet.spawn(Node { column_gap: px(6), row_gap: px(3), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
+                button(line, art, fonts, story_label(making), true, Action::Story);
+                button(line, art, fonts, live_label(making), true, Action::Live);
+                button(line, art, fonts, difficulty_label(making), true, Action::Difficulty);
+            });
+            sheet.spawn(Node { column_gap: px(6), row_gap: px(3), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
                 button(line, art, fonts, book_label(making), true, Action::Book);
                 button(line, art, fonts, limits_label(making), true, Action::Limits);
                 button(line, art, fonts, method_label(making), true, Action::Method);
@@ -187,7 +211,7 @@ fn spawn_waiting(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
 
 fn start_making(making: &mut Making, request: String, gm: &Gm, store: &Store, settings: &Settings, master: &Master) {
     *making = Making { request: request.clone(), seconds: 0.0, trouble: None, no_violence: making.no_violence, no_sex: making.no_sex, table: making.table };
-    master.ask(gm, store, settings, Ask::NewWorld { request });
+    master.ask(gm, store, settings, Ask::NewWorld { request, story: !making.table.sandbox });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -220,6 +244,15 @@ fn on_activate(
         Action::Book => making.table.book_only = !making.table.book_only,
         Action::Limits => making.table.no_limits = !making.table.no_limits,
         Action::Edition => making.table.srd_2024 = !making.table.srd_2024,
+        Action::Story => making.table.sandbox = !making.table.sandbox,
+        Action::Live => making.table.live = !making.table.live,
+        Action::Difficulty => {
+            making.table.difficulty = match making.table.difficulty {
+                world::Difficulty::Casual => world::Difficulty::Honest,
+                world::Difficulty::Honest => world::Difficulty::Hardcore,
+                world::Difficulty::Hardcore => world::Difficulty::Casual,
+            }
+        }
         Action::Method => {
             making.table.method = match making.table.method {
                 rules::AbilityMethod::PointBuy => rules::AbilityMethod::StandardArray,

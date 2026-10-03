@@ -80,6 +80,29 @@ pub enum Effect {
         #[serde(default)]
         to: Vec<i64>,
     },
+    /// The main quest moves: a new goal for the players, the next act, or its end.
+    Quest {
+        #[serde(default)]
+        goal: String,
+        #[serde(default)]
+        advance: bool,
+        /// "won" or "lost", when it is over.
+        #[serde(default)]
+        done: String,
+    },
+    /// A new main quest, when there is none or the last is over.
+    QuestNew {
+        #[serde(flatten)]
+        quest: crate::build::QuestDraft,
+    },
+    /// Something asked of the party on the side: new, moved on, or done.
+    Task {
+        name: String,
+        #[serde(default)]
+        step: String,
+        #[serde(default)]
+        done: bool,
+    },
     /// The ground or the whole scene shakes, for so many seconds.
     Shake {
         #[serde(default)]
@@ -472,6 +495,20 @@ impl ThingDraft {
     }
 }
 
+impl World {
+    /// The chance, in hundredths, that the best of the party passes the check a choice
+    /// begins with; nothing for a choice that needs no die.
+    pub fn chance(&self, action: &Action) -> Option<u8> {
+        let (ability, skill, dc) = action.effects.iter().find_map(|e| match e {
+            Effect::Check { ability, skill, dc, .. } => Some((Ability::from_index(ability.trim())?, skill.as_ref().map(|s| s.trim().to_lowercase().replace([' ', '_'], "-")).filter(|s| !s.is_empty()), (*dc).clamp(1, 40) as i32)),
+            _ => None,
+        })?;
+        let bonus = self.party.iter().enumerate().filter(|(i, h)| !h.is_down() && self.takes_part(*i)).map(|(_, h)| h.check_bonus(ability, skill.as_deref())).max().unwrap_or(0);
+        // A d20 plus the bonus must reach the difficulty.
+        Some((((21 - (dc - bonus)).clamp(0, 20)) * 5) as u8)
+    }
+}
+
 impl Bag {
     pub fn give_with(&mut self, name: &str, description: &str, traits: &ItemTraits) {
         let draft = ThingDraft { name: name.to_string(), description: description.to_string(), traits: traits.clone() };
@@ -818,6 +855,48 @@ impl World {
                     self.cues.push(crate::model::Cue { seq: self.cue_seq, place: here.clone(), id, motion: motion.trim().to_lowercase() });
                     let extra = self.cues.len().saturating_sub(16);
                     self.cues.drain(..extra);
+                }
+                Effect::Quest { goal, advance, done } => {
+                    let quest = &mut self.quest;
+                    if *advance && quest.act + 1 < quest.acts.len().max(1) {
+                        quest.act += 1;
+                    }
+                    if !goal.trim().is_empty() {
+                        quest.goal = goal.trim().to_string();
+                    }
+                    match done.trim().to_lowercase().as_str() {
+                        "won" | "win" | "success" => quest.done = Some(true),
+                        "lost" | "lose" | "failed" | "failure" => quest.done = Some(false),
+                        _ => {}
+                    }
+                }
+                Effect::QuestNew { quest } => {
+                    // A quest still being played is not thrown away for another.
+                    if !self.quest.is_set() || self.quest.done.is_some() {
+                        let finished = self.quest.chapters_done + u32::from(self.quest.done.is_some());
+                        let tasks = std::mem::take(&mut self.quest.tasks);
+                        self.quest = crate::model::Quest { chapters_done: finished, tasks, ..quest.quest() };
+                    } else {
+                        notes.push("quest_new: the main quest is still being played".to_string());
+                    }
+                }
+                Effect::Task { name, step, done } => {
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        match self.quest.tasks.iter_mut().find(|t| t.name.eq_ignore_ascii_case(name)) {
+                            Some(task) => {
+                                if !step.trim().is_empty() {
+                                    task.step = step.trim().to_string();
+                                }
+                                task.done |= *done;
+                            }
+                            None => {
+                                self.quest.tasks.push(crate::model::Task { name: name.to_string(), step: step.trim().to_string(), done: *done });
+                                let extra = self.quest.tasks.len().saturating_sub(12);
+                                self.quest.tasks.drain(..extra);
+                            }
+                        }
+                    }
                 }
                 Effect::Shake { seconds } => {
                     // Shown like a movement: once, to everyone in the place.

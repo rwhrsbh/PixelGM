@@ -143,12 +143,37 @@ pub struct LocationDraft {
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
 pub struct WorldDraft {
+    pub quest: QuestDraft,
     pub title: String,
     pub summary: String,
     pub tone: String,
     pub palette: BTreeMap<String, String>,
     pub tiles: Vec<TileDraft>,
     pub location: LocationDraft,
+}
+
+/// A main quest as the master wrote it.
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct QuestDraft {
+    pub title: String,
+    pub goal: String,
+    pub acts: Vec<String>,
+    pub ending: String,
+    pub failure: String,
+}
+
+impl QuestDraft {
+    pub fn quest(&self) -> crate::model::Quest {
+        crate::model::Quest {
+            title: self.title.trim().to_string(),
+            goal: self.goal.trim().to_string(),
+            acts: self.acts.iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).take(6).collect(),
+            ending: self.ending.trim().to_string(),
+            failure: self.failure.trim().to_string(),
+            ..Default::default()
+        }
+    }
 }
 
 /// The JSON object inside a model's answer, which may be wrapped in a code fence or prose.
@@ -593,6 +618,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         travel: None,
         moves: Vec::new(),
         acting: None,
+        quest: draft.quest.quest(),
         facing: (0, 0),
         title: fallback(&draft.title, &built.location.name),
         summary: draft.summary.trim().to_string(),

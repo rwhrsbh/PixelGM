@@ -21,6 +21,9 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "mark", "x": 0, "y": 0, "kind": "blood|dung|puddle|scorch|ash|slime|vomit|wine|paint|rubble|coins|bones", "color": "#rrggbb"} — something is left on the ground of a cell; without x and y it is where the party stands; "id" instead puts it under that thing; "color" is optional
   {"op": "music", "mood": "calm|explore|tense|battle|boss|mystery|horror|sad|tavern|triumph|dungeon"} — the music of this place changes with what happens: dread creeping in, a celebration, grief
   {"op": "clean", "x": 0, "y": 0} — what was left on a cell is picked up or washed away (with "give" when the party takes it)
+  {"op": "quest", "goal": "what the players must do next", "advance": true, "done": "won|lost"} — the main quest moves: "goal" changes what the players are told, "advance" goes to the next act, "done" ends it
+  {"op": "quest_new", "title": "…", "goal": "…", "acts": ["…"], "ending": "…", "failure": "…"} — a new main quest, when there is none or the last one is over
+  {"op": "task", "name": "…", "step": "what to do next", "done": false} — a side task someone gave the party: new, moved on, or done
   {"op": "shake", "seconds": 1.5} — the whole screen shakes: an earthquake, an explosion, a roar, a collapse, a giant's step, a heavy blow
   {"op": "travel", "to": "place_id", "name": "for a new place", "description": "what a new place looks like", "who": ["hero name"]} — heroes go to another place; "who" lists those who go, everyone here when left out
   {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
@@ -42,6 +45,8 @@ Use only ids that exist. Inside an action that belongs to a thing, the id "self"
 SPACE. The party is somewhere on the map and can only touch, take, open, strike or speak softly with what is beside it. To deal with something farther off that can be reached, first "move" the party to a cell beside it, in the same answer, then do the rest. What cannot be reached on foot cannot be touched: say what is in the way. Only what the party carries can be used — no torch, rope or key that is not in their hands.
 VIOLENCE. An attack on a creature is never told as a hit, a wound or a death: make it hostile with "attitude" and add "fight" — the game moves to the fight and the dice decide. The same for anything that would hurt the party.
 TRAVEL. When the party goes to another place — through a way out, down a hole, carried off — add {"op": "travel", "to": "place_id"}: an id from the exits, or a new id with "name" for a place that does not exist yet, which the game will ask you to draw. A choice that leads elsewhere carries its own "travel". The map on the players' screen IS where they are. When the story takes them out of what the map shows — out into space, into a vision or a dream, under the ground, onto a ship — or the place itself becomes another (it burns down, freezes over, collapses), "travel" to a NEW id with "name" and "description", so that the new scene is drawn; never tell of surroundings the map does not show.
+THE MAIN QUEST. The acts are yours alone: never tell them to the players, lead the story through them. Every telling leaves a pull towards the goal — a clue, a rumour, someone who needs it done, an enemy who moves first — but the party is free to wander and you never refuse them. When what the act (NOW) calls for has happened, add {"op": "quest", "advance": true, "goal": "what they must do next"} in the same answer. When the last act is resolved, tell the ending and add {"op": "quest", "done": "won"} or "lost" — a quest can be lost, and a lost one is told as honestly as a won one. When someone asks the party for something on the side, add a "task"; when it is done, the same task with "done": true and its reward.
+CHOICES. Offer up to five. At least one must rest on what this very hero is or carries — a skill they are trained in, their class, a thing in their bag — and say so in its label ("as a fighter: …", "with the rope: …"). At least one must be a risk: give it a "check" effect and put the ability and the difficulty in the label ("(Dexterity, DC 14)"). Where it fits, one costs something — a thing, gold, hit points — for a sure gain. Never offer only plain, safe things.
 WHERE THE PARTY IS. "This wall", "the door", "in front of me", "here" in a player's words mean the cell IN FRONT of the hero, or one of those AROUND the party: change exactly those cells, by the coordinates given there, never some other spot nearby. Any cell can be changed with "tile", walls and the solid edge of the map included: a wall broken through becomes a walkable tile at that very cell. The party stands exactly on the cell marked @ and has not moved since, whatever was planned or told before: read the map before you write. It is on the far side of water, a wall or a chasm only if @ is there. To put it somewhere else in this place — across a bridge, up a ledge, through a gap — add {"op": "move", "id": "party", "x": …, "y": …} to a walkable cell there, in the same answer; with no "move" the party is still where @ is, and your narration must say so. A crossing must be laid on the very cells that are in the way (the solid cells between the party and the far side, by their coordinates from the map), not under the party's feet.
 THE PICTURE MUST MATCH THE STORY. The players watch a map, not only words. Everything your narration says that one could see must come with the effect that shows it, in the same answer: someone crouches, jumps, strikes, falls or dances — "animate"; the ground trembles, something explodes, crashes down or roars — "shake"; a creature comes closer, backs off, circles — "move" it to its new cell (several cells if it runs); it leaves — "remove"; something appears — "spawn"; blood, dung, ash, a spill or a scorch is left — "mark"; a door opens or a wall falls — "tile"; creatures attack — "attitude" hostile and "fight". Never narrate a change on the map without its effect. Every "id" in an effect must be one listed in PLACE, WHAT IS WHERE or THE PARTY (or a thing you spawn in the same answer); an id that is not there does nothing — to bring someone new in, "spawn" them first. The same goes for the bag: every thing a narration or an outcome says a hero gets, finds, takes or is handed needs a "give" of its own in the same effects (two things named — two "give"), and every thing lost or spent a "take"; never name a thing that no effect hands over. A chest, crate or purse holds its things in "contents", not in an action of its own."##;
 
@@ -105,7 +110,10 @@ const LOCATION_SHAPE: &str = r##"{
 }"##;
 
 /// The first request of a game. `request` is what the host typed; it may be empty.
-pub fn new_world(request: &str) -> String {
+const QUEST_SHAPE: &str = r##"{"title": "the name of the main quest", "goal": "one sentence the players read: what they must do first", "acts": ["3 to 5 turns of the story in order, each one sentence: what must happen for the story to move on — hidden from the players"], "ending": "how it ends if they succeed", "failure": "how it ends if they fail, and what makes them fail"}"##;
+
+pub fn new_world(request: &str, story: bool) -> String {
+    let quest = if story { format!("\n  \"quest\": {QUEST_SHAPE},") } else { String::new() };
     let wish = if request.trim().is_empty() {
         "The host left the choice to you. Pick a setting nobody would expect and make it vivid.".to_string()
     } else {
@@ -117,7 +125,7 @@ pub fn new_world(request: &str) -> String {
 {wish}
 
 Answer with this JSON object:
-{{
+{{{quest}
   "title": "the name of the world or campaign",
   "summary": "three or four sentences: the setting, what is going on, what makes it different",
   "tone": "a few words",
@@ -175,6 +183,24 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
         let _ = writeln!(text, "\nCHAPTER {}: {chapter}", n + 1);
     }
     let here = world.here();
+    if !world.table.sandbox {
+        let quest = &world.quest;
+        if !quest.is_set() {
+            let _ = writeln!(text, "\nMAIN QUEST: there is none yet. Give this world one now with a \"quest_new\" effect, grown out of what has happened so far.");
+        } else if let Some(won) = quest.done {
+            let _ = writeln!(text, "\nMAIN QUEST \"{}\" is over: the party {}. Tell what the world is like after it, and open the next chapter with a \"quest_new\" effect that grows out of how this one ended.", quest.title, if won { "won" } else { "lost" });
+        } else {
+            let _ = writeln!(text, "\nMAIN QUEST \"{}\". The players are told: {}", quest.title, quest.goal);
+            for (n, act) in quest.acts.iter().enumerate() {
+                let _ = writeln!(text, "  act {}{}: {act}", n + 1, if n == quest.act { " (NOW)" } else if n < quest.act { " (done)" } else { "" });
+            }
+            let _ = writeln!(text, "  if they succeed: {}\n  if they fail: {}", quest.ending, quest.failure);
+        }
+        let open: Vec<String> = world.quest.tasks.iter().filter(|t| !t.done).map(|t| format!("{} ({})", t.name, t.step)).collect();
+        if !open.is_empty() {
+            let _ = writeln!(text, "SIDE TASKS open: {}", open.join("; "));
+        }
+    }
     let _ = writeln!(text, "\nPLACE \"{}\": {}. {}", world.current, here.name, here.description);
     for prop in &here.props {
         let held = prop.chest.as_ref().map(|c| if c.open { " (opened)".to_string() } else if c.lock > 0 { format!(" (locked, lock {}{})", c.lock, if c.key.is_empty() { String::new() } else { format!(", key: {}", c.key) }) } else { " (shut)".to_string() }).unwrap_or_default();
@@ -562,8 +588,8 @@ mod tests {
 
     #[test]
     fn world_request_carries_the_hosts_wish_or_says_the_choice_is_free() {
-        assert!(new_world("динозавры и лазеры").contains("«динозавры и лазеры»"));
-        assert!(new_world("  ").contains("left the choice to you"));
+        assert!(new_world("динозавры и лазеры", true).contains("«динозавры и лазеры»"));
+        assert!(new_world("  ", false).contains("left the choice to you"));
     }
 
     #[test]

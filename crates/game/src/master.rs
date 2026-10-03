@@ -18,6 +18,8 @@ use world::{ChapterDraft, CreatureCard, FeatsDraft, LocationDraft, PortraitDraft
 pub enum Ask {
     NewWorld {
         request: String,
+        /// Whether the world is to have a main quest.
+        story: bool,
     },
     /// Draw the stub `id`; the party walks in from `from`. `ahead` marks a place drawn before
     /// anyone asked to go there: such a request may only use the best models, because it is
@@ -321,8 +323,8 @@ impl Master {
         }
         std::thread::spawn(move || {
             let answer = match ask {
-                Ask::NewWorld { request } => {
-                    let draft: Result<WorldDraft, Trouble> = if fake { faked(fake::world(&request)) } else { call.read(prompt::system_prompt(language), &prompt::new_world(&request)) };
+                Ask::NewWorld { request, story } => {
+                    let draft: Result<WorldDraft, Trouble> = if fake { faked(fake::world(&request)) } else { call.read(prompt::system_prompt(language), &prompt::new_world(&request, story)) };
                     Answer::World(draft.and_then(|d| build_world(&d, &request, language).map(|(w, notes)| (Box::new(w), notes)).map_err(Trouble::Unreadable)))
                 }
                 Ask::Location { world, id, from, ahead } => {

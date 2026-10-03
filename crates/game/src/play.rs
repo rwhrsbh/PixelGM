@@ -595,7 +595,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
     commands.spawn((
         DespawnOnExit(Screen::Play),
         ChatLog,
-        Node { position_type: PositionType::Absolute, left: px(4), top: px(4), max_width: px(230), padding: UiRect::axes(px(3), px(1)), display: Display::None, ..default() },
+        Node { position_type: PositionType::Absolute, left: px(4), top: px(18), max_width: px(230), padding: UiRect::axes(px(3), px(1)), display: Display::None, ..default() },
         BackgroundColor(Color::srgba(0.1, 0.07, 0.06, 0.82)),
         GlobalZIndex(9),
         Text::default(),
@@ -1943,7 +1943,7 @@ enum Sheet {
     /// Nothing is being asked or read: the last thing told stays in sight.
     Last(String),
     Refused(String),
-    Journal { carried: String, lines: Vec<(Speaker, String)> },
+    Journal { quests: Vec<String>, carried: String, lines: Vec<(Speaker, String)> },
     /// What is being rolled, in words.
     Rolling(String),
     /// The sheets of the party, whether there are points to place, and the abilities the
@@ -2082,7 +2082,7 @@ fn translated(sheet: Sheet, other_tongue: bool, translator: &mut Translator) -> 
                 })
                 .collect(),
         }),
-        Sheet::Journal { carried, lines } => Sheet::Journal { carried, lines: lines.into_iter().map(|(speaker, text)| (speaker, read(&text))).collect() },
+        Sheet::Journal { quests, carried, lines } => Sheet::Journal { quests: quests.iter().map(|q| read(q)).collect(), carried, lines: lines.into_iter().map(|(speaker, text)| (speaker, read(&text))).collect() },
         other => other,
     }
 }
@@ -2117,7 +2117,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
         Phase::Journal => {
             let carried = world.story.bags.iter().flat_map(|b| b.inventory.iter()).chain(world.story.inventory.iter()).map(|i| if i.count > 1 { format!("{} ×{}", i.name, i.count) } else { i.name.clone() }).collect::<Vec<_>>().join(", ");
             let skip = world.story.log.len().saturating_sub(JOURNAL_LINES);
-            Sheet::Journal { carried, lines: world.story.log.iter().skip(skip).map(|l| (l.speaker, l.text.clone())).collect() }
+            Sheet::Journal { quests: quest_lines(world, lang), carried, lines: world.story.log.iter().skip(skip).map(|l| (l.speaker, l.text.clone())).collect() }
         }
         Phase::Rolling => match &world.pending {
             Some(check) => {
@@ -2447,7 +2447,10 @@ fn overlay(
                     match far {
                         // Too far: the hero walks there first, and then does it.
                         Some(name) => crate::widgets::line_button(sheet, &fonts, format!("{}. {} ({} {name})", n + 1, option.label, T::WalkUpTo.text(*lang)), PlayAction::Approach(n)),
-                        None => crate::widgets::line_button(sheet, &fonts, format!("{}. {}", n + 1, option.label), PlayAction::Choose(n)),
+                        None => {
+                            let chance = game.world.chance(option).map(|c| format!("  [~{c}%]")).unwrap_or_default();
+                            crate::widgets::line_button(sheet, &fonts, format!("{}. {}{chance}", n + 1, option.label), PlayAction::Choose(n))
+                        }
                     }
                 }
                 sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
@@ -2474,8 +2477,11 @@ fn overlay(
                 button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
                 button(sheet, &art, &fonts, T::Leave, true, PlayAction::Close);
             }
-            Sheet::Journal { carried, lines } => {
+            Sheet::Journal { quests, carried, lines } => {
                 sheet.spawn((Text::default(), T::Journal, fonts.title(1), ink));
+                for (n, line) in quests.iter().enumerate() {
+                    sheet.spawn((Text::new(line.clone()), fonts.body(), TextColor(color(if n == 0 { WAX_DARK } else { INK }))));
+                }
                 let bag = if carried.is_empty() { T::CarryNothing.text(*lang).to_string() } else { format!("{} {carried}", T::Carried.text(*lang)) };
                 sheet.spawn((Text::new(bag), fonts.body(), TextColor(color(WAX_DARK))));
                 sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(3), ..default() }, 150.0)).with_children(|rows| {
@@ -2820,6 +2826,78 @@ fn on_activate(
 fn hero_of<'a>(world: &'a World, player: &str) -> Option<&'a str> {
     let index = world.owners.iter().position(|o| o == player)?;
     world.party.get(index).map(|h| h.name.as_str())
+}
+
+/// The main quest and the open side tasks, a line each, for the journal.
+fn quest_lines(world: &World, lang: Lang) -> Vec<String> {
+    let quest = &world.quest;
+    let mut lines = Vec::new();
+    if quest.is_set() {
+        let state = match quest.done {
+            Some(true) => format!(" — {}", T::QuestWon.text(lang)),
+            Some(false) => format!(" — {}", T::QuestLost.text(lang)),
+            None => String::new(),
+        };
+        lines.push(format!("{}{state}", quest.title));
+        if quest.done.is_none() {
+            lines.push(format!("{} {}", T::Goal.text(lang), quest.goal));
+        }
+    }
+    for task in &quest.tasks {
+        lines.push(format!("{} {}{}", if task.done { "✓" } else { "•" }, task.name, if task.done || task.step.is_empty() { String::new() } else { format!(": {}", task.step) }));
+    }
+    lines
+}
+
+/// The goal of the main quest, always in sight in the corner of the map; a change of goal or
+/// a new task is also called out in the corner feed.
+#[derive(Component)]
+struct GoalLine;
+
+fn goal_line(mut commands: Commands, game: Res<Game>, lang: Res<Lang>, fonts: Res<Fonts>, mut table: ResMut<Table>, old: Query<Entity, With<GoalLine>>, mut shown: Local<Option<(String, Vec<(String, bool)>)>>) {
+    let quest = &game.world.quest;
+    let text = match quest.done {
+        _ if !quest.is_set() => String::new(),
+        Some(true) => format!("{}: {}", T::QuestWon.text(*lang), quest.title),
+        Some(false) => format!("{}: {}", T::QuestLost.text(*lang), quest.title),
+        None => format!("{} {}", T::Goal.text(*lang), quest.goal),
+    };
+    let tasks: Vec<(String, bool)> = quest.tasks.iter().map(|t| (t.name.clone(), t.done)).collect();
+    let now = (text.clone(), tasks.clone());
+    if shown.as_ref() == Some(&now) && (text.is_empty() || !old.is_empty()) {
+        return;
+    }
+    // What changed is called out, except when a game has just been opened.
+    if let Some((before, tasks_before)) = shown.as_ref() {
+        if *before != text && !text.is_empty() {
+            table.notices.push(if quest.done.is_some() { text.clone() } else { format!("{} {}", T::NewGoal.text(*lang), quest.goal) });
+        }
+        for (name, done) in &tasks {
+            match tasks_before.iter().find(|(n, _)| n == name) {
+                None => table.notices.push(format!("{} {name}", T::NewTask.text(*lang))),
+                Some((_, false)) if *done => table.notices.push(format!("{} {name}", T::TaskDone.text(*lang))),
+                _ => {}
+            }
+        }
+    }
+    *shown = Some(now);
+    for entity in &old {
+        commands.entity(entity).despawn();
+    }
+    if text.is_empty() {
+        return;
+    }
+    commands.spawn((
+        GoalLine,
+        DespawnOnExit(Screen::Play),
+        Node { position_type: PositionType::Absolute, left: px(3), top: px(3), max_width: px(300), padding: UiRect::axes(px(4), px(1)), ..default() },
+        BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.72)),
+        Text::new(text),
+        fonts.body(),
+        TextColor(color(BRASS_LIGHT)),
+        GlobalZIndex(7),
+        Pickable::IGNORE,
+    ));
 }
 
 /// What a prepared action of a thing here is called.
@@ -3419,6 +3497,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Approach>()
             .init_resource::<UseFor>()
             .add_observer(on_resize)
+            .add_systems(Update, goal_line.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, number_keys.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, keep_facing.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_fold)
@@ -3483,7 +3562,7 @@ mod tests {
     fn the_journal_lists_what_is_carried_and_what_was_said() {
         let mut w = world();
         w.perform("cat", 1);
-        let Sheet::Journal { carried, lines } = sheet_for(&Phase::Journal, &w, 0, Lang::En, &Extra::default()) else { panic!("expected the journal") };
+        let Sheet::Journal { carried, lines, .. } = sheet_for(&Phase::Journal, &w, 0, Lang::En, &Extra::default()) else { panic!("expected the journal") };
         assert_eq!(carried, "Cat hair");
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], (Speaker::Player, "Shoo it away".to_string()));
