@@ -1,5 +1,7 @@
 mod art;
 mod audio;
+mod bag_ui;
+mod icons;
 mod coop;
 mod fight;
 mod fx;
@@ -65,6 +67,6 @@ fn main() -> AppExit {
         hero::HeroPlugin,
         fight::FightPlugin,
     ))
-    .add_plugins((translate::TranslatePlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
+    .add_plugins((translate::TranslatePlugin, bag_ui::BagPlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
     app.run()
 }

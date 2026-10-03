@@ -77,7 +77,7 @@ texts! {
     CreatingHint: "Это один большой запрос: обычно от полуминуты до двух минут.", "This is one large request: usually half a minute to two minutes.";
     Elapsed: "Прошло", "Elapsed:";
     CreateFailed: "Мир создать не удалось.", "The world could not be created.";
-    HudHint: "E — действие · C — герой · J — журнал · Esc — меню", "E to act · C hero · J journal · Esc menu";
+    HudHint: "E — действие · I — сумка · C — герой · J — журнал · Esc — меню", "E act · I bag · C hero · J journal · Esc menu";
     LobbyHelp: "Один игрок создаёт игру и ведёт мир; остальные подключаются к нему — через Steam или по адресу. Создав игру, начни или загрузи мир как обычно.", "One player hosts and holds the world; the others join through Steam or at the host's address. After hosting, start or load a world as usual.";
     LobbyName: "Твоё имя", "Your name";
     LobbyAddress: "Адрес хоста", "Host address";
@@ -173,6 +173,17 @@ texts! {
     HeroName: "Имя", "Name";
     HeroStory: "О герое", "About";
     HeroRace: "Народ", "People";
+    BagTitle: "Сумка отряда", "The party's bag";
+    BagHint: "ЛКМ — взять/положить · ПКМ — отмена", "Click to take or put · right click to let go";
+    BagNoRoom: "Не влезло в сумку:", "No room in the bag:";
+    BagEmptySlot: "пусто", "empty";
+    BagDamage: "урон", "damage";
+    BagTwoHanded: "двуручное", "two-handed";
+    BagRanged: "дальность", "range";
+    SlotMain: "Оружие в руке", "Weapon in hand";
+    SlotSpare: "Запасное оружие", "Spare weapon";
+    SlotShield: "Щит", "Shield";
+    SlotBody: "Доспех", "Armour";
     TabLook: "Внешность", "Appearance";
     TabStats: "Способности", "Abilities";
     LookBuild: "Сложение", "Build";

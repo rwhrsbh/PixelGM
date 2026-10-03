@@ -67,6 +67,8 @@ pub enum Phase {
     Fighting,
     /// The character sheet.
     Sheet,
+    /// The party's bag and what the hero wears.
+    Bag,
     /// The player in the master's seat reads the model's draft before the others do.
     Judging,
     /// The master's panel: directions, tools, the library.
@@ -752,6 +754,11 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
                 hero.dead = true;
             }),
             "deed" => world.secrets_due.push(0),
+            // `give=Name` puts a thing in the bag, the way the master would.
+            "give" => {
+                let name = order.split_once('=').map_or("", |(_, n)| n).to_string();
+                world.apply(&[world::Effect::Give { name, description: "Given by a test.".into() }], None);
+            }
             _ => {}
         }
     }
@@ -810,12 +817,16 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
     if keyboard.just_pressed(KeyCode::Escape) || pad(GamepadButton::Start) {
         let next = match &*phase {
             Phase::Walking => Phase::Paused,
-            Phase::Paused | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Journal | Phase::Sheet | Phase::Judging | Phase::Master => Phase::Walking,
+            Phase::Paused | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Journal | Phase::Sheet | Phase::Bag | Phase::Judging | Phase::Master => Phase::Walking,
             // A telling with choices stays until one is made or it is closed by its button.
             Phase::Reading { turn } if turn.options.is_empty() => settled(&game.world),
             _ => return,
         };
         *phase = next;
+        return;
+    }
+    if *phase == Phase::Bag && (keyboard.just_pressed(KeyCode::KeyI) || keyboard.just_pressed(KeyCode::Tab)) {
+        *phase = Phase::Walking;
         return;
     }
     if *phase != Phase::Walking || !was_settled {
@@ -828,6 +839,8 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
         };
     } else if keyboard.just_pressed(KeyCode::KeyJ) || pad(GamepadButton::North) {
         *phase = Phase::Journal;
+    } else if keyboard.just_pressed(KeyCode::KeyI) || keyboard.just_pressed(KeyCode::Tab) {
+        *phase = Phase::Bag;
     } else if (keyboard.just_pressed(KeyCode::KeyC) || pad(GamepadButton::West)) && !game.world.party.is_empty() {
         *phase = Phase::Sheet;
     } else if (keyboard.just_pressed(KeyCode::KeyG) || pad(GamepadButton::Select)) && seat_state(&game.world, &session, &player_name(&settings)) == SeatState::Mine {
@@ -1223,7 +1236,7 @@ fn veil(phase: Res<Phase>, mut veils: Query<&mut BackgroundColor, With<Veil>>) {
         Phase::Leaving { t, .. } => *t,
         Phase::Arriving { t } => 1.0 - t,
         Phase::Drawing { .. } | Phase::Stuck { .. } => 0.8,
-        Phase::Paused | Phase::Journal | Phase::Refused { .. } | Phase::Sheet => 0.55,
+        Phase::Paused | Phase::Journal | Phase::Refused { .. } | Phase::Sheet | Phase::Bag => 0.55,
     };
     // A fade in a few flat steps reads as pixel art; a smooth one does not.
     let stepped = (darkness.clamp(0.0, 1.0) * 5.0).round() / 5.0;
@@ -2150,6 +2163,19 @@ fn guests(
                 if game.world.acting_owner() == Some(player.as_str()) {
                     view.wait_for_master();
                     master.ask(&gm, &store, &settings, Ask::Stunt { world: Box::new(game.world.clone()), said, spell });
+                }
+                None
+            }
+            Intent::Arrange { held, to } => {
+                // The bag is everyone's; what a hero wears is its player's to change.
+                let heroes = |h: &usize| game.world.owners.get(*h).is_some_and(|o| *o == player);
+                let allowed = match (&held, to) {
+                    (world::bag::Held::Worn(h, _), _) if !heroes(h) => false,
+                    (_, world::bag::Spot::Worn(h, _)) if !heroes(&h) => false,
+                    _ => true,
+                };
+                if allowed {
+                    game.world.arrange(&held, to);
                 }
                 None
             }

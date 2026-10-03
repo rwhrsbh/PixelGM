@@ -219,7 +219,7 @@ fn phase_sounds(phase: Option<Res<Phase>>, screen: Res<State<Screen>>, mut befor
     let sound = match &*phase {
         Phase::Leaving { .. } => Sfx::Door,
         Phase::Reading { .. } | Phase::Journal => Sfx::Page,
-        Phase::Looking { .. } | Phase::Sheet | Phase::Paused | Phase::Writing { .. } | Phase::Master | Phase::Judging => Sfx::Open,
+        Phase::Looking { .. } | Phase::Sheet | Phase::Bag | Phase::Paused | Phase::Writing { .. } | Phase::Master | Phase::Judging => Sfx::Open,
         Phase::Fighting => Sfx::Draw,
         Phase::Refused { .. } | Phase::Stuck { .. } => Sfx::Error,
         _ => return,

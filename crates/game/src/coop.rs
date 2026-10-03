@@ -53,6 +53,8 @@ pub enum Intent {
     /// Something tried in a fight that the rules have no button for; `spell` when it is a
     /// spell the rules cannot carry out, with the slot it takes.
     Stunt { said: String, spell: Option<(String, u8)> },
+    /// A thing moved in the bag, or put on or taken off a hero.
+    Arrange { held: world::bag::Held, to: world::bag::Spot },
 }
 
 /// What the player in the master's seat does. A guest sends it and the host checks who it
@@ -459,6 +461,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                 if !world.owners.contains(name) {
                     world.party.push(*hero);
                     world.owners.push(name.clone());
+                    world.tidy_gear();
                 }
             }
             HostEvent::Message(peer, Up::Claim(hero)) => {

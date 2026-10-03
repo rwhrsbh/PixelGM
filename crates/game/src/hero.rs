@@ -661,6 +661,7 @@ fn on_activate(
                     }
                     world.party.push(hero);
                     world.owners.push(owner);
+                    world.tidy_gear();
                     next.set(Screen::Play);
                 }
                 (Err(_), _) if name.trim().is_empty() => draft.problem = Some(T::NeedName.text(*lang).to_string()),

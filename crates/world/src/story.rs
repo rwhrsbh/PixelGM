@@ -179,11 +179,17 @@ pub fn read_actions(drafts: &[ActionDraft], notes: &mut Vec<String>) -> Vec<Acti
         .collect()
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
 pub struct Item {
     pub name: String,
     pub description: String,
     pub count: u32,
+    /// The weapon, armour or shield of the rules this is, so that a hero can put it on.
+    #[serde(default)]
+    pub gear: Option<String>,
+    /// The cell of the bag its top left corner lies in; none when the bag had no room.
+    #[serde(default)]
+    pub at: Option<(u8, u8)>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -262,9 +268,14 @@ impl Story {
         if name.is_empty() {
             return;
         }
-        match self.inventory.iter_mut().find(|i| i.name.to_lowercase() == name.to_lowercase()) {
+        // Gear lies apart, one piece to a place; other things of a name are one heap.
+        let gear = crate::bag::gear_named(name);
+        match self.inventory.iter_mut().find(|i| gear.is_none() && i.gear.is_none() && i.name.to_lowercase() == name.to_lowercase()) {
             Some(item) => item.count += 1,
-            None => self.inventory.push(Item { name: name.to_string(), description: description.trim().to_string(), count: 1 }),
+            None => {
+                self.inventory.push(Item { name: name.to_string(), description: description.trim().to_string(), count: 1, gear, at: None });
+                self.pack();
+            }
         }
     }
 
@@ -551,7 +562,7 @@ mod tests {
         let outcome = w.perform("cat", 1).unwrap();
         assert!(outcome.contains("slips away"));
         assert_eq!(w.here().creatures.len(), before - 1);
-        assert_eq!(w.story.inventory, [Item { name: "Cat hair".into(), description: "A tuft of grey fur.".into(), count: 1 }]);
+        assert_eq!(w.story.inventory, [Item { name: "Cat hair".into(), description: "A tuft of grey fur.".into(), count: 1, gear: None, at: Some((0, 0)) }]);
         assert_eq!(w.story.log.len(), 2);
         assert_eq!(w.story.log[0].speaker, Speaker::Player);
         // The cat is gone, and so are its actions.

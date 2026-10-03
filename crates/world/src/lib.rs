@@ -2,6 +2,7 @@
 //! and made playable, and how the whole thing is saved. No engine code lives here, so every
 //! rule can be tested without opening a window.
 
+pub mod bag;
 pub mod base;
 pub mod build;
 pub mod fake;
