@@ -184,12 +184,10 @@ fn classify(id: &str, def: &world::TileDef) -> Option<(Ground, Option<Growth>)> 
         Some((Ground::Water, None))
     } else if has(&["door", "gate", "дверь", "двери", "ворота", "проход"]) {
         Some((Ground::Door, None))
-    } else if tree {
-        Some((Ground::Grass, Some(Growth::Tree)))
-    } else if has(&["bush", "shrub", "hedge", "куст", "живая изгородь"]) {
-        Some((Ground::Grass, Some(Growth::Bush)))
-    } else if has(&["rock", "boulder", "валун", "глыба"]) && solid {
-        Some((Ground::Grass, Some(Growth::Rock)))
+    } else if tree || has(&["bush", "shrub", "hedge", "куст", "rock", "boulder", "валун", "глыба", "idol", "statue", "pillar", "column", "статуя", "колонн", "столб"]) {
+        // Something standing the master drew for this world stays the master's drawing:
+        // a stock green tree on a floor of flesh is wrong.
+        None
     } else if has(&["wall", "стена", "стены", "стен ", "cliff", "скала", "утёс", "fence", "забор", "частокол", "palisade"]) {
         Some((if wooden || has(&["fence", "забор", "частокол", "palisade"]) { Ground::WoodWall } else { Ground::StoneWall }, None))
     } else if wooden {
@@ -694,7 +692,7 @@ fn reflect(picture: &mut Pixels, cells: &Cells, thing: &Pixels, foot: (i32, i32)
 /// The roofs of the buildings in a place: every walled area that cannot be walked into from
 /// the edge of the map without going through a door. A place that is mostly one building has
 /// no roof: the party is already inside it.
-fn roofs(cells: &Cells, p: &Paint) -> Vec<Roof> {
+fn roofs(cells: &Cells, p: &Paint, exits: &[(usize, usize)]) -> Vec<Roof> {
     let (w, h) = (MAP_W as i32, MAP_H as i32);
     let blocks = |x: i32, y: i32| cells.at(x, y).wall() || cells.at(x, y) == Ground::Door;
     // Everything reached from the edge, around walls and doors, is outside.
@@ -739,7 +737,9 @@ fn roofs(cells: &Cells, p: &Paint) -> Vec<Roof> {
                     }
                 }
             }
-            if inside.len() as i32 * 10 > w * h * 4 || inside.len() < 2 {
+            // A roof over a fifth of the place, or over a way out, would hide what matters.
+            let has_exit = inside.iter().any(|(x, y)| exits.contains(&(*x as usize, *y as usize)));
+            if inside.len() as i32 * 5 > w * h || inside.len() < 2 || has_exit {
                 continue;
             }
             // The roof covers the inside and the walls and doors around it.
@@ -1056,13 +1056,21 @@ pub fn lamps(location: &Location) -> Vec<Lamp> {
 }
 
 /// The roof over a building: drawn over everything inside it, and seen through when the
-/// hero walks in.
+/// hero comes close.
 pub struct Roof {
     pub picture: Pixels,
     /// Its top left corner, in canvas pixels.
     pub at: (i32, i32),
     /// The cells under it that one can stand in.
     pub inside: Vec<(usize, usize)>,
+}
+
+impl Roof {
+    /// Whether a hero standing in `cell` is close enough to see under the roof: inside, or
+    /// within two cells of the building.
+    pub fn near(inside: &[(usize, usize)], cell: (usize, usize)) -> bool {
+        inside.iter().any(|(x, y)| x.abs_diff(cell.0) <= 3 && y.abs_diff(cell.1) <= 3)
+    }
 }
 
 pub struct Scene {
@@ -1183,7 +1191,8 @@ pub fn paint(location: &Location, world: &World) -> Scene {
         }
     }
     let water = (0..MAP_H).flat_map(|y| (0..MAP_W).map(move |x| (x, y))).filter(|(x, y)| painter.cells.at(*x as i32, *y as i32) == Ground::Water).collect();
-    let roofs = roofs(&painter.cells, &painter.paint);
+    let exits: Vec<(usize, usize)> = location.exits.iter().map(|e| (e.x, e.y)).collect();
+    let roofs = roofs(&painter.cells, &painter.paint, &exits);
     Scene { ground, roofs, water, standing, hour: Hour::of(location), lamps: lamps(location) }
 }
 
@@ -1280,6 +1289,33 @@ pub fn walk_grid(location: &Location, world: &World) -> Pixels {
         }
     }
     grid
+}
+
+/// The arrow over a way out, pointing off the map the way it leads: a pale chevron with a
+/// dark outline, 24 canvas pixels a side. Down for a way out in the middle of a place.
+pub fn exit_arrow(dx: i32, dy: i32) -> Pixels {
+    const S: i32 = 24;
+    let mut a = Pixels::new(S as u32, S as u32, CLEAR);
+    for y in 0..S {
+        for x in 0..S {
+            // Draw a chevron pointing down, then turn it.
+            // The chevron as drawn points up; it is turned to point where the way leads.
+            let (u, v) = match (dx, dy) {
+                (1, _) => (y, S - 1 - x),
+                (-1, _) => (S - 1 - y, x),
+                (_, -1) => (x, y),
+                _ => (x, S - 1 - y),
+            };
+            let centre = (u as f32 + 0.5 - S as f32 / 2.0).abs();
+            let band = v as f32 - 4.0 - centre;
+            if (0.0..7.0).contains(&band) && centre < 10.0 {
+                let lit = band < 2.5;
+                a.set(x, y, if lit { [255, 246, 200, 255] } else { [240, 196, 90, 255] });
+            }
+        }
+    }
+    outline(&mut a, [40, 24, 12, 255]);
+    a
 }
 
 /// A soft shadow to lay under anything that walks.
@@ -1412,7 +1448,7 @@ mod tests {
         assert_eq!(classify("wet_cobble", &tile("Мокрая брусчатка", true)), Some((Ground::StoneFloor, None)));
         assert_eq!(classify("pier_wood", &tile("Причал", true)), Some((Ground::WoodFloor, None)));
         assert_eq!(classify("foggy_water", &tile("Туманная вода", false)), Some((Ground::Water, None)));
-        assert_eq!(classify("old_oak", &tile("an old tree", false)), Some((Ground::Grass, Some(Growth::Tree))));
+        assert_eq!(classify("nerve_tree", &tile("Нервное древо", false)), None);
         assert_eq!(classify("log_wall", &tile("бревенчатая стена", false)), Some((Ground::WoodWall, None)));
         assert_eq!(classify("idol", &tile("a strange idol", false)), None);
         // Shallow water one can wade through is not painted as the deep water that stops one.

@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use world::story::KEPT_LINES;
-use world::{ChapterDraft, CreatureCard, FeatsDraft, LocationDraft, PortraitDraft, StuntDraft, TranslationDraft, TurnDraft, World, WorldDraft, build_world, extract_json, fake, prompt};
+use world::{ChapterDraft, CreatureCard, FeatsDraft, LocationDraft, PortraitDraft, StuntDraft, TranslationDraft, TurnDraft, World, WorldDraft, build_world, fake, prompt};
 
 pub enum Ask {
     NewWorld {
@@ -235,10 +235,9 @@ impl Call {
                 }
             };
             self.store.log_answer(&model, &text);
-            match extract_json(&text).map(serde_json::from_str::<T>) {
-                Some(Ok(value)) => return Ok(value),
-                Some(Err(e)) => last = format!("{model}: {e}"),
-                None => last = format!("{model}: no JSON in the answer"),
+            match world::read_answer::<T>(&text) {
+                Ok(value) => return Ok(value),
+                Err(e) => last = format!("{model}: {e}"),
             }
             warn!("the game master's answer could not be read ({last})");
         }

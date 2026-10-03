@@ -120,6 +120,21 @@ struct SceneCache {
 #[derive(Component)]
 struct WalkGrid;
 
+/// The arrow over a way out, bobbing towards where it leads.
+#[derive(Component)]
+struct ExitMarker {
+    home: Vec3,
+    dir: Vec2,
+}
+
+fn exit_markers(time: Res<Time>, mut markers: Query<(&ExitMarker, &mut Transform)>) {
+    let t = time.elapsed_secs();
+    for (marker, mut transform) in &mut markers {
+        let nudge = ((t * 3.0).sin() * 3.0).round() * 2.0;
+        transform.translation = marker.home + (marker.dir * nudge).extend(0.0);
+    }
+}
+
 /// The roof of a building, by its number in the place.
 #[derive(Component)]
 struct RoofOver(usize);
@@ -130,7 +145,8 @@ fn roofs(time: Res<Time>, game: Res<Game>, cache: Res<SceneCache>, mut roofs: Qu
     let feet = ((game.world.player.x + FEET.0) / TILE as f32, (game.world.player.y + FEET.1) / TILE as f32);
     let cells = [(x.max(0) as usize, y.max(0) as usize), (feet.0.max(0.0) as usize, feet.1.max(0.0) as usize)];
     for (roof, mut sprite) in &mut roofs {
-        let under = cache.roofs.get(roof.0).is_some_and(|(_, _, inside)| cells.iter().any(|c| inside.contains(c)));
+        // Seen through from a couple of cells away, so the hero sees what is inside before stepping in.
+        let under = cache.roofs.get(roof.0).is_some_and(|(_, _, inside)| cells.iter().any(|c| crate::scene::Roof::near(inside, *c)));
         let wanted = if under { 0.18 } else { 1.0 };
         let now = sprite.color.alpha();
         let next = if (now - wanted).abs() < 0.05 { wanted } else { now + (wanted - now).signum() * time.delta_secs() * 3.0 };
@@ -507,6 +523,7 @@ fn draw(
     settings: Res<Settings>,
     mut cache: ResMut<SceneCache>,
     mut dolls: ResMut<Dolls>,
+    fonts: Res<Fonts>,
 ) {
     if !std::mem::take(&mut redraw.0) {
         return;
@@ -572,6 +589,39 @@ fn draw(
     }
     commands.spawn((InLocation, WalkGrid, Sprite { color: Color::NONE, ..Sprite::from_image(cache.grid.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.75))));
 
+    // Every way out is marked: a glowing arrow pointing where it leads, and where to.
+    for exit in &here.exits {
+        let dir = if exit.x == 0 {
+            (-1, 0)
+        } else if exit.x == world::MAP_W - 1 {
+            (1, 0)
+        } else if exit.y == 0 {
+            (0, -1)
+        } else {
+            (0, 1)
+        };
+        let centre = ((exit.x as f32 + 0.5) * TILE as f32, (exit.y as f32 + 0.5) * TILE as f32);
+        let home = on_screen(centre.0, centre.1).extend(1.8);
+        let arrow = images.add(crate::scene::exit_arrow(dir.0, dir.1).into_image());
+        commands.spawn((InLocation, ExitMarker { home, dir: Vec2::new(dir.0 as f32, -(dir.1 as f32)) }, Sprite { color: Color::linear_rgb(1.5, 1.4, 1.1), ..Sprite::from_image(arrow) }, Transform::from_translation(home)));
+        let name = if exit.label.trim().is_empty() { world.place_name(&exit.to).to_string() } else { exit.label.clone() };
+        let name: String = if name.chars().count() > 26 { format!("{}…", name.chars().take(25).collect::<String>()) } else { name };
+        // The words sit inside the map, beside the arrow, on the side away from the edge.
+        let (anchor, offset) = match dir {
+            (-1, _) => (Anchor::CENTER_LEFT, Vec2::new(20.0, 0.0)),
+            (1, _) => (Anchor::CENTER_RIGHT, Vec2::new(-20.0, 0.0)),
+            // Near a corner the words lean away from the side they would run off.
+            (_, -1) if exit.x < 8 => (Anchor::TOP_LEFT, Vec2::new(-16.0, -18.0)),
+            (_, -1) if exit.x + 8 > world::MAP_W => (Anchor::TOP_RIGHT, Vec2::new(16.0, -18.0)),
+            (_, -1) => (Anchor::TOP_CENTER, Vec2::new(0.0, -18.0)),
+            _ if exit.x < 8 => (Anchor::BOTTOM_LEFT, Vec2::new(-16.0, 18.0)),
+            _ if exit.x + 8 > world::MAP_W => (Anchor::BOTTOM_RIGHT, Vec2::new(16.0, 18.0)),
+            _ => (Anchor::BOTTOM_CENTER, Vec2::new(0.0, 18.0)),
+        };
+        for (shift, tint, z) in [(Vec2::new(2.0, -2.0), Color::srgba(0.05, 0.03, 0.02, 0.85), 1.81), (Vec2::ZERO, Color::srgb(1.0, 0.92, 0.7), 1.82)] {
+            commands.spawn((InLocation, Text2d::new(name.clone()), fonts.body(), TextColor(tint), anchor, Transform::from_translation((home.truncate() + offset + shift).extend(z)).with_scale(Vec3::splat(2.0))));
+        }
+    }
     let mut picture = |id: &str| world.sprites.get(id).or_else(|| world.sprites.get(MARKER_SPRITE)).map(|s| images.add(crate::scene::sprite(s, &world.palette).into_image()));
     // Everything stands on the bottom edge of its cell, centred.
     let foot = |x: usize, y: usize| ((x as f32 + 0.5) * TILE as f32, (y as f32 + 1.0) * TILE as f32);
@@ -2730,8 +2780,9 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, fold_keys, roofs, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
+            .add_systems(Update, (fold_keys, roofs, exit_markers).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
             .add_observer(on_master_activate);
     }

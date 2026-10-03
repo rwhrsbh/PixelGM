@@ -135,6 +135,47 @@ pub fn extract_json(text: &str) -> Option<&str> {
     (end > start).then(|| &text[start..=end])
 }
 
+/// Fields the game reads as lists. Models sometimes write them as objects keyed by id.
+const LISTS: [&str; 15] = ["tiles", "new_tiles", "sprites", "props", "creatures", "exits", "neighbors", "actions", "effects", "options", "attacks", "whispers", "feats", "texts", "facts"];
+
+/// Mends the commonest ways a model bends the answer format, before it is read: a list
+/// written as an object keyed by id becomes a list, each entry keeping its key as its id.
+pub fn loosen(value: &mut serde_json::Value) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            for (key, inner) in map.iter_mut() {
+                if LISTS.contains(&key.as_str())
+                    && let Value::Object(entries) = inner
+                {
+                    let list = entries
+                        .iter()
+                        .map(|(id, entry)| {
+                            let mut entry = entry.clone();
+                            if let Value::Object(fields) = &mut entry {
+                                fields.entry("id").or_insert_with(|| Value::String(id.clone()));
+                            }
+                            entry
+                        })
+                        .collect();
+                    *inner = Value::Array(list);
+                }
+                loosen(inner);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(loosen),
+        _ => {}
+    }
+}
+
+/// Reads the master's answer, mending what can be mended first.
+pub fn read_answer<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    let json = extract_json(text).ok_or("no JSON in the answer")?;
+    let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    loosen(&mut value);
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
 /// An id safe to use as a key: lower case, letters, digits and underscores only.
 pub fn slug(raw: &str) -> String {
     if raw == "self" {
@@ -779,6 +820,10 @@ mod tests {
         assert_eq!(extract_json("```json\n{\"a\": {\"b\": 1}}\n```"), Some("{\"a\": {\"b\": 1}}"));
         assert_eq!(extract_json("Here you go: {\"a\":1} enjoy"), Some("{\"a\":1}"));
         assert_eq!(extract_json("no braces"), None);
+        // A list written as an object keyed by id is read as the list it meant.
+        let draft: LocationDraft = read_answer(r#"{"name": "x", "new_tiles": {"flesh": {"name": "Flesh", "walkable": true, "rows": []}}}"#).unwrap();
+        assert_eq!(draft.new_tiles.len(), 1);
+        assert_eq!(draft.new_tiles[0].id, "flesh");
         assert_eq!(extract_json("} backwards {"), None);
     }
 
