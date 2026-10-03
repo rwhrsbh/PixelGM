@@ -1158,6 +1158,13 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         *phase = Phase::Leaving { to, t: 0.0 };
         return;
     }
+    // Which way the hero looks goes with the world, for the master to know what is in front.
+    game.world.facing = match pose.facing {
+        crate::doll::Facing::Up => (0, -1),
+        crate::doll::Facing::Down => (0, 1),
+        crate::doll::Facing::Left => (-1, 0),
+        crate::doll::Facing::Right => (1, 0),
+    };
     // Something hostile close by does not wait to be spoken to. With guests at the table
     // any of their tokens can be the one that is noticed.
     let noticed = game.world.fight.is_none() && (game.world.hostile_near(NOTICE_CELLS) || game.world.tokens_here().any(|t| hostile_near_token(&game.world, t.x, t.y)));
@@ -1352,6 +1359,20 @@ fn far_from(world: &World, id: &str) -> Option<String> {
     let (px, py) = (world.player.x + world::walk::FEET.0, world.player.y + world::walk::FEET.1);
     let distance = ((centre.0 - px).powi(2) + (centre.1 - py).powi(2)).sqrt();
     (distance > THING_REACH * 1.6).then_some(name)
+}
+
+/// Whether the low sheets should lie at the top of the screen: the hero (or, in a fight,
+/// anyone fighting) stands in the bottom rows, which a sheet at the bottom would cover.
+pub fn sheet_on_top(world: &World) -> bool {
+    const LOW_ROW: i32 = 9;
+    match world.fight.as_ref().filter(|_| world.fight_here()) {
+        Some(fight) => {
+            let rows: Vec<i32> = fight.combatants.iter().filter(|c| !c.dead).map(|c| c.y).collect();
+            // Where most of those fighting stand.
+            rows.iter().filter(|y| **y >= LOW_ROW).count() * 2 > rows.len()
+        }
+        None => world.player.cell().1 >= LOW_ROW,
+    }
 }
 
 /// A thing from the bag the player is about to say the use of: "X uses Y", put before what
@@ -2125,7 +2146,11 @@ fn overlay(
         (Phase::Stuck { .. }, Sheet::Stuck(_)) | (Phase::Refused { .. }, Sheet::Refused(_)) if !old.is_empty() => shown.clone(),
         _ => translated(sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang, &extra), foreign(&game.world, *lang), translator.bypass_change_detection()),
     };
-    if *shown == wanted && (wanted == Sheet::None || !old.is_empty()) {
+    // A sheet moves to the other edge when the hero walks under it.
+    static WAS_ON_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let on_top = sheet_on_top(&game.world);
+    let moved = WAS_ON_TOP.swap(on_top, std::sync::atomic::Ordering::Relaxed) != on_top;
+    if *shown == wanted && !moved && (wanted == Sheet::None || !old.is_empty()) {
         return;
     }
     for entity in &old {
@@ -2148,9 +2173,9 @@ fn overlay(
         top: px(0),
         width: percent(100),
         height: percent(100),
-        padding: UiRect::bottom(px(HUD_HEIGHT + 4.0)),
+        padding: UiRect { top: px(4), bottom: px(HUD_HEIGHT + 4.0), ..default() },
         justify_content: JustifyContent::Center,
-        align_items: if low { AlignItems::FlexEnd } else { AlignItems::Center },
+        align_items: if !low { AlignItems::Center } else if on_top { AlignItems::FlexStart } else { AlignItems::FlexEnd },
         ..default()
     };
     commands.spawn((Overlay, PopIn(if fresh { 0.0 } else { 1.0 }), full, GlobalZIndex(10))).with_children(|root| {

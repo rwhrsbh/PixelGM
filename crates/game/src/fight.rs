@@ -553,6 +553,8 @@ struct Shown {
     asking: bool,
     /// Uses left of the acting hero's feats, so a spent one leaves the menu.
     uses: Vec<Option<u8>>,
+    /// The sheet lies at the top, out of the way of those fighting in the bottom rows.
+    on_top: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -571,6 +573,7 @@ fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<F
         lang: Some(*lang),
         asking: view.asking,
         uses: fight.map(|f| f.actor().strikes.iter().map(|s| s.uses_left).collect()).unwrap_or_default(),
+        on_top: crate::play::sheet_on_top(&game.world),
     });
     if *shown == wanted && (wanted.is_none() || !old.is_empty()) {
         return;
@@ -589,9 +592,10 @@ fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<F
         top: px(0),
         width: percent(100),
         height: percent(100),
-        padding: UiRect::bottom(px(HUD_HEIGHT + 2.0)),
+        padding: UiRect { top: px(2), bottom: px(HUD_HEIGHT + 2.0), ..default() },
         justify_content: JustifyContent::Center,
-        align_items: AlignItems::FlexEnd,
+        // Out of the way of those fighting.
+        align_items: if wanted.on_top { AlignItems::FlexStart } else { AlignItems::FlexEnd },
         ..default()
     };
     commands.spawn((FightSheet, root, GlobalZIndex(10))).with_children(|root| {

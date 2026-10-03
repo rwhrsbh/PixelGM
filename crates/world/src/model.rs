@@ -357,6 +357,10 @@ pub struct World {
     /// The hero whose player the master is answering, for whose bag a thing goes into.
     #[serde(skip)]
     pub acting: Option<usize>,
+    /// Which way the hero on this screen looks: a step along x or y. Told to the master, so
+    /// that "the wall in front of me" is a cell it can name.
+    #[serde(skip)]
+    pub facing: (i32, i32),
     /// A place the story sent heroes to, and which heroes: to be gone to once the telling is
     /// read, each by their own player.
     #[serde(skip)]

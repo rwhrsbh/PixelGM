@@ -80,6 +80,11 @@ pub enum Effect {
         #[serde(default)]
         to: Vec<i64>,
     },
+    /// The ground or the whole scene shakes, for so many seconds.
+    Shake {
+        #[serde(default)]
+        seconds: Value,
+    },
     /// Something new appears. `kind` is `prop` or `creature`.
     Spawn {
         kind: String,
@@ -808,6 +813,12 @@ impl World {
                     self.cues.push(crate::model::Cue { seq: self.cue_seq, place: here.clone(), id, motion: motion.trim().to_lowercase() });
                     let extra = self.cues.len().saturating_sub(16);
                     self.cues.drain(..extra);
+                }
+                Effect::Shake { seconds } => {
+                    // Shown like a movement: once, to everyone in the place.
+                    let seconds = seconds.as_f64().filter(|s| *s > 0.0).map_or(1.2, |s| s.clamp(0.3, 6.0)) as f32;
+                    self.cue_seq += 1;
+                    self.cues.push(crate::model::Cue { seq: self.cue_seq, place: here.clone(), id: "screen".to_string(), motion: format!("quake {seconds}") });
                 }
                 Effect::Weather { weather } => location.weather = weather.trim().to_lowercase(),
                 Effect::Music { mood } => location.mood = mood.trim().to_lowercase(),

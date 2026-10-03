@@ -120,6 +120,7 @@ fn start(
     fellows: Query<(Entity, &Fellow)>,
     actors: Query<(Entity, &Actor)>,
     mut last: Local<Option<u64>>,
+    mut fx: ResMut<crate::fx::Fx>,
 ) {
     let Some(game) = game else { return };
     let world = &game.world;
@@ -133,6 +134,11 @@ fn start(
     let mine = my_hero(world, &me, solo);
     for cue in world.cues.iter().filter(|c| c.seq > *seen) {
         if cue.place != world.current {
+            continue;
+        }
+        // The scene itself shaking is the camera's business.
+        if let Some(seconds) = cue.motion.strip_prefix("quake ").and_then(|s| s.parse::<f32>().ok()) {
+            fx.shake(seconds);
             continue;
         }
         let Some(motion) = Motion::of(&cue.motion) else { continue };
