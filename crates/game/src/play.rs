@@ -755,10 +755,10 @@ fn draw(
 
     // What lies on the ground, small, with a shadow.
     for lying in &here.items {
-        let image = images.add(crate::icons::icon(&lying.item).into_image());
+        let image = images.add(crate::bag_ui::picture(&lying.item, world).into_image());
         let (x, y) = ((lying.x as f32 + 0.5) * TILE as f32, (lying.y as f32 + 0.8) * TILE as f32);
         let glow = if lying.item.light > 0 { Color::linear_rgb(1.8, 1.5, 1.2) } else { Color::WHITE };
-        commands.spawn((InLocation, Sprite { color: glow, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(x, y).extend(0.95)).with_scale(Vec3::splat(1.0))));
+        commands.spawn((InLocation, crate::fx::OnGround((lying.x, lying.y)), Sprite { color: glow, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(on_screen(x, y).extend(0.95)).with_scale(Vec3::splat(1.0))));
     }
     // Every way out is marked: a glowing arrow pointing where it leads, and where to. A way
     // two cells wide is named once.
@@ -1196,8 +1196,12 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
 /// also closes whatever sheet is open.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Res<Game>, mut phase: ResMut<Phase>, mut was_walking: Local<bool>, mut table: ResMut<Table>, settings: Res<Settings>, session: Res<Session>, store: Res<Store>, mut leave: ResMut<Leave>, mut pick: ResMut<Pick>) {
+fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Res<Game>, mut phase: ResMut<Phase>, mut was_walking: Local<bool>, mut table: ResMut<Table>, settings: Res<Settings>, session: Res<Session>, store: Res<Store>, mut leave: ResMut<Leave>, mut pick: ResMut<Pick>, mut use_for: ResMut<UseFor>) {
     let pad = |button: GamepadButton| gamepads.iter().any(|pad| pad.just_pressed(button));
+    // A thing whose use was being written is forgotten once the field is gone.
+    if use_for.0.is_some() && !matches!(*phase, Phase::Writing { .. } | Phase::Bag) {
+        use_for.0 = None;
+    }
     // The draft went away while its sheet was open (judged, or the seat changed hands).
     if *phase == Phase::Judging && table.judging.is_none() {
         *phase = Phase::Walking;
@@ -1348,6 +1352,19 @@ fn far_from(world: &World, id: &str) -> Option<String> {
     let (px, py) = (world.player.x + world::walk::FEET.0, world.player.y + world::walk::FEET.1);
     let distance = ((centre.0 - px).powi(2) + (centre.1 - py).powi(2)).sqrt();
     (distance > THING_REACH * 1.6).then_some(name)
+}
+
+/// A thing from the bag the player is about to say the use of: "X uses Y", put before what
+/// is typed.
+#[derive(Resource, Default)]
+pub struct UseFor(pub Option<String>);
+
+/// What goes to the master: what was typed, after the thing it is about, if any.
+fn with_use(use_for: &UseFor, typed: String) -> String {
+    match &use_for.0 {
+        Some(thing) if !typed.trim().is_empty() => format!("{thing}: {}", typed.trim()),
+        _ => typed,
+    }
 }
 
 /// A walk the hero is taking to do what a choice needs.
@@ -1881,7 +1898,7 @@ enum Sheet {
     /// `chest`: none for a thing that holds nothing; whether it is locked, for one that does.
     Looking { name: String, description: String, actions: Vec<String>, chest: Option<bool> },
     /// Whether there are other players to talk to.
-    Writing { table: bool },
+    Writing { table: bool, about: String },
     Asking(String),
     Reading(Turn),
     /// The telling folded away to a strip, so the map can be seen.
@@ -1943,6 +1960,8 @@ struct Extra {
     advancing: String,
     folded: bool,
     going_on: Option<String>,
+    /// "X uses Y", when the field is open to say what a thing is used for.
+    use_for: String,
 }
 
 /// Whether the telling being read is folded away.
@@ -2024,7 +2043,7 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
                 None => Sheet::None,
             }
         }
-        Phase::Writing { .. } => Sheet::Writing { table: extra.seat != SeatState::Alone },
+        Phase::Writing { .. } => Sheet::Writing { table: extra.seat != SeatState::Alone, about: extra.use_for.clone() },
         Phase::Asking { said, .. } => Sheet::Asking(extra.going_on.clone().unwrap_or_else(|| said.replace(world::prompt::GO_ON, "").trim().to_string())),
         Phase::Reading { turn } => if extra.folded { Sheet::Folded } else { Sheet::Reading(turn.clone()) },
         Phase::Refused { trouble, .. } => Sheet::Refused(trouble_text(trouble, now, lang)),
@@ -2067,7 +2086,7 @@ fn overlay(
     table: Res<Table>,
     panel: Res<Panel>,
     settings: Res<Settings>,
-    folded: Res<Folded>,
+    (folded, use_for): (Res<Folded>, Res<UseFor>),
     mut translator: ResMut<Translator>,
     mut shown: Local<Sheet>,
     old: Query<Entity, With<Overlay>>,
@@ -2087,6 +2106,7 @@ fn overlay(
             .unwrap_or_default(),
         folded: folded.0,
         going_on: table.going_on.clone(),
+        use_for: use_for.0.clone().unwrap_or_default(),
     };
     if *phase == Phase::Master {
         let others = others_at_table(&game.world, &me);
@@ -2288,8 +2308,12 @@ fn overlay(
                     button(line, &art, &fonts, T::Leave, true, PlayAction::Close);
                 });
             }
-            Sheet::Writing { table } => {
-                sheet.spawn((Text::default(), T::WhatDoYouDo, fonts.body(), ink));
+            Sheet::Writing { table, about } => {
+                if about.is_empty() {
+                    sheet.spawn((Text::default(), T::WhatDoYouDo, fonts.body(), ink));
+                } else {
+                    sheet.spawn((Text::new(format!("{about} — {}", T::UseForWhat.text(*lang))), fonts.body(), ink));
+                }
                 sheet.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|line| {
                     line.spawn(Node { flex_grow: 1.0, height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }).with_children(|field| {
                         field.spawn(backing(art.field.clone(), 4.0));
@@ -2444,13 +2468,14 @@ fn submit(
     master: Res<Master>,
     session: Res<Session>,
     table: Res<Table>,
+    use_for: Res<UseFor>,
 ) {
     if !keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
         return;
     }
     let (Phase::Writing { near }, Ok((entity, input))) = (&*phase, input.single()) else { return };
     if focus.get() == Some(entity) {
-        *phase = send(input.value().to_string(), near.clone(), &game, &gm, &store, &settings, &master, &session, &table);
+        *phase = send(with_use(&use_for, input.value().to_string()), near.clone(), &game, &gm, &store, &settings, &master, &session, &table);
     }
 }
 
@@ -2472,7 +2497,7 @@ fn on_activate(
     settings: Res<Settings>,
     master: Res<Master>,
     mut session: ResMut<Session>,
-    (mut table, mut approach): (ResMut<Table>, ResMut<Approach>),
+    (mut table, mut approach, use_for): (ResMut<Table>, ResMut<Approach>, Res<UseFor>),
 ) {
     // This observer hears every button in the game; outside a game there is nothing to act on.
     let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
@@ -2647,7 +2672,7 @@ fn on_activate(
         (PlayAction::Own, _) => *phase = Phase::Writing { near: None },
         (PlayAction::Send, Phase::Writing { near }) => {
             if let Ok(input) = input.single() {
-                *phase = send(input.value().to_string(), near, &game, &gm, &store, &settings, &master, &session, &table);
+                *phase = send(with_use(&use_for, input.value().to_string()), near, &game, &gm, &store, &settings, &master, &session, &table);
             }
         }
         (PlayAction::Approach(index), Phase::Reading { turn }) => {
@@ -3248,6 +3273,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Leave>()
             .init_resource::<Pick>()
             .init_resource::<Approach>()
+            .init_resource::<UseFor>()
             .add_observer(on_fold)
             .init_resource::<Dolls>()
             .init_resource::<Background>()

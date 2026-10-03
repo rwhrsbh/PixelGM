@@ -600,6 +600,8 @@ pub enum FightIntent {
     Dash,
     Disengage,
     EndTurn,
+    /// Drink or eat the thing at this place in the acting hero's bag.
+    UseItem(usize),
 }
 
 impl World {
@@ -647,6 +649,31 @@ impl World {
                             && let Some(h) = hero.and_then(|h| self.party.get_mut(h))
                         {
                             h.spend_slot(*slot);
+                        }
+                        events
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            FightIntent::UseItem(i) => {
+                let hero = fight.actor().id.strip_prefix("hero_").and_then(|n| n.parse::<usize>().ok());
+                let dice = hero
+                    .and_then(|h| self.story.bags.get(h))
+                    .and_then(|b| b.inventory.get(*i))
+                    .filter(|item| !item.heal.trim().is_empty())
+                    .and_then(|item| Dice::parse(&item.heal, 0));
+                match (hero, dice) {
+                    (Some(hero), Some(dice)) => {
+                        let mut rng = Rng::from_clock();
+                        let events = fight.mend_self(dice.roll(&mut rng).max(1));
+                        // The thing is spent only when it was actually used.
+                        if !events.is_empty() {
+                            let bag = &mut self.story.bags[hero].inventory;
+                            if bag[*i].count > 1 {
+                                bag[*i].count -= 1;
+                            } else {
+                                bag.remove(*i);
+                            }
                         }
                         events
                     }
@@ -804,6 +831,24 @@ mod tests {
         assert_eq!(fight.combatants.len(), 2);
         assert_eq!(fight.combatants[0].id, "hero_0");
         assert!(!w.start_fight(Rng::seeded(1)), "one fight at a time");
+    }
+
+    #[test]
+    fn a_potion_drunk_in_a_fight_heals_costs_the_action_and_is_spent() {
+        let mut w = world();
+        apply(&mut w, json!([{ "op": "attitude", "id": "cat", "attitude": "hostile" }, { "op": "give", "name": "Potion", "kind": "potion", "heal": "2d4+2" }]));
+        w.start_fight(Rng::seeded(1));
+        let fight = w.fight.as_mut().unwrap();
+        // The hero's turn, wounded.
+        fight.turn = fight.order.iter().position(|i| *i == 0).unwrap();
+        fight.combatants[0].hp = 3;
+        fight.combatants[0].action_left = true;
+        let events = w.fight_act(&FightIntent::UseItem(0));
+        assert!(matches!(events.as_slice(), [Event::Healed { amount, .. }] if *amount >= 4), "{events:?}");
+        let fight = w.fight.as_ref().unwrap();
+        assert!(fight.combatants[0].hp >= 7 && !fight.combatants[0].action_left);
+        assert!(w.story.bags[0].inventory.is_empty());
+        assert!(w.fight_act(&FightIntent::UseItem(0)).is_empty(), "nothing left to drink, no action left");
     }
 
     #[test]

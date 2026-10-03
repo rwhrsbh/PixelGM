@@ -215,7 +215,7 @@ texts! {
     CannotReach: "Туда не пройти.", "There is no way there.";
     BagHeals: "лечит", "heals";
     BagLight: "свет, клеток:", "light, cells:";
-    BagUseHint: "ПКМ — применить, клик за сумкой — бросить", "Right click: use; click outside: drop";
+    BagUseHint: "ПКМ — применить · Alt+ПКМ — сказать мастеру, для чего · клик за сумкой — бросить", "Right click: use · Alt+right click: tell the master what for · click outside: drop";
     UsesThing: "использует", "uses";
     PickUp: "поднять", "pick up";
     ChestOpen: "Открыть", "Open";
@@ -253,6 +253,8 @@ texts! {
     HitPoints: "Хиты", "HP";
     ArmorClass: "КД", "AC";
     Spells: "Заклинания", "Spells";
+    FightItems: "Предметы", "Items";
+    UseForWhat: "для чего? Напишите, как и на что", "what for? Say how and on what";
     CreateHero: "В путь", "Set out";
     NeedName: "Герою нужно имя.", "The hero needs a name.";
     NeedSkills: "Выбери навыки, столько:", "Choose this many skills:";

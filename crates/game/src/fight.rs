@@ -40,6 +40,8 @@ enum Mode {
     Menu,
     Moving,
     Spells,
+    /// Choosing a thing from the bag to drink or eat.
+    Items,
     Aiming(Aim),
     /// Typing something the rules have no button for.
     Writing,
@@ -76,6 +78,9 @@ enum FightAction {
     Weapon(usize),
     Spells,
     Spell(String, u8),
+    /// Open the list of things in the bag that can be used in a fight.
+    Items,
+    Item(usize),
     Dodge,
     Dash,
     Disengage,
@@ -134,6 +139,13 @@ fn describe(event: &Event, fight: &Encounter, lang: Lang) -> Option<String> {
         Event::Dashed { who } => format!("{} — {}", name(who), t(T::Dash)),
         Event::Disengaged { who } => format!("{} — {}", name(who), t(T::Disengage)),
     })
+}
+
+/// What the acting hero carries that can be drunk or eaten in a fight: its place in the bag,
+/// its name, what it heals and how many there are.
+fn usable(world: &World, fight: &Encounter) -> Vec<(usize, String, String, u32)> {
+    let Some(bag) = hero_index(&fight.actor().id).and_then(|h| world.story.bags.get(h)) else { return Vec::new() };
+    bag.inventory.iter().enumerate().filter(|(_, item)| !item.heal.trim().is_empty()).map(|(i, item)| (i, item.name.clone(), item.heal.clone(), item.count as u32)).collect()
 }
 
 /// The strike an aim stands for, built from the hero's sheet.
@@ -641,6 +653,9 @@ fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<F
                         if actor.action_left && !(castable(&game.world, fight).is_empty() && rituals(&game.world, fight).is_empty()) {
                             button(line, &art, &fonts, T::Spells, true, FightAction::Spells);
                         }
+                        if !usable(&game.world, fight).is_empty() {
+                            button(line, &art, &fonts, T::FightItems, actor.action_left, FightAction::Items);
+                        }
                         button(line, &art, &fonts, T::OwnAction, actor.action_left, FightAction::Stunt);
                         button(line, &art, &fonts, T::Dodge, actor.action_left, FightAction::Dodge);
                         button(line, &art, &fonts, T::Dash, actor.action_left, FightAction::Dash);
@@ -659,6 +674,15 @@ fn sheet(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<F
                             let name = srd().spells.get(&index).map_or(index.as_str(), |s| tr(ru, &s.name)).to_string();
                             let label = if slot == 0 { format!("{name} *") } else { format!("{name} ({slot}) *") };
                             text_button(line, &art, &fonts, label, FightAction::Ritual(index, slot));
+                        }
+                        button(line, &art, &fonts, T::Cancel, true, FightAction::Cancel);
+                    });
+                }
+                Mode::Items => {
+                    sheet.spawn(Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
+                        for (i, name, heal, count) in usable(&game.world, fight) {
+                            let many = if count > 1 { format!(" ×{count}") } else { String::new() };
+                            text_button(line, &art, &fonts, format!("{name}{many} (+{heal})"), FightAction::Item(i));
                         }
                         button(line, &art, &fonts, T::Cancel, true, FightAction::Cancel);
                     });
@@ -778,6 +802,14 @@ fn on_activate(
         FightAction::Cancel => {
             view.mode = Mode::Menu;
             return;
+        }
+        FightAction::Items => {
+            view.mode = Mode::Items;
+            return;
+        }
+        FightAction::Item(i) => {
+            view.mode = Mode::Menu;
+            FightIntent::UseItem(*i)
         }
         FightAction::Dodge => FightIntent::Dodge,
         FightAction::Dash => FightIntent::Dash,

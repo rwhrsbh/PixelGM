@@ -590,6 +590,12 @@ impl Encounter {
         self.spend_action(|c| c.dodging = true).then(|| Event::Dodged { who: self.actor().id.clone() }).into_iter().collect()
     }
 
+    /// The actor spends the action on something that mends it: a potion drunk, food eaten.
+    pub fn mend_self(&mut self, amount: i32) -> Vec<Event> {
+        let who = self.actor().id.clone();
+        self.spend_action(|c| c.mend(amount)).then(|| Event::Healed { who: who.clone(), target: who, amount }).into_iter().collect()
+    }
+
     pub fn dash(&mut self) -> Vec<Event> {
         self.spend_action(|c| c.movement_left += c.speed).then(|| Event::Dashed { who: self.actor().id.clone() }).into_iter().collect()
     }

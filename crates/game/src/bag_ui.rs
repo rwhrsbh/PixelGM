@@ -203,7 +203,7 @@ fn icon_key(item: &Item) -> String {
 }
 
 /// The picture of a thing: the master's own, when it drew one, or the game's.
-fn picture(item: &Item, world: &World) -> crate::art::Pixels {
+pub fn picture(item: &Item, world: &World) -> crate::art::Pixels {
     if item.rows.is_empty() {
         return icon(item);
     }
@@ -387,6 +387,7 @@ fn press(
     mut sound: MessageWriter<Play>,
     mut said: ResMut<Said>,
     lang: Res<Lang>,
+    (keyboard, mut use_for): (Res<ButtonInput<KeyCode>>, ResMut<crate::play::UseFor>),
 ) {
     if *phase != Phase::Bag {
         return;
@@ -404,6 +405,14 @@ fn press(
             && let Some(i) = game.world.story.bags.get(hero).and_then(|b| b.item_at((x, y)))
         {
             let name = bag(&game.world, hero)[i].name.clone();
+            // With Alt held the player says what the thing is used for: the field opens, and
+            // what is typed goes to the master after "X uses Y:".
+            if keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]) {
+                let who = game.world.party.get(hero).map_or(String::new(), |h| h.name.clone());
+                use_for.0 = Some(format!("{who} {} {name}", T::UsesThing.text(*lang)));
+                *phase = Phase::Writing { near: None };
+                return;
+            }
             if session.is_client() {
                 session.intend(Intent::UseItem { index: i });
             }
@@ -496,6 +505,7 @@ fn outside(
     mut redraw: ResMut<Redraw>,
     mut sound: MessageWriter<Play>,
     mut throws: MessageWriter<crate::fx::Thrown>,
+    mut landing: ResMut<crate::fx::Landing>,
 ) {
     if *phase != Phase::Bag || !mouse.just_pressed(MouseButton::Left) {
         return;
@@ -532,6 +542,8 @@ fn outside(
     }
     if world.drop_item(hero, i, cell) {
         if let Some(item) = item {
+            // The thing on the ground stays unseen until the thrown one lands on it.
+            landing.0.push((cell, crate::fx::FLIGHT_SECONDS));
             throws.write(crate::fx::Thrown { item, cell });
         }
         state.held = None;

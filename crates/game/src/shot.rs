@@ -2,7 +2,7 @@
 //!
 //! - `--do "<step>;<step>;…"` plays a script through the real input path: the steps become
 //!   the same window messages a mouse and keyboard produce. Steps: `wait:<seconds>`,
-//!   `move:<x>,<y>` and `click:<x>,<y>` (canvas pixels), `tap` (a click without moving), `snap[:<x>,<y>]` (a move, press and release in one frame), `type:<text>`, `key:<name>`,
+//!   `move:<x>,<y>` and `click:<x>,<y>` (canvas pixels), `rclick:<x>,<y>`, `tap` (a click without moving), `snap[:<x>,<y>]` (a move, press and release in one frame), `type:<text>`, `key:<name>`,
 //!   `shot:<file.png>`, `hold:<key>,<seconds>`, `warp:<cell x>,<cell y>`, `quit`.
 //! - `--shot <file.png>` is short for "let the picture settle, save it, quit".
 //! - `--screen <main|keys|settings>` opens a screen, `--size <W>x<H>` sets the window size,
@@ -29,6 +29,8 @@ pub enum Step {
     Frames(u32),
     Move(Vec2),
     Mouse(ButtonState),
+    /// The right button.
+    Right(ButtonState),
     /// A press and its release within one frame, as a quick hand makes on a slow frame.
     Snap(Option<Vec2>),
     Type(String),
@@ -77,6 +79,7 @@ fn named_key(name: &str) -> Option<(KeyCode, Key)> {
         "tab" => (KeyCode::Tab, Key::Tab),
         "backspace" => (KeyCode::Backspace, Key::Backspace),
         "f11" => (KeyCode::F11, Key::F11),
+        "alt" => (KeyCode::AltLeft, Key::Alt),
         "up" => (KeyCode::ArrowUp, Key::ArrowUp),
         "down" => (KeyCode::ArrowDown, Key::ArrowDown),
         "left" => (KeyCode::ArrowLeft, Key::ArrowLeft),
@@ -123,6 +126,11 @@ pub fn parse_script(script: &str) -> Vec<Step> {
             // A click where the cursor already is, without moving it there first.
             "snap" => steps.extend([Step::Snap(point(arg)), Step::Frames(CLICK_FRAMES)]),
             "tap" => steps.extend([Step::Mouse(ButtonState::Pressed), Step::Frames(CLICK_FRAMES), Step::Mouse(ButtonState::Released), Step::Frames(CLICK_FRAMES)]),
+            "rclick" => {
+                if let Some(at) = point(arg) {
+                    steps.extend([Step::Move(at), Step::Frames(CLICK_FRAMES), Step::Right(ButtonState::Pressed), Step::Frames(CLICK_FRAMES), Step::Right(ButtonState::Released), Step::Frames(CLICK_FRAMES)]);
+                }
+            }
             "type" => steps.push(Step::Type(arg.to_string())),
             // Hold a key for a while: `hold:d,1.5` walks right for a second and a half.
             "hold" => {
@@ -291,6 +299,11 @@ fn play_script(
                 window_events.write(WindowEvent::MouseButtonInput(message));
                 buttons.write(message);
             }
+        }
+        Step::Right(state) => {
+            let message = MouseButtonInput { button: MouseButton::Right, state, window: entity };
+            window_events.write(WindowEvent::MouseButtonInput(message));
+            buttons.write(message);
         }
         Step::Mouse(state) => {
             let message = MouseButtonInput { button: MouseButton::Left, state, window: entity };

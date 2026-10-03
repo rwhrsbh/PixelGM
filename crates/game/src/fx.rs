@@ -424,6 +424,32 @@ pub struct Thrown {
     pub cell: (usize, usize),
 }
 
+/// How long a thrown thing is in the air.
+pub const FLIGHT_SECONDS: f32 = 0.45;
+
+/// A thing lying on the ground, by its cell.
+#[derive(Component)]
+pub struct OnGround(pub (usize, usize));
+
+/// Cells a thrown thing is still flying to, and for how long: what lies there is not shown
+/// until it lands, or there would seem to be two of it.
+#[derive(Resource, Default)]
+pub struct Landing(pub Vec<((usize, usize), f32)>);
+
+fn hide_landing(time: Res<Time>, mut landing: ResMut<Landing>, mut lying: Query<(&OnGround, &mut Visibility)>) {
+    if !landing.0.is_empty() {
+        let dt = time.delta_secs();
+        landing.0.iter_mut().for_each(|(_, left)| *left -= dt);
+        landing.0.retain(|(_, left)| *left > 0.0);
+    }
+    for (at, mut visibility) in &mut lying {
+        let wanted = if landing.0.iter().any(|(cell, _)| *cell == at.0) { Visibility::Hidden } else { Visibility::Inherited };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
+}
+
 #[derive(Component)]
 struct Flying {
     age: f32,
@@ -437,12 +463,12 @@ fn throw_things(mut commands: Commands, mut thrown: MessageReader<Thrown>, mut i
         let tile = world::TILE as f32;
         let from = on_screen(game.world.player.x + 4.0, game.world.player.y - 8.0);
         let to = on_screen((t.cell.0 as f32 + 0.5) * tile + 6.0, (t.cell.1 as f32 + 0.8) * tile);
-        let image = images.add(crate::icons::icon(&t.item).into_image());
+        let image = images.add(crate::bag_ui::picture(&t.item, &game.world).into_image());
         commands.spawn((DespawnOnExit(Screen::Play), Flying { age: 0.0, from, to }, Sprite::from_image(image), Transform::from_translation(from.extend(1.9))));
     }
     for (entity, mut fly, mut transform) in &mut flying {
         fly.age += time.delta_secs();
-        let s = (fly.age / 0.45).min(1.0);
+        let s = (fly.age / FLIGHT_SECONDS).min(1.0);
         let at = fly.from.lerp(fly.to, s) + Vec2::Y * (s * std::f32::consts::PI).sin() * 36.0;
         transform.translation = at.round().extend(1.9);
         transform.rotation = Quat::from_rotation_z(-s * 6.0);
@@ -456,7 +482,7 @@ pub struct FxPlugin;
 
 impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Fx>().add_message::<Thrown>().add_systems(Update, throw_things).add_systems(Startup, spawn_wince).add_systems(Update, (dust, spawn, actors, floats, specks, shake, wince, typewriter, pop_in, die).chain());
+        app.init_resource::<Fx>().init_resource::<Landing>().add_message::<Thrown>().add_systems(Update, (throw_things, hide_landing)).add_systems(Startup, spawn_wince).add_systems(Update, (dust, spawn, actors, floats, specks, shake, wince, typewriter, pop_in, die).chain());
     }
 }
 

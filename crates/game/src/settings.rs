@@ -239,7 +239,8 @@ fn apply_window_mode(settings: Res<Settings>, mut window: Single<&mut Window, Wi
 #[cfg(windows)]
 fn unstick_keys(mut keyboard: ResMut<ButtonInput<KeyCode>>, windows: Query<&Window, With<PrimaryWindow>>, mut released: MessageWriter<bevy::input::keyboard::KeyboardInput>, focused: Query<Entity, With<PrimaryWindow>>) {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    if !windows.iter().any(|w| w.focused) {
+    // A window kept off the desktop is driven by a test script, whose keys are not the keyboard's.
+    if !windows.iter().any(|w| w.focused && w.visible) {
         return;
     }
     let Ok(window) = focused.single() else { return };
