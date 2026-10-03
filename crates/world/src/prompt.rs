@@ -8,7 +8,7 @@ use crate::story::{KEPT_LINES, Speaker};
 use std::fmt::Write;
 
 /// How the master says what a creature fights with.
-const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "monster" the index of the D&D 5e SRD monster it is or most resembles (goblin, wolf, bandit, skeleton, giant-spider, ogre, guard, …), or give "stats" of its own: {"ac": 13, "hp": 11, "speed": 30, "attacks": [{"name": "…", "bonus": 4, "damage": "1d6+2", "range": 5}], "xp": 50}. Match the danger to a first-level party unless told otherwise."##;
+const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "monster" the index of the D&D 5e SRD monster it is or most resembles (goblin, wolf, bandit, skeleton, giant-spider, ogre, guard, …), or give "stats" of its own: {"ac": 13, "hp": 11, "speed": 30, "attacks": [{"name": "…", "bonus": 4, "damage": "1d6+2", "range": 5}], "xp": 50}. Match the danger to a first-level party unless told otherwise: a first-level hero has about ten hit points, so against one or two heroes a single hit must not average more than five (challenge 1/4 or less: giant-rat, kobold, bandit, giant-centipede — not swarm-of-insects, whose bite takes ten), and nothing hostile stands right where the party walks in."##;
 
 /// How the master changes the world. Shared by drawing (prepared actions) and by play.
 const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
@@ -67,7 +67,7 @@ MAPS. A map is {h} rows of exactly {w} characters. "legend" says which tile each
 Built-in tiles you can use without drawing them:
   walkable: grass, dirt, sand, stone_floor, wood_floor, door
   solid: water, stone_wall, wood_wall, tree, bush, rock
-Draw "new_tiles" when a place needs something these do not cover. A place should look like somewhere particular: buildings with walls and doors, paths, water, clearings — not an empty field.
+Draw "new_tiles" when a place needs something these do not cover. A place should look like somewhere particular: buildings with walls and doors, paths, water, clearings — not an empty field. Every tile stands where the thing it shows would really be: trees, bushes, growths and open water belong outdoors — inside a hut, a cellar or a cave use walls, floors, furniture and props, never a tree; and a tile drawn for one place is reused in another only when that thing would be found there too.
 
 EXITS. An exit is a walkable cell, usually on the edge of the map or in a doorway, that leads to another place named by "to". Every place an exit leads to is listed in "neighbors" unless it already exists. Give a place two to four exits, and at least one of them must lead somewhere new — a neighbor that is not yet in the world — so that the world keeps opening up rather than closing into a loop. Everything must be reachable on foot from "spawn".
 

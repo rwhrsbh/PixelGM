@@ -811,9 +811,10 @@ fn submit_stunt(
     }
 }
 
-/// A fight that starts gets a clean view.
-fn reset(phase: Res<Phase>, mut view: ResMut<FightView>, mut was: Local<bool>) {
-    let now = *phase == Phase::Fighting;
+/// A fight that starts gets a clean view. It is the fight that counts, not the screen: a
+/// sheet opened and closed in the middle of one must not wipe the blows still to be shown.
+fn reset(game: Res<Game>, mut view: ResMut<FightView>, mut was: Local<bool>) {
+    let now = game.world.fight.is_some();
     if now && !*was {
         *view = FightView::default();
     }
