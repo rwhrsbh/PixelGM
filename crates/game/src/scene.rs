@@ -156,6 +156,46 @@ impl Ground {
     }
 }
 
+/// What a tile the master made is, by the words of its id and name, in either language. A
+/// kind that is walked on is taken only for a tile that can be walked on, and a wall, water or
+/// something standing only for one that cannot: the picture must never say otherwise than the
+/// rules.
+fn classify(id: &str, def: &world::TileDef) -> Option<(Ground, Option<Growth>)> {
+    let words = format!("{} {}", id, def.name).to_lowercase().replace(['_', '-'], " ");
+    let has = |list: &[&str]| list.iter().any(|w| words.contains(w));
+    let wooden = has(&["wood", "plank", "board", "timber", "log", "pier", "dock", "deck", "деревян", "доск", "бревн", "причал", "настил", "пристан"]);
+    let tree = !wooden && (has(&["tree", "forest", "лес"]) || words.contains("дерево") || words.contains("деревья"));
+    let solid = !def.walkable;
+    let found = if has(&["water", "sea", "river", "lake", "pond", "ocean", "вода", "воды", "море", "река", "реки", "озер", "пруд", "болот"]) {
+        Some((Ground::Water, None))
+    } else if has(&["door", "gate", "дверь", "двери", "ворота", "проход"]) {
+        Some((Ground::Door, None))
+    } else if tree {
+        Some((Ground::Grass, Some(Growth::Tree)))
+    } else if has(&["bush", "shrub", "hedge", "куст", "живая изгородь"]) {
+        Some((Ground::Grass, Some(Growth::Bush)))
+    } else if has(&["rock", "boulder", "валун", "глыба"]) && solid {
+        Some((Ground::Grass, Some(Growth::Rock)))
+    } else if has(&["wall", "стена", "стены", "стен ", "cliff", "скала", "утёс", "fence", "забор", "частокол", "palisade"]) {
+        Some((if wooden || has(&["fence", "забор", "частокол", "palisade"]) { Ground::WoodWall } else { Ground::StoneWall }, None))
+    } else if wooden {
+        Some((if solid { Ground::WoodWall } else { Ground::WoodFloor }, None))
+    } else if has(&["stone", "cobble", "brick", "flag", "pave", "tile", "marble", "slab", "камен", "камн", "брусчат", "булыжн", "плит", "кирпич", "мостов", "мрамор"]) {
+        Some((if solid { Ground::StoneWall } else { Ground::StoneFloor }, None))
+    } else if has(&["grass", "meadow", "lawn", "moss", "трав", "луг", "мох", "газон"]) {
+        Some((Ground::Grass, None))
+    } else if has(&["dirt", "mud", "path", "road", "earth", "soil", "trail", "земл", "гряз", "дорог", "троп", "почв"]) {
+        Some((Ground::Dirt, None))
+    } else if has(&["sand", "beach", "dune", "песок", "песч", "пляж", "дюн"]) {
+        Some((Ground::Sand, None))
+    } else {
+        None
+    };
+    let (ground, growth) = found?;
+    let walked_on = growth.is_none() && matches!(ground, Ground::Grass | Ground::Dirt | Ground::Sand | Ground::StoneFloor | Ground::WoodFloor | Ground::Door);
+    (walked_on != solid).then_some((ground, growth))
+}
+
 struct Cells {
     ground: Vec<Ground>,
     growth: Vec<Option<Growth>>,
@@ -187,7 +227,9 @@ impl Cells {
                     ("tree", true) => (Ground::Grass, Some(Growth::Tree)),
                     ("bush", true) => (Ground::Grass, Some(Growth::Bush)),
                     ("rock", true) => (Ground::Grass, Some(Growth::Rock)),
-                    _ => (Ground::Drawn, None),
+                    // A tile the master made is painted like the stock ground it is, when its
+                    // name says what it is; only what cannot be told is shown as drawn.
+                    _ => world.tiles.get(id).and_then(|def| classify(id, def)).unwrap_or((Ground::Drawn, None)),
                 };
                 cells.drawn.push((ground == Ground::Drawn).then(|| id.to_string()));
                 cells.solid.push(world.tiles.get(id).is_none_or(|t| !t.walkable));
@@ -1051,6 +1093,19 @@ mod tests {
         let at = |wx: f32, wy: f32| dark.get((wx * PX as f32) as i32 / DARK_BLOCK, (wy * PX as f32) as i32 / DARK_BLOCK)[3];
         assert!(at(found[0].x, found[0].y) < at(8.0, 8.0), "it is lighter by the fire than in the far corner");
         assert!(darkness(Hour { dark: 0.0, tint: [0, 0, 0] }, &found, 0).get(3, 3)[3] == 0, "by day there is no dark");
+    }
+
+    #[test]
+    fn tiles_the_master_made_are_painted_as_what_their_names_say_and_never_against_the_rules() {
+        let tile = |name: &str, walkable: bool| world::TileDef { name: name.into(), walkable, sprite: world::Sprite { rows: vec!["1".repeat(16); 16] } };
+        assert_eq!(classify("wet_cobble", &tile("Мокрая брусчатка", true)), Some((Ground::StoneFloor, None)));
+        assert_eq!(classify("pier_wood", &tile("Причал", true)), Some((Ground::WoodFloor, None)));
+        assert_eq!(classify("foggy_water", &tile("Туманная вода", false)), Some((Ground::Water, None)));
+        assert_eq!(classify("old_oak", &tile("an old tree", false)), Some((Ground::Grass, Some(Growth::Tree))));
+        assert_eq!(classify("log_wall", &tile("бревенчатая стена", false)), Some((Ground::WoodWall, None)));
+        assert_eq!(classify("idol", &tile("a strange idol", false)), None);
+        // Shallow water one can wade through is not painted as the deep water that stops one.
+        assert_eq!(classify("shallows", &tile("shallow water", true)), None);
     }
 
     #[test]
