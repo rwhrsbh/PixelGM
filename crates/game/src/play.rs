@@ -438,6 +438,16 @@ enum Tool {
     Invent,
     /// A creature of the library, by its place in the list.
     Card(usize),
+    /// Coins to the party (or from it, with a minus).
+    Gold,
+    /// So many hours pass.
+    Hours,
+    /// The sky, or the hour: rain, fog, clear… or day, dusk, night, dark.
+    Sky,
+    /// Whoever is nearest says the words in the field, as a bubble.
+    Say,
+    /// The tile named in the field is painted with clicks on the map, until pressed again.
+    Brush,
 }
 
 /// The master's panel as its owner left it.
@@ -450,6 +460,34 @@ struct Panel {
     hostile: bool,
     /// Raised by every press, so the panel is drawn again and its field emptied.
     presses: u32,
+    /// The tile the brush lays with each click on the map, while it is on.
+    brush: Option<String>,
+}
+
+/// With the brush on, the master paints the map: each cell clicked, or dragged over with the
+/// button held, takes the tile.
+fn brush_paint(phase: Res<Phase>, panel: Res<Panel>, mouse: Res<ButtonInput<MouseButton>>, window: Single<&Window, With<bevy::window::PrimaryWindow>>, frame: Res<crate::view::View>, session: Res<Session>, settings: Res<Settings>, mut table: ResMut<Table>, mut last: Local<Option<(usize, usize)>>) {
+    let (Phase::Master, Some(tile), true) = (&*phase, &panel.brush, mouse.pressed(MouseButton::Left)) else {
+        *last = None;
+        return;
+    };
+    let Some(point) = crate::view::map_under_cursor(&window, &frame) else { return };
+    let side = TILE as f32 * crate::scene::PX as f32;
+    let cell = ((point.x / side).floor() as i32, (point.y / side).floor() as i32);
+    if cell.0 < 0 || cell.1 < 0 || cell.0 >= world::MAP_W as i32 || cell.1 >= world::MAP_H as i32 {
+        return;
+    }
+    let cell = (cell.0 as usize, cell.1 as usize);
+    if *last == Some(cell) {
+        return;
+    }
+    *last = Some(cell);
+    let act = GmAct::Apply(Box::new(TurnDraft { effects: vec![serde_json::json!({ "op": "tile", "x": cell.0, "y": cell.1, "tile": tile })], ..TurnDraft::default() }));
+    if session.is_client() {
+        session.intend(Intent::Gm(act));
+    } else {
+        table.inbox.push((player_name(&settings), Intent::Gm(act)));
+    }
 }
 
 /// How far from the master's token "nearest" reaches when removing a thing.
@@ -1401,7 +1439,7 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
     // Something hostile close by does not wait to be spoken to. With guests at the table
     // any of their tokens can be the one that is noticed.
     // A pack that has not been counted out yet is, now that the party is here.
-    if !session.is_client() && game.world.fight.is_none() && game.world.here().creatures.iter().any(|c| c.attitude == world::Attitude::Hostile && !c.mustered) {
+    if !session.is_client() && game.world.fight.is_none() && game.world.here().creatures.iter().any(|c| (c.attitude == world::Attitude::Hostile || c.count > 1) && !c.mustered) {
         game.world.muster();
     }
     let noticed = game.world.fight.is_none() && (game.world.hostile_near(NOTICE_CELLS) || game.world.tokens_here().any(|t| hostile_near_token(&game.world, t.x, t.y)));
@@ -2576,6 +2614,11 @@ fn overlay(
                     button(line, &art, &fonts, T::ToolGive, true, tool(Tool::Give));
                     button(line, &art, &fonts, T::ToolFight, true, tool(Tool::Fight));
                     button(line, &art, &fonts, T::ToolRoll, true, tool(Tool::Roll));
+                    button(line, &art, &fonts, T::ToolGold, true, tool(Tool::Gold));
+                    button(line, &art, &fonts, T::ToolHours, true, tool(Tool::Hours));
+                    button(line, &art, &fonts, T::ToolSky, true, tool(Tool::Sky));
+                    button(line, &art, &fonts, T::ToolSay, true, tool(Tool::Say));
+                    button(line, &art, &fonts, T::ToolBrush, true, tool(Tool::Brush));
                 });
                 sheet.spawn(wrap()).with_children(|line| {
                     button(line, &art, &fonts, T::ToolInvent, true, tool(Tool::Invent));
@@ -3726,6 +3769,11 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
         }
         GmAct::Apply(draft) => finish(desk, "", &draft),
         GmAct::Whisper { to, text } => whisper(desk, &[Whisper { to, text }]),
+        GmAct::Say { who, text } => {
+            let place = desk.game.world.current.clone();
+            desk.session.broadcast(&Down::Bubble { place, who: who.clone(), text: text.clone() });
+            desk.table.bubbles.push((who, text));
+        }
         GmAct::Invent(request) => {
             desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Invent { world: Box::new(desk.game.world.clone()), request, for_player: player.to_string() });
         }
@@ -3741,7 +3789,7 @@ fn tool_act(tool: Tool, typed: &str, world: &World, panel: &mut Panel, table: &m
     let (x, y) = world.player.cell();
     let (x, y) = (x.max(0) as usize, y.max(0) as usize);
     let apply = |effects: serde_json::Value| GmAct::Apply(Box::new(TurnDraft { effects: effects.as_array().cloned().unwrap_or_default(), ..TurnDraft::default() }));
-    let needs_text = matches!(tool, Tool::ToModel | Tool::Narrate | Tool::Whisper | Tool::Creature | Tool::Tile | Tool::Damage | Tool::Heal | Tool::Give | Tool::Invent);
+    let needs_text = matches!(tool, Tool::ToModel | Tool::Narrate | Tool::Whisper | Tool::Creature | Tool::Tile | Tool::Damage | Tool::Heal | Tool::Give | Tool::Invent | Tool::Gold | Tool::Hours | Tool::Sky | Tool::Say) || (tool == Tool::Brush && panel.brush.is_none());
     if needs_text && typed.is_empty() {
         table.master_note = T::NeedText.text(lang).to_string();
         return None;
@@ -3766,14 +3814,57 @@ fn tool_act(tool: Tool, typed: &str, world: &World, panel: &mut Panel, table: &m
             panel.hostile = !panel.hostile;
             return None;
         }
+        Tool::Gold => apply(serde_json::json!([{ "op": "gold", "amount": typed.parse::<i64>().unwrap_or(0) }])),
+        Tool::Hours => apply(serde_json::json!([{ "op": "time", "hours": typed.replace(',', ".").parse::<f64>().unwrap_or(1.0) }])),
+        Tool::Sky => match typed.to_lowercase().as_str() {
+            light @ ("day" | "dusk" | "night" | "dark" | "день" | "вечер" | "ночь" | "тьма") => {
+                let light = match light {
+                    "день" => "day",
+                    "вечер" => "dusk",
+                    "ночь" => "night",
+                    "тьма" => "dark",
+                    other => other,
+                };
+                apply(serde_json::json!([{ "op": "light", "light": light }]))
+            }
+            sky => apply(serde_json::json!([{ "op": "weather", "weather": sky }])),
+        },
+        Tool::Say => match world.thing_near(REMOVE_REACH * 3.0) {
+            Some(who) => GmAct::Say { who: who.to_string(), text: typed.to_string() },
+            None => {
+                table.master_note = T::NothingNear.text(lang).to_string();
+                return None;
+            }
+        },
+        Tool::Brush => {
+            // On with a tile in the field; off with another press.
+            panel.brush = if panel.brush.is_some() { None } else { Some(typed.to_lowercase().replace([' ', '-'], "_")) };
+            table.master_note = match &panel.brush {
+                Some(tile) => format!("{} {tile}", T::BrushOn.text(lang)),
+                None => String::new(),
+            };
+            panel.typed.clear();
+            return None;
+        }
         Tool::Creature => {
-            // A monster of the rules by its index, or anything at all by its name.
+            // A monster of the rules by its index, or anything at all by its name; a number
+            // after it is how many: "wolf 3".
+            let (typed, count) = match typed.rsplit_once(' ') {
+                Some((name, n)) if n.parse::<u8>().is_ok() => (name.trim(), n.parse::<u8>().unwrap_or(1).clamp(1, 8)),
+                _ => (typed, 1),
+            };
+            let with_count = |mut draft: TurnDraft| {
+                if let Some(effect) = draft.effects.first_mut().and_then(|e| e.as_object_mut()) {
+                    effect.insert("count".to_string(), serde_json::json!(count));
+                }
+                draft
+            };
             let index = typed.to_lowercase().replace([' ', '_'], "-");
             let card = match rules::srd().monsters.get(index.as_str()) {
                 Some(monster) => CreatureCard { id: index.clone(), name: tr(lang == Lang::Ru, &monster.name).to_string(), monster: Some(index), ..CreatureCard::default() },
                 None => CreatureCard { id: typed.to_string(), name: typed.to_string(), ..CreatureCard::default() },
             };
-            GmAct::Apply(Box::new(card.summon(x + 1, y, panel.hostile)))
+            GmAct::Apply(Box::new(with_count(card.summon(x + 1, y, panel.hostile))))
         }
         Tool::Remove => match world.thing_near(REMOVE_REACH) {
             Some(id) => apply(serde_json::json!([{ "op": "remove", "id": id }])),
@@ -3891,6 +3982,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Approach>()
             .init_resource::<UseFor>()
             .add_observer(on_resize)
+            .add_systems(Update, brush_paint.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (place_allies, live_world, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (run_clock, clock_face).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, goal_line.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))

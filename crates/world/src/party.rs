@@ -544,7 +544,8 @@ impl World {
         if !(0..self.party.len()).any(|i| self.takes_part(i)) {
             return false;
         }
-        let waiting: Vec<usize> = self.here().creatures.iter().enumerate().filter(|(_, c)| c.attitude == Attitude::Hostile && !c.mustered).map(|(n, _)| n).collect();
+        // A hostile one stands for its pack; anyone the master counted out comes in that number.
+        let waiting: Vec<usize> = self.here().creatures.iter().enumerate().filter(|(_, c)| (c.attitude == Attitude::Hostile || c.count > 1) && !c.mustered).map(|(n, _)| n).collect();
         if waiting.is_empty() {
             return false;
         }
@@ -553,7 +554,8 @@ impl World {
             let leader = self.here().creatures[n].clone();
             let wanted = match (leader.count, leader.monster.as_deref().and_then(|m| srd().monsters.get(m))) {
                 (count @ 1.., _) => count,
-                (0, Some(monster)) => self.pack_size(monster.xp),
+                (0, Some(monster)) if leader.attitude == Attitude::Hostile => self.pack_size(monster.xp),
+                (0, Some(_)) => 1,
                 // Numbers of its own, and no count: the master meant one.
                 (0, None) => 1,
             };

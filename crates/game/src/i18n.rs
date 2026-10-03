@@ -122,6 +122,12 @@ texts! {
     MoodHostile: "враждебное", "hostile";
     ToolRemove: "Убрать рядом", "Remove nearest";
     ToolTile: "Тайл", "Tile";
+    ToolGold: "Золото", "Gold";
+    ToolHours: "Часы +", "Hours +";
+    ToolSky: "Небо/час", "Sky/hour";
+    ToolSay: "Реплика", "Say";
+    ToolBrush: "Кисть", "Brush";
+    BrushOn: "Кисть: клики по карте ставят", "Brush: clicks on the map lay";
     ToolDamage: "Урон", "Damage";
     ToolHeal: "Лечение", "Heal";
     ToolGive: "Предмет", "Item";

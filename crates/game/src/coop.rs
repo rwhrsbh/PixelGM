@@ -91,6 +91,8 @@ pub enum GmAct {
     Whisper { to: String, text: String },
     /// Ask the model for a creature for the master's library.
     Invent(String),
+    /// Someone in the master's place says something aloud, as a bubble.
+    Say { who: String, text: String },
 }
 
 /// A draft of the model's as the master sees it.
