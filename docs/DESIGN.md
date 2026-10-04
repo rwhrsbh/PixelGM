@@ -349,3 +349,33 @@ gold handed out, the clock and the sky, and "draw this for me" by the model.
 
 Along the way: "draw this place again" for the host, the name and picture of a worn thing of
 the master's, Steam with two accounts.
+
+### Where the second arc stands (2026-10-04)
+
+Built and checked in hidden instances with the rule-based master, and once with real
+Gemini (a world with quest, factions, a shop, danger and wanderers; a turn that gave a
+thing, moved the quest and started a threat, with no faults found):
+
+0. Answer checks with one more request; notices and the acting player's view.
+1. The frame, the camera, zoom, the overview on M, numbered choices.
+2. Story mode: quest, acts, goal line, tasks, journal; the modes on the new-world form.
+3. Packs by budget or by the master's count, the strip of turns, quick slots, the bag in a
+   fight with one free handling.
+4. The clock, night, rest with rations, gold, shops, price / rarity / bonus.
+5. Companions: join, dismiss, follow, fight under the player's hand.
+6. Factions and standing, threads, threats, danger and wandering encounters.
+7. Live world: bubbles from the cheap models, strolling, more frequent events.
+8. Large places, 60 by 32, offered to the best models only.
+9. Locks that want keys, plates; the master is told how to build mechanisms.
+10. The master's seat: counted packs, gold, hours, sky, a spoken bubble, a brush.
+
+Also: the host can have a place drawn again; a worn thing of the master's keeps its name
+and picture; casual and hardcore change defeat, saving and what is shown of enemies.
+
+Not done, on purpose or for lack of a way to check:
+
+- A companion has no bag and its gear cannot be changed; a lone player whose hero is dead
+  does not go on as the companion outside a fight.
+- A weak model is never asked for a large place, so there are no four-piece maps.
+- Tiredness on hardcore.
+- Steam with two accounts was never tried: it needs two accounts.

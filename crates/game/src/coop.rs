@@ -57,6 +57,8 @@ pub enum Intent {
     Arrange { held: world::bag::Held, to: world::bag::Spot },
     /// One of a thing in the bag used.
     UseItem { index: usize },
+    /// A shop is being looked into: the host lays out the day's wares.
+    Shop { keeper: String },
     /// One of a ware bought from a keeper here.
     Buy { keeper: String, ware: usize },
     /// One of a thing of one's own sold to a keeper here.

@@ -3140,6 +3140,10 @@ fn on_activate(
             }
         }
         (PlayAction::Trade, Phase::Looking { thing }) => {
+            // The wares are the host's to lay out; a guest asks, and sees them a moment later.
+            if session.is_client() {
+                session.intend(Intent::Shop { keeper: thing.clone() });
+            }
             game.world.restock(&thing);
             shopping.0 = Some(thing);
             *phase = Phase::Bag;
@@ -3496,6 +3500,12 @@ fn guests(
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     game.world.arrange(hero, &held, to);
                 }
+                None
+            }
+            Intent::Shop { keeper } => {
+                let home = enter_scene(&mut game, &mut table, &player);
+                game.world.restock(&keeper);
+                leave_scene(&mut game, &mut table, Some(home));
                 None
             }
             Intent::Buy { keeper, ware } => {
