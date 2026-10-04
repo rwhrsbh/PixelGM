@@ -664,6 +664,14 @@ impl World {
                 }
             }
         }
+        // On the gentlest setting nobody is lost to a fight: the fallen wake with a hit point.
+        if self.table.difficulty == crate::model::Difficulty::Casual {
+            for hero in self.party.iter_mut().filter(|h| h.dead || h.hp <= 0) {
+                hero.dead = false;
+                hero.hp = 1;
+                hero.death = Default::default();
+            }
+        }
         // Companions keep their wounds; the dead are gone for good.
         for n in (0..self.companions.len()).rev() {
             if let Some(c) = fight.combatants.iter().find(|c| c.id == format!("ally_{n}")) {

@@ -2663,7 +2663,9 @@ fn overlay(
                 if *lost {
                     button(sheet, &art, &fonts, T::NewHero, true, PlayAction::NewHero);
                 }
-                button(sheet, &art, &fonts, T::SaveGame, true, PlayAction::Save);
+                if game.world.table.difficulty != world::Difficulty::Hardcore {
+                    button(sheet, &art, &fonts, T::SaveGame, true, PlayAction::Save);
+                }
                 button(sheet, &art, &fonts, T::ShortRest, !game.world.party.is_empty(), PlayAction::ShortRest);
                 match seat {
                     SeatState::Alone => {}

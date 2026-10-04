@@ -467,6 +467,36 @@ fn input(
         }
         return;
     }
+    // The digits are the fight's own: move, the two weapons, things, dodge, end the turn.
+    if view.mode == Mode::Menu {
+        let digit = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6].iter().position(|key| keyboard.just_pressed(*key));
+        let actor = fight.actor();
+        match digit {
+            Some(0) if actor.movement_left > 0 => {
+                view.cursor = actor.at();
+                view.mode = Mode::Moving;
+                return;
+            }
+            Some(n @ (1 | 2)) if actor.action_left && n - 1 < actor.strikes.len() => {
+                view.target = 0;
+                view.mode = Mode::Aiming(Aim::Weapon(n - 1));
+                return;
+            }
+            Some(3) if actor.action_left && !usable(world, &fight).is_empty() => {
+                view.mode = Mode::Items;
+                return;
+            }
+            Some(4) if actor.action_left => {
+                act(FightIntent::Dodge, world, &mut view, &session, &mut redraw);
+                return;
+            }
+            Some(5) => {
+                act(FightIntent::EndTurn, world, &mut view, &session, &mut redraw);
+                return;
+            }
+            _ => {}
+        }
+    }
     let confirm = pressed(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space]);
     let clicked = mouse.just_pressed(MouseButton::Left).then(|| cell_under_cursor(&window, &frame)).flatten();
     if pressed(&[KeyCode::Escape]) && view.mode != Mode::Menu {
@@ -623,6 +653,9 @@ fn sheet(mut frame: ResMut<crate::view::View>, mut commands: Commands, phase: Re
                     .with_children(|cell| {
                         let short: String = name.chars().take(6).collect();
                         cell.spawn((Text::new(short), fonts.body(), TextColor(color(if n == 0 { BRASS_LIGHT } else { PARCHMENT })), TextLayout::no_wrap(), Pickable::IGNORE));
+                        if game.world.table.difficulty == world::Difficulty::Casual || *ours {
+                            cell.spawn((Text::new(format!("{hp}/{most}")), fonts.body(), TextColor(color(TALLOW)), TextLayout::no_wrap(), Pickable::IGNORE));
+                        }
                         let share = (*hp as f32 / (*most).max(1) as f32).clamp(0.0, 1.0);
                         let bar = if *ours { [0x5c, 0xb0, 0x4a, 0xff] } else { WAX };
                         cell.spawn((Node { width: px(32), height: px(3), ..default() }, BackgroundColor(color(INK)), Pickable::IGNORE)).with_children(|back| {
@@ -645,6 +678,10 @@ fn sheet(mut frame: ResMut<crate::view::View>, mut commands: Commands, phase: Re
                         sheet.spawn((Text::new(format!("{name}: {} {}! +{} {}", T::Level.text(*lang), up.level, up.hp_gained, T::HitPoints.text(*lang))), fonts.body(), TextColor(color(MOSS))));
                     }
                     sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Onward, true, (FightAction::Onward, EnterPresses)));
+                } else if game.world.table.difficulty == world::Difficulty::Casual {
+                    // Nobody is lost on the gentlest setting: the party comes to and goes on.
+                    sheet.spawn((Text::default(), T::DefeatCasual, fonts.body(), ink));
+                    sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Onward, true, (FightAction::Onward, EnterPresses)));
                 } else {
                     sheet.spawn((Text::default(), T::DefeatAsk, fonts.body(), ink));
                     sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
@@ -653,7 +690,10 @@ fn sheet(mut frame: ResMut<crate::view::View>, mut commands: Commands, phase: Re
                             button(line, &art, &fonts, T::Onward, true, FightAction::Onward);
                         } else {
                             button(line, &art, &fonts, T::MasterDecides, true, FightAction::MasterDecides);
-                            button(line, &art, &fonts, T::LoadGame, true, Nav::Go(Screen::Load));
+                            // On the hardest setting there is no going back to an earlier save.
+                            if game.world.table.difficulty != world::Difficulty::Hardcore {
+                                button(line, &art, &fonts, T::LoadGame, true, Nav::Go(Screen::Load));
+                            }
                         }
                     });
                 }
@@ -700,6 +740,7 @@ fn sheet(mut frame: ResMut<crate::view::View>, mut commands: Commands, phase: Re
                         button(line, &art, &fonts, T::Disengage, actor.action_left, FightAction::Disengage);
                         button(line, &art, &fonts, T::EndTurn, true, FightAction::EndTurn);
                     });
+                    sheet.spawn((Text::default(), T::FightKeys, fonts.body(), faded));
                 }
                 Mode::Spells => {
                     sheet.spawn(Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {

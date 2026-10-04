@@ -345,6 +345,8 @@ texts! {
     Defeat: "Поражение", "Defeat";
     XpEach: "Опыта каждому:", "XP each:";
     DefeatAsk: "Вся партия повержена.", "The whole party is down.";
+    DefeatCasual: "Вас одолели, но вы приходите в себя: у каждого один хит.", "You were beaten, but you come to: a hit point each.";
+    FightKeys: "1 идти · 2-3 оружие · 4 предметы · 5 уклон · 6 конец хода · F1-F6 под рукой · I сумка", "1 move · 2-3 weapon · 4 items · 5 dodge · 6 end turn · F1-F6 at hand · I bag";
     MasterDecides: "Пусть решит мастер", "Let the master decide";
     DefeatSaid: "Вся партия пала в бою. Что с нами стало?", "The whole party fell in the fight. What became of us?";
     OwnAction: "Своё действие", "Something else";
