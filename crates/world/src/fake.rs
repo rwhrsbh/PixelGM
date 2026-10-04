@@ -202,7 +202,13 @@ pub fn world(request: &str) -> String {
                 "shop": [
                     { "name": "Healing potion", "kind": "potion", "heal": "2d4+2", "price": 8 },
                     { "name": "Ration", "kind": "food", "price": 2 },
-                    { "name": "Fine dagger", "kind": "weapon", "gear": "dagger", "bonus": 1, "rarity": "uncommon", "price": 40 }
+                    { "name": "Fine dagger", "kind": "weapon", "gear": "dagger", "bonus": 1, "rarity": "uncommon", "price": 40 },
+                    { "name": "Hunting bow", "kind": "weapon", "gear": "shortbow", "price": 12 },
+                    { "name": "Old sword", "kind": "weapon", "gear": "longsword", "price": 10 },
+                    { "name": "Leather coat", "kind": "armor", "gear": "leather-armor", "price": 9 },
+                    { "name": "Round shield", "kind": "armor", "gear": "shield", "price": 6 },
+                    { "name": "Torch", "kind": "light", "light": 4, "price": 1 },
+                    { "name": "Cat idol", "kind": "junk", "size": [2, 2], "price": 3 }
                 ],
                 "actions": [
                     { "label": "Pet the cat", "outcome": "The cat leans into your hand and purrs.", "effects": [{ "op": "describe", "id": "self", "description": "It purrs when you look at it." }] },

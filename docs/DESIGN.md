@@ -389,8 +389,23 @@ master's gold, hours and night reaching a guest. With real Gemini: a threat that
 was told as having happened and ended, a thread was brought back in a person's words, and
 the choices came with a class-based one, a risky one with its chance, and one at a cost.
 
+Added on the owner's word the same night:
+
+- Wanderers are drawn by the master: with the place, or — when it forgot — asked for at the
+  hour they come, with a telling of how they show themselves. Nothing appears as a marker.
+- The story can kill and wound without a fight (kill; damage with an id), and a fight told
+  of must be fought: the answer says "fight" and "slain", and the game holds it to them.
+- The game starts in fullscreen.
+- The lobby shows who sits at the table; names follow how one joined (Steam name, or the
+  name typed / this machine's); invitations go through Steam's overlay, and an invitation
+  accepted in Steam joins the table.
+- The shop is a grid as in Diablo 2: wares at their own size, on shelves (weapons, armour,
+  supplies, other), told of under the cursor.
+- The place's name stands whole at the top; a telling's buttons stay in reach.
+
 Still open:
 
-- Steam with two accounts was never tried: it needs two accounts.
+- Steam with two accounts was never tried: it needs two accounts. A lobby was opened on one
+  account and the invite button shown; an invitation was never sent or accepted.
 - A large place has not yet been drawn by a real model, only by the rule-based one.
 - Rain is not drawn at night (by design: no sky is shown in the dark).

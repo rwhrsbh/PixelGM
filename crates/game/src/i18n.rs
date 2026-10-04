@@ -280,7 +280,10 @@ texts! {
     Price: "Цена:", "Price:";
     Trade: "Торговать", "Trade";
     ShopClosed: "Ночью лавка закрыта", "The shop is shut at night";
-    ShopTitle: "Лавка", "Shop";
+    ShelfWeapons: "Оружие", "Weapons";
+    ShelfArmour: "Броня", "Armour";
+    ShelfSupplies: "Припасы", "Supplies";
+    ShelfOther: "Прочее", "Other";
     ShopHint: "Клик — купить. ПКМ по своей вещи — продать за полцены.", "Click: buy. Right click on a thing of yours: sell for half.";
     Haggle: "Торговаться", "Haggle";
     HaggleWon: "Сторговались: дешевле на пятую часть", "A bargain: a fifth off";

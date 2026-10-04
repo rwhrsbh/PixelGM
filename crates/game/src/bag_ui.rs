@@ -192,7 +192,7 @@ fn gear_lines(index: &str, lang: Lang) -> Vec<(String, Rgba)> {
     lines
 }
 
-fn item_lines(item: &Item, lang: Lang) -> Vec<(String, Rgba)> {
+pub fn item_lines(item: &Item, lang: Lang) -> Vec<(String, Rgba)> {
     let ru = lang == Lang::Ru;
     let count = if item.count > 1 { format!(" ×{}", item.count) } else { String::new() };
     let mut lines = vec![(format!("{}{count}", item_name(item, ru)), BRASS_LIGHT)];
