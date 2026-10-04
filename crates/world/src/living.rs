@@ -139,12 +139,17 @@ impl World {
         }
         let index = place.wanderers.get((rng.die(place.wanderers.len().max(1) as u32) - 1) as usize)?.clone();
         let monster = srd().monsters.get(&index)?;
-        // It comes from as far off as the place allows: the corner furthest from the party.
+        // It has crept up on the party: a few cells off, on the side with the most room, so
+        // that the fight is on at once. Hostile things do not walk of themselves.
         let (w, h) = place.size();
-        let corners = [(1usize, 1usize), (w - 2, 1), (1, h - 2), (w - 2, h - 2)];
-        let far = corners.into_iter().max_by_key(|(x, y)| (*x as i32 - px).abs() + (*y as i32 - py).abs())?;
-        let free = |(x, y): (usize, usize)| !place.blocked(x as i32, y as i32, &self.tiles) && place.exit_at(x, y).is_none();
-        let (x, y) = nearest(far, free)?;
+        let _board = crate::path::board((w, h));
+        let reach = 3i32;
+        let sides = [(reach, 0), (-reach, 0), (0, reach), (0, -reach)];
+        let inside = |(dx, dy): &(i32, i32)| (1..w as i32 - 1).contains(&(px + dx)) && (1..h as i32 - 1).contains(&(py + dy));
+        let (dx, dy) = sides.into_iter().filter(inside).max_by_key(|(dx, dy)| ((px + dx * 3).clamp(0, w as i32) - px).abs() + ((py + dy * 3).clamp(0, h as i32) - py).abs()).unwrap_or((reach, 0));
+        let from = ((px + dx).clamp(1, w as i32 - 2) as usize, (py + dy).clamp(1, h as i32 - 2) as usize);
+        let free = |(x, y): (usize, usize)| !place.blocked(x as i32, y as i32, &self.tiles) && place.exit_at(x, y).is_none() && (x as i32, y as i32) != (px, py);
+        let (x, y) = nearest(from, free)?;
         let mut id = format!("wandering_{index}").replace('-', "_");
         let mut n = 2;
         while place.creatures.iter().any(|c| c.id == id) || place.props.iter().any(|p| p.id == id) {

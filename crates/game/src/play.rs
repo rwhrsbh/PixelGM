@@ -1335,9 +1335,10 @@ fn bag_work(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>, session: Res<Session>, mut table: ResMut<Table>, mut leave: ResMut<Leave>) {
+fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>, session: Res<Session>, mut table: ResMut<Table>, mut leave: ResMut<Leave>, mut redraw: ResMut<Redraw>) {
     // Orders from a test script, whatever the screen shows.
     for order in std::mem::take(&mut warp.1) {
+        redraw.0 = true;
         let (what, amount) = order.split_once('=').map_or((order.as_str(), 0), |(what, n)| (what, n.trim().parse::<i32>().unwrap_or(0)));
         let world = &mut game.world;
         match what {
@@ -1353,6 +1354,45 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
                 hero.dead = true;
             }),
             "deed" => world.secrets_due.push(0),
+            // `fx=[…]`: effects as the master would write them, carried out at once. A `|`
+            // stands for a comma, which the script keeps for itself.
+            "fx" => {
+                let text = order.split_once('=').map_or("", |(_, json)| json).replace('|', ",");
+                match serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+                    Ok(raw) => {
+                        let mut notes = Vec::new();
+                        let effects = world::story::read_effects(&raw, &mut notes);
+                        notes.extend(world.apply(&effects, None));
+                        for note in notes {
+                            info!("dev fx: {note}");
+                        }
+                    }
+                    Err(e) => info!("dev fx: not read: {e}"),
+                }
+            }
+            // `danger=N`: the place becomes dangerous, with rats to wander in and a find.
+            "danger" => {
+                let here = world.current.clone();
+                if let Some(place) = world.locations.get_mut(&here) {
+                    place.danger = amount.clamp(0, 5) as u8;
+                    place.wanderers = vec!["giant-rat".to_string()];
+                    place.finds = vec!["A peddler passes, humming.".to_string()];
+                }
+            }
+            // `wander`: hours go by until something wanders in, at most two days of them.
+            "wander" => {
+                let mut rng = Rng::from_clock();
+                for _ in 0..48 {
+                    world.pass(60);
+                    if let Some(what) = world.wander(&mut rng) {
+                        info!("dev wander: {what:?}");
+                        if let world::living::Wandered::Find(text) = what {
+                            table.unread.push_back(Turn { narration: text, options: Vec::new() });
+                        }
+                        break;
+                    }
+                }
+            }
             // `join`: whoever is here first joins the party, so companions can be tested.
             "join" => {
                 if let Some(id) = world.here().creatures.first().map(|c| c.id.clone()) {
