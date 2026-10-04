@@ -126,6 +126,9 @@ pub struct NeighborDraft {
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
 pub struct LocationDraft {
+    /// The place is a large one and this map is only its north-west quarter: the other
+    /// three are asked for one by one and joined on.
+    pub large: bool,
     #[serde(deserialize_with = "lenient_int")]
     pub danger: i64,
     pub wanderers: Vec<String>,
@@ -328,6 +331,81 @@ fn add_tiles(drafts: &[TileDraft], assets: &mut Assets, notes: &mut Vec<String>)
             _ => notes.push(format!("tile '{}' had no usable picture and was skipped", draft.id)),
         }
     }
+}
+
+/// Joins the four quarters of a large place into one draft: the first is the north-west, the
+/// others the north-east, south-west and south-east. Everything in a quarter is moved to
+/// where that quarter lies; a character two quarters use for different tiles is given
+/// another in the later one; ways out on the seams between quarters are dropped.
+pub fn stitch(first: LocationDraft, others: [LocationDraft; 3]) -> LocationDraft {
+    const SPARE: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!$^()[]{}<>?/|";
+    let mut whole = LocationDraft { large: false, map: Vec::new(), props: Vec::new(), creatures: Vec::new(), exits: Vec::new(), secrets: Vec::new(), ..first.clone() };
+    let mut rows: Vec<String> = vec![String::new(); MAP_H * 2];
+    let [ne, sw, se] = others;
+    for (n, piece) in [first, ne, sw, se].into_iter().enumerate() {
+        let (ox, oy) = ((n % 2) * MAP_W, (n / 2) * MAP_H);
+        // The quarter's characters, in the legend of the whole.
+        let mut renamed: BTreeMap<char, char> = BTreeMap::new();
+        for (key, tile) in &piece.legend {
+            let Some(ch) = key.chars().next() else { continue };
+            match whole.legend.get(key) {
+                Some(known) if known == tile => {}
+                None => {
+                    whole.legend.insert(key.clone(), tile.clone());
+                }
+                Some(_) => {
+                    // Taken for another tile: the same tile's character if the whole has one, or a spare.
+                    let same = whole.legend.iter().find(|(_, t)| *t == tile).and_then(|(k, _)| k.chars().next());
+                    let spare = same.or_else(|| SPARE.chars().find(|c| !whole.legend.contains_key(&c.to_string())));
+                    if let Some(other) = spare {
+                        whole.legend.insert(other.to_string(), tile.clone());
+                        renamed.insert(ch, other);
+                    }
+                }
+            }
+        }
+        // What a short row is filled out with: the character the quarter uses most.
+        let mut counts: BTreeMap<char, usize> = BTreeMap::new();
+        piece.map.iter().flat_map(|r| r.chars()).for_each(|c| *counts.entry(c).or_default() += 1);
+        let filler = counts.into_iter().max_by_key(|(_, n)| *n).map_or('.', |(c, _)| c);
+        for y in 0..MAP_H {
+            let row: Vec<char> = piece.map.get(y).map(|r| r.chars().collect()).unwrap_or_default();
+            for x in 0..MAP_W {
+                let ch = row.get(x).copied().unwrap_or(filler);
+                rows[oy + y].push(renamed.get(&ch).copied().unwrap_or(ch));
+            }
+        }
+        let (dx, dy) = (ox as i64, oy as i64);
+        let inside = |x: i64, y: i64| (x.clamp(0, MAP_W as i64 - 1) + dx, y.clamp(0, MAP_H as i64 - 1) + dy);
+        whole.props.extend(piece.props.into_iter().map(|mut p| {
+            (p.x, p.y) = inside(p.x, p.y);
+            p
+        }));
+        whole.creatures.extend(piece.creatures.into_iter().map(|mut c| {
+            (c.x, c.y) = inside(c.x, c.y);
+            c
+        }));
+        whole.secrets.extend(piece.secrets.into_iter().map(|mut s| {
+            (s.x, s.y) = inside(s.x, s.y);
+            s
+        }));
+        // A way out stays only on the outer edge of the whole place.
+        whole.exits.extend(piece.exits.into_iter().filter_map(|mut e| {
+            (e.x, e.y) = inside(e.x, e.y);
+            let outer = e.x == 0 || e.y == 0 || e.x == (MAP_W * 2) as i64 - 1 || e.y == (MAP_H * 2) as i64 - 1;
+            outer.then_some(e)
+        }));
+        if n > 0 {
+            whole.sprites.extend(piece.sprites);
+            whole.new_tiles.extend(piece.new_tiles);
+            whole.neighbors.extend(piece.neighbors);
+            whole.wanderers.extend(piece.wanderers);
+            whole.encounters.extend(piece.encounters);
+            whole.palette.extend(piece.palette);
+        }
+    }
+    whole.map = rows;
+    whole
 }
 
 /// A shopkeeper's stock from what the master listed: at most thirty kinds, a few of each.
@@ -811,6 +889,26 @@ mod tests {
 
     fn draft_of_field() -> LocationDraft {
         serde_json::from_value(json!({ "name": "Field", "legend": { ".": "grass" }, "map": vec![".".repeat(MAP_W); MAP_H], "spawn": [5, 5] })).unwrap()
+    }
+
+    #[test]
+    fn four_quarters_are_joined_into_one_large_place() {
+        let quarter = |k: usize| -> LocationDraft { read_answer(&fake::quarter("moor", "The Moor", "camp", k)).unwrap() };
+        let first = quarter(0);
+        assert!(first.large);
+        let whole = stitch(first, [quarter(1), quarter(2), quarter(3)]);
+        assert_eq!((whole.map.len(), whole.map[0].chars().count(), whole.map[31].chars().count()), (MAP_H * 2, MAP_W * 2, MAP_W * 2));
+        // The south-east quarter used '#' for another tile: it was given a character of its own.
+        assert_eq!(whole.legend["#"], "rock");
+        assert!(whole.legend.values().any(|t| t == "stone_wall"));
+        // Its stone stands where that quarter lies, and only the outer ways out are kept.
+        assert!(whole.props.iter().any(|p| (p.x, p.y) == (MAP_W as i64 + 5, MAP_H as i64 + 5)));
+        assert!(whole.exits.iter().all(|e| e.x == 0 || e.y == 0 || e.x == 59 || e.y == 31), "{:?}", whole.exits.iter().map(|e| (e.x, e.y)).collect::<Vec<_>>());
+        let mut tiles = base_tiles();
+        let mut sprites = base_sprites();
+        let built = build_location(&whole, &mut Assets { palette_len: 16, tiles: &mut tiles, sprites: &mut sprites }, Some("moor"), &BTreeSet::new(), Some("camp")).unwrap();
+        assert_eq!(built.location.size(), (60, 32));
+        assert!(every_exit_is_reachable(&built.location, &base_tiles()));
     }
 
     #[test]

@@ -347,7 +347,54 @@ pub fn large_location(id: &str, name: &str, from: &str) -> String {
     .to_string()
 }
 
+/// One quarter of a large place drawn in four: 0 north-west, 1 north-east, 2 south-west,
+/// 3 south-east. The first says the place is large; the last uses a character of the first
+/// for another tile, as a careless master would.
+pub fn quarter(id: &str, name: &str, from: &str, k: usize) -> String {
+    let (east, south) = (k % 2 == 1, k / 2 == 1);
+    let rows: Vec<String> = (0..MAP_H)
+        .map(|y| {
+            (0..MAP_W)
+                .map(|x| {
+                    let outer = (!east && x == 0) || (east && x == MAP_W - 1) || (!south && y == 0) || (south && y == MAP_H - 1);
+                    let way = (k == 0 && (x, y) == (0, 8)) || (k == 3 && (x, y) == (MAP_W - 1, 8));
+                    if way {
+                        '.'
+                    } else if outer {
+                        'T'
+                    } else if (x * 5 + y * 11 + k) % 37 == 0 {
+                        '#'
+                    } else {
+                        '.'
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let legend = if k == 3 { json!({ ".": "grass", "T": "tree", "#": "stone_wall" }) } else { json!({ ".": "grass", "T": "tree", "#": "rock" }) };
+    let mut piece = json!({
+        "legend": legend,
+        "map": rows,
+        "props": [{ "id": format!("stone_{k}"), "name": "Standing stone", "description": "It marks a quarter.", "x": 5, "y": 5, "sprite": "chest", "blocking": true }],
+        "creatures": [],
+        "exits": if k == 0 { json!([{ "x": 0, "y": 8, "to": from, "label": "Back" }, { "x": MAP_W - 1, "y": 4, "to": "nowhere", "label": "A seam" }]) } else if k == 3 { json!([{ "x": MAP_W - 1, "y": 8, "to": format!("{id}_far"), "label": "Onward" }]) } else { json!([]) },
+    });
+    if k == 0 {
+        piece["id"] = json!(id);
+        piece["name"] = json!(name);
+        piece["description"] = json!(format!("{name}, a wide place drawn in four quarters."));
+        piece["large"] = json!(true);
+        piece["spawn"] = json!([2, 8]);
+        piece["neighbors"] = json!([{ "id": format!("{id}_far"), "name": format!("Beyond {name}"), "description": "Further on." }]);
+    }
+    piece.to_string()
+}
+
 pub fn location(id: &str, name: &str, from: &str) -> String {
+    // Past the marsh lies a place a weak master draws in four quarters.
+    if id.contains("marsh_beyond") {
+        return quarter(id, name, from, 0);
+    }
     // The marsh is the large place of the test world.
     if id.contains("marsh") {
         return large_location(id, name, from);

@@ -345,6 +345,44 @@ impl Master {
                     } else {
                         call.read(prompt::system_prompt(&world.language), &prompt::new_location_sized(&world, &id, &from, ahead || call.custom.is_some()))
                     };
+                    // A place a weaker master called large comes in four quarters: the other
+                    // three are asked for one by one, each shown what is drawn so far. If one
+                    // cannot be had, the first stands as an ordinary place.
+                    let draft = draft.map(|first| {
+                        if !first.large {
+                            return first;
+                        }
+                        let mut drawn = vec![first.map.clone()];
+                        let mut legend = first.legend.clone();
+                        let mut others = Vec::new();
+                        for k in 1..4 {
+                            let piece: Result<LocationDraft, Trouble> = if fake {
+                                faked(fake::quarter(&id, world.place_name(&id), &from, k))
+                            } else {
+                                call.read(prompt::system_prompt(&world.language), &prompt::location_quarter(&world, &first.name, &first.description, &legend, &drawn, k))
+                            };
+                            match piece {
+                                Ok(piece) => {
+                                    drawn.push(piece.map.clone());
+                                    for (ch, tile) in &piece.legend {
+                                        legend.entry(ch.clone()).or_insert_with(|| tile.clone());
+                                    }
+                                    others.push(piece);
+                                }
+                                Err(trouble) => {
+                                    info!("quarter {k} of the large place '{id}' was not drawn ({trouble:?}); it stays an ordinary place");
+                                    break;
+                                }
+                            }
+                        }
+                        match <[LocationDraft; 3]>::try_from(others) {
+                            Ok(others) => {
+                                info!("the large place '{id}' was drawn in four quarters");
+                                world::build::stitch(first, others)
+                            }
+                            Err(_) => LocationDraft { large: false, ..first },
+                        }
+                    });
                     drawing.lock().unwrap().remove(&id);
                     Answer::Location { id, from, ahead, draft: draft.map(Box::new) }
                 }

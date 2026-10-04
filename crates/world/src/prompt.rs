@@ -577,10 +577,55 @@ pub fn new_location(world: &World, id: &str, from: &str) -> String {
     new_location_sized(world, id, from, false)
 }
 
+/// Another quarter of a large place: `k` is 1 for the north-east, 2 for the south-west, 3 for
+/// the south-east. `drawn` are the quarters already there, north-west first.
+pub fn location_quarter(world: &World, name: &str, description: &str, legend: &std::collections::BTreeMap<String, String>, drawn: &[Vec<String>], k: usize) -> String {
+    let which = ["north-west", "north-east", "south-west", "south-east"];
+    let mut text = format!("WORLD: {}. {}\nTone: {}.\n\nYou are drawing the large place \"{name}\": {description}\nIt is drawn in four quarters of {MAP_H} rows of {MAP_W} characters. Already drawn:\n", world.title, world.summary, world.tone);
+    for (n, rows) in drawn.iter().enumerate() {
+        let _ = writeln!(text, "\nThe {} quarter:", which[n]);
+        for row in rows {
+            let _ = writeln!(text, "  {row}");
+        }
+    }
+    let _ = write!(text, "\nLEGEND so far:");
+    for (ch, tile) in legend {
+        let _ = write!(text, " {ch} {tile},");
+    }
+    let _ = write!(text, "\nTILES THAT EXIST:");
+    for tile in world.tiles.keys() {
+        let _ = write!(text, " {tile}");
+    }
+    let _ = write!(text, "\nSPRITES THAT EXIST:");
+    for sprite in world.sprites.keys() {
+        let _ = write!(text, " {sprite}");
+    }
+    let joins = match k {
+        1 => "Its WEST side (column 0) joins the east side of the north-west quarter: roads, walls, water and paths must run on across the seam.",
+        2 => "Its NORTH side (row 0) joins the south side of the north-west quarter: roads, walls, water and paths must run on across the seam.",
+        _ => "Its WEST side joins the south-west quarter and its NORTH side joins the north-east quarter: roads, walls, water and paths must run on across both seams.",
+    };
+    let _ = write!(
+        text,
+        "\n\nNow draw the {} quarter. {joins} Its outer sides are the edge of the whole place: ways out to other places may lie there, nowhere else. Use the same legend; add a character only for a tile not in it yet. Coordinates of props, creatures, exits and secrets are counted inside this quarter (x 0-{}, y 0-{}).\n\nAnswer with this JSON object:\n{{\"legend\": {{}}, \"map\": [\"{MAP_W} characters\", \"… {MAP_H} rows\"], \"new_tiles\": [], \"sprites\": [], \"props\": [], \"creatures\": [], \"exits\": [], \"neighbors\": [], \"secrets\": []}}\nEach list holds things shaped as in a place you draw whole.",
+        which[k],
+        MAP_W - 1,
+        MAP_H - 1
+    );
+    text
+}
+
 /// As `new_location`; with `large`, the master may draw a place twice as wide and twice as
 /// tall. Asked only of the best models: a slip in so long a map spoils the whole place.
 pub fn new_location_sized(world: &World, id: &str, from: &str, large: bool) -> String {
     let mut text = String::new();
+    if !large {
+        let _ = writeln!(
+            text,
+            "A LARGE PLACE, IN QUARTERS. When this place truly is big — a town, a harbour, a forest, a battlefield — add \"large\": true. The map you draw now ({} rows of {}) is then only its NORTH-WEST quarter: put the way back and the party's spawn in it, and leave its east and south sides open. You will be asked for the north-east, south-west and south-east quarters next, each with what is already drawn. A small place — a room, a hut, a clearing — is drawn whole, without \"large\".\n",
+            MAP_H, MAP_W
+        );
+    }
     if large {
         let _ = writeln!(
             text,
