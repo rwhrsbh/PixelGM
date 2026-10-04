@@ -2765,6 +2765,7 @@ fn overlay(
             }
             Sheet::Looking { name, description, actions, chest, shop } => {
                 sheet.spawn((Text::new(name.clone()), fonts.title(1), ink));
+                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), width: percent(100), ..default() }, height - 56.0)).with_children(|sheet| {
                 sheet.spawn((Text::new(description.clone()), fonts.body(), ink));
                 // A container: open it, and when it is locked, pick it or break it.
                 if let Some(locked) = chest {
@@ -2779,7 +2780,8 @@ fn overlay(
                 for (n, label) in actions.iter().enumerate() {
                     crate::widgets::line_button(sheet, &fonts, format!("{}. {label}", n + 1), PlayAction::Do(n));
                 }
-                sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                });
+                sheet.spawn(Node { column_gap: px(6), flex_shrink: 0.0, ..default() }).with_children(|line| {
                     if *shop {
                         button(line, &art, &fonts, T::Trade, true, PlayAction::Trade);
                     }
@@ -2824,6 +2826,9 @@ fn overlay(
                 // The telling is written out letter by letter over a copy of itself that
                 // cannot be seen, so the sheet has its full size from the first letter.
                 let cell = || Node { grid_row: GridPlacement::start(1), grid_column: GridPlacement::start(1), ..default() };
+                // The telling and the choices scroll when they are long; the buttons under
+                // them never move out of reach.
+                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), width: percent(100), ..default() }, height - 40.0)).with_children(|sheet| {
                 sheet.spawn(Node { display: Display::Grid, ..default() }).with_children(|stack| {
                     stack.spawn((cell(), Text::new(turn.narration.clone()), fonts.body(), TextColor(Color::NONE)));
                     stack.spawn((cell(), Text::default(), Typed(turn.narration.clone()), fonts.body(), ink));
@@ -2840,7 +2845,8 @@ fn overlay(
                         }
                     }
                 }
-                sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                });
+                sheet.spawn(Node { column_gap: px(6), flex_shrink: 0.0, ..default() }).with_children(|line| {
                     if !turn.options.is_empty() {
                         button(line, &art, &fonts, T::OwnAction, true, PlayAction::Own);
                     }
@@ -2917,8 +2923,11 @@ fn overlay(
             }
             Sheet::None => {}
         };
+        let pinned = matches!(wanted, Sheet::Reading(_) | Sheet::Looking { .. });
         spawn_panel(root, &art, sheet, |sheet| {
-            if low {
+            if pinned {
+                sheet.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), width: percent(100), ..default() }).with_children(body);
+            } else if low {
                 sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), width: percent(100), ..default() }, height - 14.0)).with_children(body);
             } else {
                 body(sheet);
