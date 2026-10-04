@@ -24,7 +24,7 @@ use rules::combat::{Cell, Strike};
 use rules::{Encounter, Event, Outcome, Side, srd, tr};
 use std::collections::VecDeque;
 use world::party::spell_strike;
-use world::{FightIntent, FightSummary, MAP_H, MAP_W, TILE, World};
+use world::{FightIntent, FightSummary, MAX_H as MAP_H, MAX_W as MAP_W, TILE, World};
 
 /// What the hero is choosing a target for.
 #[derive(Clone, PartialEq, Debug)]

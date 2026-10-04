@@ -259,10 +259,11 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
         let _ = writeln!(text, "- exit at ({}, {}) to {}: {}", exit.x, exit.y, exit.to, world.place_name(&exit.to));
     }
     let (x, y) = world.player.cell();
-    let _ = writeln!(text, "The party stands at ({x}, {y}).");
+    let (here_w, here_h) = here.size();
+    let _ = writeln!(text, "The party stands at ({x}, {y}). This place is {here_w} cells across and {here_h} down.");
     // What is around, by name: "this wall", "in front of me", "here" are these very cells.
     let cell_words = |cx: i32, cy: i32| -> String {
-        if !(0..MAP_W as i32).contains(&cx) || !(0..MAP_H as i32).contains(&cy) {
+        if !(0..here_w as i32).contains(&cx) || !(0..here_h as i32).contains(&cy) {
             return "the edge of the map".to_string();
         }
         let (ux, uy) = (cx as usize, cy as usize);
@@ -280,8 +281,8 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     let _ = writeln!(text, "AROUND the party: {}.", around.join("; "));
     // The map itself, so that walls between the party and anything are known.
     let _ = writeln!(text, "MAP of this place (x across, y down; the party is @). The two lines above it count x, the number before each row is y:");
-    let _ = writeln!(text, "      {}", (0..MAP_W).map(|c| if c % 10 == 0 { char::from_digit((c / 10) as u32, 10).unwrap_or(' ') } else { ' ' }).collect::<String>());
-    let _ = writeln!(text, "      {}", (0..MAP_W).map(|c| char::from_digit((c % 10) as u32, 10).unwrap_or(' ')).collect::<String>());
+    let _ = writeln!(text, "      {}", (0..here_w).map(|c| if c % 10 == 0 { char::from_digit((c / 10) as u32, 10).unwrap_or(' ') } else { ' ' }).collect::<String>());
+    let _ = writeln!(text, "      {}", (0..here_w).map(|c| char::from_digit((c % 10) as u32, 10).unwrap_or(' ')).collect::<String>());
     for (row, line) in here.map.iter().enumerate() {
         let shown: String = line.chars().enumerate().map(|(col, c)| if (col as i32, row as i32) == (x, y) { '@' } else { c }).collect();
         let _ = writeln!(text, "  {row:>2}  {shown}");
@@ -289,12 +290,12 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     let legend: Vec<String> = here.legend.iter().map(|(c, id)| format!("{c} {id}{}", if world.tiles.get(id).is_some_and(|t| t.walkable) { "" } else { " (solid)" })).collect();
     let _ = writeln!(text, "LEGEND: {}", legend.join(", "));
     // How far everything is on foot, around walls.
-    let start = (x.clamp(0, MAP_W as i32 - 1) as usize, y.clamp(0, MAP_H as i32 - 1) as usize);
+    let start = (x.clamp(0, here_w as i32 - 1) as usize, y.clamp(0, here_h as i32 - 1) as usize);
     let far = crate::path::steps(start, |(cx, cy)| here.blocked(cx as i32, cy as i32, &world.tiles));
     let walk = |(tx, ty): (usize, usize)| {
         let beside = [(0i32, -1i32), (1, 0), (0, 1), (-1, 0)].iter().filter_map(|(dx, dy)| {
             let (nx, ny) = (tx as i32 + dx, ty as i32 + dy);
-            ((0..MAP_W as i32).contains(&nx) && (0..MAP_H as i32).contains(&ny)).then(|| far[ny as usize][nx as usize]).flatten()
+            ((0..here_w as i32).contains(&nx) && (0..here_h as i32).contains(&ny)).then(|| far[ny as usize][nx as usize]).flatten()
         });
         match beside.min() {
             Some(0) => "beside the party".to_string(),
@@ -321,7 +322,7 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
         let _ = writeln!(text, "- the way out to {} at ({}, {}): {on_foot}", world.place_name(&exit.to), exit.x, exit.y);
     }
     // Ground the party cannot get to from where it stands: what a bridge would be for.
-    let cut_off = (0..MAP_H).flat_map(|cy| (0..MAP_W).map(move |cx| (cx, cy))).filter(|(cx, cy)| far[*cy][*cx].is_none() && !here.blocked(*cx as i32, *cy as i32, &world.tiles)).count();
+    let cut_off = (0..here_h).flat_map(|cy| (0..here_w).map(move |cx| (cx, cy))).filter(|(cx, cy)| far[*cy][*cx].is_none() && !here.blocked(*cx as i32, *cy as i32, &world.tiles)).count();
     if cut_off > 0 {
         let _ = writeln!(text, "- {cut_off} walkable cells of this place cannot be reached on foot from where the party stands.");
     } else {
@@ -566,7 +567,25 @@ pub fn chapter(world: &World) -> String {
 /// A request to draw a place that so far is only a name. `from` is where the party walks in
 /// from.
 pub fn new_location(world: &World, id: &str, from: &str) -> String {
+    new_location_sized(world, id, from, false)
+}
+
+/// As `new_location`; with `large`, the master may draw a place twice as wide and twice as
+/// tall. Asked only of the best models: a slip in so long a map spoils the whole place.
+pub fn new_location_sized(world: &World, id: &str, from: &str, large: bool) -> String {
     let mut text = String::new();
+    if large {
+        let _ = writeln!(
+            text,
+            "A LARGE PLACE. When this place truly is big — a town, a harbour, a forest, a battlefield, a warren of caves — you may draw it large: \"map\" is then {} rows of exactly {} characters (x 0-{}, y 0-{}), with streets, quarters, several buildings, more people and things spread across all of it, and exits on its far edges. Count the characters of every row. A small place — a room, a hut, a clearing, a cave — stays {} rows of {}.\n",
+            crate::model::MAX_H,
+            crate::model::MAX_W,
+            crate::model::MAX_W - 1,
+            crate::model::MAX_H - 1,
+            MAP_H,
+            MAP_W
+        );
+    }
     let _ = writeln!(text, "WORLD: {}. {}\nTone: {}.", world.title, world.summary, world.tone);
     let _ = write!(text, "\nPALETTE:");
     for (i, [r, g, b]) in world.palette.colors.iter().enumerate() {

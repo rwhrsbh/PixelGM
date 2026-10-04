@@ -1,7 +1,7 @@
 //! The party and what the rules do to it: checks whose two outcomes the game master wrote
 //! in advance, damage and healing outside a fight, experience, and fights themselves.
 
-use crate::model::{Attitude, Creature, MAP_H, MAP_W, Player, World};
+use crate::model::{Attitude, Creature, Player, World};
 use crate::path::nearest;
 use crate::story::{Effect, Speaker};
 use rules::character::LevelUp;
@@ -449,7 +449,8 @@ impl World {
     /// Whether a cell cannot be entered in a fight because of the ground or a thing on it.
     /// Creatures taking part are the encounter's business, not the map's.
     pub fn fight_blocked(&self, (x, y): Cell) -> bool {
-        if x < 0 || y < 0 || x >= MAP_W as i32 || y >= MAP_H as i32 {
+        let (w, h) = self.here().size();
+        if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
             return true;
         }
         let here = self.here();
@@ -506,7 +507,8 @@ impl World {
         let (px, py) = self.player.cell();
         if let Some(location) = self.locations.get(&place) {
             let free = |(x, y): (usize, usize)| !location.blocked(x as i32, y as i32, &self.tiles) && location.exit_at(x, y).is_none() && (x as i32, y as i32) != (px, py);
-            let near = (px.clamp(0, MAP_W as i32 - 1) as usize, py.clamp(0, MAP_H as i32 - 1) as usize);
+            let (w, h) = location.size();
+            let near = (px.clamp(0, w as i32 - 1) as usize, py.clamp(0, h as i32 - 1) as usize);
             (gone.x, gone.y) = nearest(near, free).unwrap_or(near);
         }
         gone.mustered = true;
@@ -585,7 +587,8 @@ impl World {
         // Whoever turned on the party a moment ago is joined by the rest of its pack.
         self.muster();
         let enemies: Vec<Combatant> = self.hostiles().map(|c| self.combatant_for(c)).collect();
-        let inside = |(x, y): (i32, i32)| (x.clamp(0, MAP_W as i32 - 1) as usize, y.clamp(0, MAP_H as i32 - 1) as usize);
+        let (w, h) = self.here().size();
+        let inside = |(x, y): (i32, i32)| (x.clamp(0, w as i32 - 1) as usize, y.clamp(0, h as i32 - 1) as usize);
         let leader = inside(self.player.cell());
         let mut taken: Vec<(usize, usize)> = Vec::new();
         let mut combatants = Vec::new();

@@ -474,7 +474,7 @@ fn brush_paint(phase: Res<Phase>, panel: Res<Panel>, mouse: Res<ButtonInput<Mous
     let Some(point) = crate::view::map_under_cursor(&window, &frame) else { return };
     let side = TILE as f32 * crate::scene::PX as f32;
     let cell = ((point.x / side).floor() as i32, (point.y / side).floor() as i32);
-    if cell.0 < 0 || cell.1 < 0 || cell.0 >= world::MAP_W as i32 || cell.1 >= world::MAP_H as i32 {
+    if cell.0 < 0 || cell.1 < 0 || cell.0 >= world::MAX_W as i32 || cell.1 >= world::MAX_H as i32 {
         return;
     }
     let cell = (cell.0 as usize, cell.1 as usize);
@@ -769,7 +769,7 @@ fn draw(
             cache.warm = images.add(crate::scene::warm_pool(120).into_image());
             cache.vignette = images.add(crate::scene::vignette(CANVAS.x as i32, (CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL) as i32).into_image());
         }
-        cache.dark = images.add(crate::scene::darkness(scene.hour, &[], 0).into_image());
+        cache.dark = images.add(crate::scene::darkness_seen(here.size(), scene.hour, &[], 0, None, None).into_image());
         cache.grid = images.add(crate::scene::walk_grid(here, world).into_image());
         cache.age = 0.0;
     }
@@ -782,7 +782,9 @@ fn draw(
     let foggy = cache.sky == crate::weather::Sky::Fog && settings.gfx.weather;
     if (hour.dark > 0.0 && settings.gfx.night) || foggy {
         // The dark over the place, and the warmth around its lamps.
-        let map = Vec2::new(CANVAS.x as f32, CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL);
+        // As large as the place itself, whatever its size.
+        let side = (TILE * crate::scene::PX as u32) as f32;
+        let map = Vec2::new(here.size().0 as f32 * side, here.size().1 as f32 * side);
         commands.spawn((InLocation, DarkLayer, Sprite { custom_size: Some(map), ..Sprite::from_image(cache.dark.clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner.extend(1.6))));
         for lamp in &cache.lamps {
             commands.spawn((InLocation, Sprite { color: Color::linear_rgb(1.6, 1.4, 1.1), ..Sprite::from_image(cache.warm.clone()) }, Transform::from_translation(on_screen(lamp.x, lamp.y).extend(1.62))));
@@ -793,8 +795,8 @@ fn draw(
     }
     let sky = cache.sky;
     if settings.gfx.weather && sky != crate::weather::Sky::Clear {
-        let map = Rect::new(0.0, 0.0, CANVAS.x as f32, CANVAS.y as f32 - HUD_HEIGHT * crate::screen::UI_PIXEL);
         let cell = (TILE * crate::scene::PX as u32) as f32;
+        let map = Rect::new(0.0, 0.0, here.size().0 as f32 * cell, here.size().1 as f32 * cell);
         let water = cache.water.iter().map(|(x, y)| Rect::new(*x as f32 * cell, *y as f32 * cell, (*x + 1) as f32 * cell, (*y + 1) as f32 * cell)).collect();
         let mut emitter = crate::weather::Emitter::new(sky, map, water);
         emitter.dim = if settings.gfx.night { hour.dark } else { 0.0 };
@@ -824,7 +826,7 @@ fn draw(
     for exit in &here.exits {
         let dir = if exit.x == 0 {
             (-1, 0)
-        } else if exit.x == world::MAP_W - 1 {
+        } else if exit.x == here.size().0 - 1 {
             (1, 0)
         } else if exit.y == 0 {
             (0, -1)
@@ -843,10 +845,10 @@ fn draw(
             (1, _) => (Anchor::CENTER_RIGHT, Vec2::new(-20.0, 0.0)),
             // Near a corner the words lean away from the side they would run off.
             (_, -1) if exit.x < 8 => (Anchor::TOP_LEFT, Vec2::new(-16.0, -18.0)),
-            (_, -1) if exit.x + 8 > world::MAP_W => (Anchor::TOP_RIGHT, Vec2::new(16.0, -18.0)),
+            (_, -1) if exit.x + 8 > here.size().0 => (Anchor::TOP_RIGHT, Vec2::new(16.0, -18.0)),
             (_, -1) => (Anchor::TOP_CENTER, Vec2::new(0.0, -18.0)),
             _ if exit.x < 8 => (Anchor::BOTTOM_LEFT, Vec2::new(-16.0, 18.0)),
-            _ if exit.x + 8 > world::MAP_W => (Anchor::BOTTOM_RIGHT, Vec2::new(16.0, 18.0)),
+            _ if exit.x + 8 > here.size().0 => (Anchor::BOTTOM_RIGHT, Vec2::new(16.0, 18.0)),
             _ => (Anchor::BOTTOM_CENTER, Vec2::new(0.0, 18.0)),
         };
         if named.contains(&exit.to) {
@@ -1018,8 +1020,8 @@ fn live_world(
             let steps = [(1, 0), (-1, 0), (0, 1), (0, -1)];
             let (dx, dy) = steps[(rng.die(4) - 1) as usize];
             let (nx, ny) = (cx + dx, cy + dy);
-            let free = (1..world::MAP_W as i32 - 1).contains(&nx)
-                && (1..world::MAP_H as i32 - 1).contains(&ny)
+            let free = (1..here.size().0 as i32 - 1).contains(&nx)
+                && (1..here.size().1 as i32 - 1).contains(&ny)
                 && !here.blocked(nx, ny, &world.tiles)
                 && here.exit_at(nx as usize, ny as usize).is_none()
                 && (nx, ny) != (px, py);
@@ -1268,7 +1270,7 @@ fn lighting(time: Res<Time>, mut game: ResMut<Game>, settings: Res<Settings>, ca
         let seen = exploring.then(|| world.here().seen.as_slice());
         // Fog hides in grey what darkness hides in black.
         let hour = if foggy && hour.dark < 0.8 { crate::scene::Hour { dark: if settings.gfx.night { hour.dark } else { 0.0 }, tint: [150, 152, 162] } } else { hour };
-        *image = crate::scene::darkness_seen(hour, &lights, beat, seen, foggy.then(|| time.elapsed_secs())).into_image();
+        *image = crate::scene::darkness_seen(world.here().size(), hour, &lights, beat, seen, foggy.then(|| time.elapsed_secs())).into_image();
     }
 }
 
@@ -1416,7 +1418,7 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
     let stepping_out = game
         .world
         .exit_here()
-        .filter(|e| (e.x == 0 && pushing.0 < 0) || (e.x == world::MAP_W - 1 && pushing.0 > 0) || (e.y == 0 && pushing.1 < 0) || (e.y == world::MAP_H - 1 && pushing.1 > 0))
+        .filter(|e| (e.x == 0 && pushing.0 < 0) || (e.x == game.world.here().size().0 - 1 && pushing.0 > 0) || (e.y == 0 && pushing.1 < 0) || (e.y == game.world.here().size().1 - 1 && pushing.1 > 0))
         .map(|e| e.to.clone());
     let taken = stepping_out.or(wished);
     if session.is_client() {
@@ -1430,7 +1432,8 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         }
     }
     if let Some((x, y)) = warp.0.take() {
-        game.world.player = world::Player::in_cell(x.min(world::MAP_W - 1), y.min(world::MAP_H - 1));
+        let (w, h) = game.world.here().size();
+        game.world.player = world::Player::in_cell(x.min(w - 1), y.min(h - 1));
     }
     if !session.is_client()
         && let Some(to) = taken
@@ -1687,7 +1690,8 @@ fn way_to(world: &World, id: &str) -> Option<Vec<(usize, usize)>> {
     let here = world.here();
     let target = here.props.iter().find(|p| p.id == id).map(|p| (p.x, p.y)).or_else(|| here.creatures.iter().find(|c| c.id == id).map(|c| (c.x, c.y)))?;
     let (px, py) = world.player.cell();
-    let start = (px.clamp(0, world::MAP_W as i32 - 1) as usize, py.clamp(0, world::MAP_H as i32 - 1) as usize);
+    let (w, h) = here.size();
+    let start = (px.clamp(0, w as i32 - 1) as usize, py.clamp(0, h as i32 - 1) as usize);
     let beside = |(x, y): (usize, usize)| x.abs_diff(target.0) + y.abs_diff(target.1) == 1;
     world::path::route(start, beside, |(x, y)| here.blocked(x as i32, y as i32, &world.tiles) || here.exit_at(x, y).is_some())
 }

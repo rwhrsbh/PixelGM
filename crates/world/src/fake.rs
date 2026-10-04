@@ -304,7 +304,54 @@ pub fn chapter(lines: usize) -> String {
 }
 
 /// The answer to "draw the place `id`, the party walks in from `from`".
+/// A large place drawn by rule: twice as wide and twice as tall as an ordinary one.
+pub fn large_location(id: &str, name: &str, from: &str) -> String {
+    let (w, h) = (crate::model::MAX_W, crate::model::MAX_H);
+    let rows: Vec<String> = (0..h)
+        .map(|y| {
+            (0..w)
+                .map(|x| {
+                    let edge = x == 0 || y == 0 || x == w - 1 || y == h - 1;
+                    // Ways out in the middle of the west and east sides; a pond; a few rocks.
+                    if (x, y) == (0, h / 2) || (x, y) == (w - 1, h / 2) {
+                        '.'
+                    } else if edge {
+                        'T'
+                    } else if (20..28).contains(&x) && (8..12).contains(&y) {
+                        '~'
+                    } else if (x * 7 + y * 13) % 41 == 0 {
+                        'o'
+                    } else {
+                        '.'
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    json!({
+        "id": id,
+        "name": name,
+        "description": format!("{name}, a wide place drawn by rule."),
+        "danger": 0,
+        "legend": { ".": "grass", "T": "tree", "~": "water", "o": "rock" },
+        "map": rows,
+        "spawn": [2, h / 2],
+        "props": [{ "id": "far_stone", "name": "Standing stone", "description": "Far from the way in.", "x": w - 6, "y": h - 6, "sprite": "chest", "blocking": true }],
+        "creatures": [],
+        "exits": [
+            { "x": 0, "y": h / 2, "to": from, "label": "Back" },
+            { "x": w - 1, "y": h / 2, "to": format!("{id}_beyond"), "label": "Onward" }
+        ],
+        "neighbors": [{ "id": format!("{id}_beyond"), "name": format!("Beyond {name}"), "description": "Further on." }]
+    })
+    .to_string()
+}
+
 pub fn location(id: &str, name: &str, from: &str) -> String {
+    // The marsh is the large place of the test world.
+    if id.contains("marsh") {
+        return large_location(id, name, from);
+    }
     let seed = seed_of(id);
     let back = (0, 8);
     let onward = (MAP_W - 1, 5);

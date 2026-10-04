@@ -140,7 +140,8 @@ impl World {
         let index = place.wanderers.get((rng.die(place.wanderers.len().max(1) as u32) - 1) as usize)?.clone();
         let monster = srd().monsters.get(&index)?;
         // It comes from as far off as the place allows: the corner furthest from the party.
-        let corners = [(1usize, 1usize), (crate::MAP_W - 2, 1), (1, crate::MAP_H - 2), (crate::MAP_W - 2, crate::MAP_H - 2)];
+        let (w, h) = place.size();
+        let corners = [(1usize, 1usize), (w - 2, 1), (1, h - 2), (w - 2, h - 2)];
         let far = corners.into_iter().max_by_key(|(x, y)| (*x as i32 - px).abs() + (*y as i32 - py).abs())?;
         let free = |(x, y): (usize, usize)| !place.blocked(x as i32, y as i32, &self.tiles) && place.exit_at(x, y).is_none();
         let (x, y) = nearest(far, free)?;

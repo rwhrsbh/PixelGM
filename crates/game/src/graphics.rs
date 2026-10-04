@@ -216,7 +216,7 @@ fn build(
         let hour = crate::scene::Hour::of(&place);
         let lamp = crate::scene::Lamp { x: p.fire.1.0, y: p.fire.1.1 - 8.0, reach: 4.2 };
         let hero = crate::scene::Lamp { x: p.fire.1.0 - 32.0, y: p.fire.1.1 - 8.0, reach: 2.4 };
-        let fogged = images.add(crate::scene::darkness_seen(hour, &[lamp, hero], 0, None, Some(3.0)).into_image());
+        let fogged = images.add(crate::scene::darkness_seen((world::MAP_W, world::MAP_H), hour, &[lamp, hero], 0, None, Some(3.0)).into_image());
         let block = crate::scene::DARK_BLOCK as f32;
         commands.spawn((PreviewThing, Sprite { rect: Some(Rect { min: CROP.min / block, max: CROP.max / block }), custom_size: Some(size), ..Sprite::from_image(fogged) }, Anchor::TOP_LEFT, Transform::from_translation(corner(1.61))));
     }

@@ -498,7 +498,7 @@ fn press(
                 // Ten coins, or what is left, laid beside the hero.
                 let (cx, cy) = world.player.cell();
                 let here = world.here();
-                let free = |(x, y): (i32, i32)| (0..world::MAP_W as i32).contains(&x) && (0..world::MAP_H as i32).contains(&y) && !here.blocked(x, y, &world.tiles) && here.exit_at(x as usize, y as usize).is_none();
+                let free = |(x, y): (i32, i32)| (0..world::MAX_W as i32).contains(&x) && (0..world::MAX_H as i32).contains(&y) && !here.blocked(x, y, &world.tiles) && here.exit_at(x as usize, y as usize).is_none();
                 let around = [(1, 0), (0, 1), (-1, 0), (1, 1), (-1, 1), (0, -1), (1, -1), (-1, -1)];
                 let spot = around.iter().map(|(dx, dy)| (cx + dx, cy + dy)).find(|c| free(*c)).unwrap_or((cx, cy));
                 let cell = (spot.0.max(0) as usize, spot.1.max(0) as usize);
@@ -689,7 +689,7 @@ fn outside(
     // Beside the hero, as in the old games: the first open cell around, nearest first.
     let (cx, cy) = world.player.cell();
     let here = world.here();
-    let free = |(x, y): (i32, i32)| (0..world::MAP_W as i32).contains(&x) && (0..world::MAP_H as i32).contains(&y) && !here.blocked(x, y, &world.tiles) && here.exit_at(x as usize, y as usize).is_none() && !here.items.iter().any(|l| (l.x as i32, l.y as i32) == (x, y));
+    let free = |(x, y): (i32, i32)| (0..world::MAX_W as i32).contains(&x) && (0..world::MAX_H as i32).contains(&y) && !here.blocked(x, y, &world.tiles) && here.exit_at(x as usize, y as usize).is_none() && !here.items.iter().any(|l| (l.x as i32, l.y as i32) == (x, y));
     let around = [(1, 0), (0, 1), (-1, 0), (1, 1), (-1, 1), (0, -1), (1, -1), (-1, -1)];
     let spot = around.iter().map(|(dx, dy)| (cx + dx, cy + dy)).find(|c| free(*c)).unwrap_or((cx, cy));
     let cell = (spot.0.max(0) as usize, spot.1.max(0) as usize);

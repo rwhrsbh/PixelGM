@@ -345,7 +345,8 @@ pub(crate) fn stock_of(drafts: &[crate::story::ThingDraft]) -> Vec<crate::story:
 }
 
 fn clamp_cell(x: i64, y: i64) -> Cell {
-    (x.clamp(0, MAP_W as i64 - 1) as usize, y.clamp(0, MAP_H as i64 - 1) as usize)
+    let (w, h) = crate::path::board_size();
+    (x.clamp(0, w as i64 - 1) as usize, y.clamp(0, h as i64 - 1) as usize)
 }
 
 fn unique(base: String, fallback: &str, taken: &mut BTreeSet<String>) -> String {
@@ -360,7 +361,8 @@ fn unique(base: String, fallback: &str, taken: &mut BTreeSet<String>) -> String 
 }
 
 fn on_edge((x, y): Cell) -> bool {
-    x == 0 || y == 0 || x == MAP_W - 1 || y == MAP_H - 1
+    let (w, h) = crate::path::board_size();
+    x == 0 || y == 0 || x == w - 1 || y == h - 1
 }
 
 /// Turns a draft into a location that can be walked through.
@@ -373,6 +375,10 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     if draft.map.iter().all(|r| r.trim().is_empty()) {
         return Err("the answer has no map".into());
     }
+    // A map well past the ordinary size is a large place: twice as wide and twice as tall.
+    let longest = draft.map.iter().map(|r| r.chars().count()).max().unwrap_or(0);
+    let (map_w, map_h) = if draft.map.len() > MAP_H + 6 || longest > MAP_W + 12 { (crate::model::MAX_W, crate::model::MAX_H) } else { (MAP_W, MAP_H) };
+    let _board = crate::path::board((map_w, map_h));
 
     for sprite in &draft.sprites {
         let id = slug(&sprite.id);
@@ -401,9 +407,9 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     // The grid of tile ids, exactly the size of a location.
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     let mut given: Vec<Vec<Option<String>>> = Vec::new();
-    for row in draft.map.iter().take(MAP_H) {
+    for row in draft.map.iter().take(map_h) {
         let mut cells = Vec::new();
-        for ch in row.chars().take(MAP_W) {
+        for ch in row.chars().take(map_w) {
             let id = legend.get(&ch).cloned();
             if id.is_none() {
                 notes.push(format!("map uses '{ch}', which the legend does not explain"));
@@ -422,11 +428,11 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     if !assets.tiles.get(&floor).is_some_and(|t| t.walkable) {
         return Err("no tile can be walked on".into());
     }
-    let short = given.len() < MAP_H || given.iter().any(|r| r.len() < MAP_W);
-    if short || draft.map.len() > MAP_H || draft.map.iter().any(|r| r.chars().count() > MAP_W) {
-        notes.push(format!("map was not {MAP_W}x{MAP_H}; padded or cropped"));
+    let short = given.len() < map_h || given.iter().any(|r| r.len() < map_w);
+    if short || draft.map.len() > map_h || draft.map.iter().any(|r| r.chars().count() > map_w) {
+        notes.push(format!("map was not {map_w}x{map_h}; padded or cropped"));
     }
-    let mut grid: Vec<Vec<String>> = (0..MAP_H).map(|y| (0..MAP_W).map(|x| given.get(y).and_then(|r| r.get(x)).cloned().flatten().unwrap_or_else(|| floor.clone())).collect()).collect();
+    let mut grid: Vec<Vec<String>> = (0..map_h).map(|y| (0..map_w).map(|x| given.get(y).and_then(|r| r.get(x)).cloned().flatten().unwrap_or_else(|| floor.clone())).collect()).collect();
 
     let mut taken = BTreeSet::new();
     let mut props: Vec<Prop> = Vec::new();
@@ -494,7 +500,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
 
     let spawn_given = match draft.spawn.as_slice() {
         [x, y, ..] => clamp_cell(x.as_f64().unwrap_or(0.0).round() as i64, y.as_f64().unwrap_or(0.0).round() as i64),
-        _ => (MAP_W / 2, MAP_H / 2),
+        _ => (map_w / 2, map_h / 2),
     };
 
     if let Some(from) = arrived_from
@@ -515,7 +521,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
         if !known.contains(&onward) {
             notes.push("no exit led anywhere new; one was added".to_string());
             let free = |c: Cell| on_edge(c) && !exits.iter().any(|e| (e.x, e.y) == c);
-            let far = (if spawn_given.0 < MAP_W / 2 { MAP_W - 1 } else { 0 }, if spawn_given.1 < MAP_H / 2 { MAP_H - 1 } else { 0 });
+            let far = (if spawn_given.0 < map_w / 2 { map_w - 1 } else { 0 }, if spawn_given.1 < map_h / 2 { map_h - 1 } else { 0 });
             if let Some((x, y)) = nearest(far, free) {
                 exits.push(Exit { x, y, to: onward.clone(), label: String::new() });
                 stub_ids.insert(onward.clone());
@@ -717,6 +723,7 @@ impl World {
     /// leads back, or at the location's starting cell when there is none.
     pub fn arrival_cell(&self, to: &str, from: &str) -> Cell {
         let Some(location) = self.locations.get(to) else { return (MAP_W / 2, MAP_H / 2) };
+        let _board = crate::path::board(location.size());
         let Some(door) = location.exits.iter().find(|e| e.to == from) else { return location.spawn };
         let free = |(x, y): Cell| !location.blocked(x as i32, y as i32, &self.tiles) && location.exit_at(x, y).is_none();
         nearest((door.x, door.y), free).unwrap_or(location.spawn)
@@ -776,6 +783,33 @@ mod tests {
         assert_eq!(world.stubs.len(), 2);
         assert!(world.tiles.contains_key("moss") && world.sprites.contains_key("campfire"));
         assert_eq!(world.player.cell(), (here.spawn.0 as i32, here.spawn.1 as i32));
+    }
+
+    #[test]
+    fn a_large_place_is_built_whole_and_walked_from_end_to_end() {
+        let draft: LocationDraft = read_answer(&fake::large_location("great_marsh", "The Great Marsh", "camp")).unwrap();
+        let mut tiles = base_tiles();
+        let mut sprites = base_sprites();
+        let mut assets = Assets { palette_len: 16, tiles: &mut tiles, sprites: &mut sprites };
+        let known = BTreeSet::new();
+        let built = build_location(&draft, &mut assets, Some("great_marsh"), &known, Some("camp")).unwrap();
+        let place = &built.location;
+        assert_eq!(place.size(), (crate::model::MAX_W, crate::model::MAX_H));
+        assert!(place.exits.iter().any(|e| e.x == crate::model::MAX_W - 1), "{:?}", place.exits);
+        assert!(every_exit_is_reachable(place, &base_tiles()));
+        // What stands in the far corner is where the master put it, not pulled into the first screen.
+        assert_eq!((place.props[0].x, place.props[0].y), (crate::model::MAX_W - 6, crate::model::MAX_H - 6));
+        // The board is the ordinary one again once the building is done.
+        assert_eq!(crate::path::board_size(), (crate::model::MAX_W, crate::model::MAX_H));
+        // Beyond the east side of an ordinary place there is nothing to stand on.
+        let small: LocationDraft = draft_of_field();
+        let small = build_location(&small, &mut Assets { palette_len: 16, tiles: &mut tiles, sprites: &mut sprites }, Some("field"), &known, None).unwrap().location;
+        assert_eq!(small.size(), (MAP_W, MAP_H));
+        assert!(small.blocked(MAP_W as i32, 3, &base_tiles()));
+    }
+
+    fn draft_of_field() -> LocationDraft {
+        serde_json::from_value(json!({ "name": "Field", "legend": { ".": "grass" }, "map": vec![".".repeat(MAP_W); MAP_H], "spawn": [5, 5] })).unwrap()
     }
 
     #[test]

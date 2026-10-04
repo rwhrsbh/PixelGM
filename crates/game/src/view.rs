@@ -10,7 +10,7 @@ use crate::store::{Settings, Store};
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use world::{MAP_H, MAP_W, TILE};
+use world::TILE;
 
 /// The width of the column of party portraits, in pixels of the interface.
 pub const COLUMN: f32 = 46.0;
@@ -100,7 +100,8 @@ fn focus(game: &Game, mine: Option<usize>) -> Vec2 {
 
 fn follow(time: Res<Time>, game: Res<Game>, settings: Res<Settings>, session: Res<crate::coop::Session>, mut view: ResMut<View>, mut was: Local<Option<String>>) {
     let px = crate::scene::PX as f32;
-    let map = Vec2::new((MAP_W as u32 * TILE) as f32 * px, (MAP_H as u32 * TILE) as f32 * px);
+    let (map_w, map_h) = game.world.here().size();
+    let map = Vec2::new((map_w as u32 * TILE) as f32 * px, (map_h as u32 * TILE) as f32 * px);
     let region = view.region();
     let zoom = match if view.overview { 0.0 } else { ZOOMS.get(settings.zoom as usize).copied().unwrap_or(1.5) } {
         z if z > 0.0 => z,

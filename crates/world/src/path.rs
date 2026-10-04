@@ -1,16 +1,40 @@
 //! Walking questions about a grid of cells: what can be reached, and what is nearest.
 
-use crate::model::{MAP_H, MAP_W};
+use crate::model::{MAX_H as MAP_H, MAX_W as MAP_W};
 use std::collections::VecDeque;
 
 pub type Cell = (usize, usize);
 
 const STEPS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
+thread_local! {
+    /// How far a walk may go: the largest a place can be, unless a place being built has
+    /// said how large it is.
+    static BOARD: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((MAP_W, MAP_H)) };
+}
+
+/// Keeps walks on a board of this size until it is dropped.
+pub struct Board((usize, usize));
+
+pub fn board(size: (usize, usize)) -> Board {
+    Board(BOARD.with(|b| b.replace((size.0.min(MAP_W), size.1.min(MAP_H)))))
+}
+
+pub fn board_size() -> (usize, usize) {
+    BOARD.with(|b| b.get())
+}
+
+impl Drop for Board {
+    fn drop(&mut self) {
+        BOARD.with(|b| b.set(self.0));
+    }
+}
+
 fn neighbours((x, y): Cell) -> impl Iterator<Item = Cell> {
+    let (w, h) = board_size();
     STEPS.iter().filter_map(move |(dx, dy)| {
         let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-        ((0..MAP_W as i32).contains(&nx) && (0..MAP_H as i32).contains(&ny)).then_some((nx as usize, ny as usize))
+        ((0..w as i32).contains(&nx) && (0..h as i32).contains(&ny)).then_some((nx as usize, ny as usize))
     })
 }
 

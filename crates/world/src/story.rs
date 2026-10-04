@@ -693,8 +693,14 @@ impl Bag {
     }
 }
 
+thread_local! {
+    /// The size of the place effects are being applied to: set at the start of `apply`.
+    static BOUNDS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((MAP_W, MAP_H)) };
+}
+
 fn clamp_cell(x: i64, y: i64) -> (usize, usize) {
-    (x.clamp(0, MAP_W as i64 - 1) as usize, y.clamp(0, MAP_H as i64 - 1) as usize)
+    let (w, h) = BOUNDS.with(|b| b.get());
+    (x.clamp(0, w as i64 - 1) as usize, y.clamp(0, h as i64 - 1) as usize)
 }
 
 /// Characters a location may use for tiles added after it was drawn.
@@ -708,10 +714,11 @@ impl Location {
 
     /// Marks the cells within `reach` cells of a point as seen. True when any was new.
     pub fn reveal(&mut self, cx: f32, cy: f32, reach: f32) -> bool {
-        self.seen.resize(MAP_H, 0);
+        let (map_w, map_h) = self.size();
+        self.seen.resize(map_h, 0);
         let mut new = false;
-        for y in 0..MAP_H {
-            for x in 0..MAP_W {
+        for y in 0..map_h {
+            for x in 0..map_w {
                 let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
                 if dx * dx + dy * dy <= reach * reach && self.seen[y] & (1 << x) == 0 {
                     self.seen[y] |= 1 << x;
@@ -750,6 +757,7 @@ impl World {
     pub fn apply(&mut self, effects: &[Effect], me: Option<&str>) -> Vec<String> {
         let mut notes = Vec::new();
         let here = self.current.clone();
+        BOUNDS.with(|b| b.set(self.here().size()));
         let resolve = |id: &str| if id == "self" { me.unwrap_or("self").to_string() } else { slug(id) };
         self.ensure_bags();
         // Whose bag a thing goes into: the hero named, or the one who acted.

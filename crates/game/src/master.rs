@@ -343,7 +343,7 @@ impl Master {
                     let draft: Result<LocationDraft, Trouble> = if fake {
                         faked(fake::location(&id, world.place_name(&id), &from))
                     } else {
-                        call.read(prompt::system_prompt(&world.language), &prompt::new_location(&world, &id, &from))
+                        call.read(prompt::system_prompt(&world.language), &prompt::new_location_sized(&world, &id, &from, ahead || call.custom.is_some()))
                     };
                     drawing.lock().unwrap().remove(&id);
                     Answer::Location { id, from, ahead, draft: draft.map(Box::new) }

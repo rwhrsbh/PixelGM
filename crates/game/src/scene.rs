@@ -215,14 +215,18 @@ struct Cells {
     drawn: Vec<Option<String>>,
     /// Cells nobody can walk into, by what the tile says of itself.
     solid: Vec<bool>,
+    /// Cells across and down.
+    w: usize,
+    h: usize,
 }
 
 impl Cells {
     fn read(location: &Location, world: &World) -> Self {
         let stock = base::base_tiles();
-        let mut cells = Self { ground: Vec::new(), growth: Vec::new(), drawn: Vec::new(), solid: Vec::new() };
-        for cy in 0..MAP_H {
-            for cx in 0..MAP_W {
+        let (w, h) = location.size();
+        let mut cells = Self { ground: Vec::new(), growth: Vec::new(), drawn: Vec::new(), solid: Vec::new(), w, h };
+        for cy in 0..h {
+            for cx in 0..w {
                 let id = location.tile_id(cx, cy).unwrap_or(base::FALLBACK_TILE);
                 // A stock tile the master has redrawn under the same name is the master's.
                 let stock_look = world.tiles.get(id).zip(stock.get(id)).is_some_and(|(now, then)| now.sprite == then.sprite);
@@ -255,17 +259,17 @@ impl Cells {
     /// Whether a cell stands up from the ground: a wall, or a drawn tile nobody can walk into.
     /// Such a cell shows a face and throws a shadow, so that what blocks the way looks it.
     fn raised(&self, cx: i32, cy: i32) -> bool {
-        if cx < 0 || cy < 0 || cx >= MAP_W as i32 || cy >= MAP_H as i32 {
+        if cx < 0 || cy < 0 || cx >= self.w as i32 || cy >= self.h as i32 {
             return false;
         }
-        let at = cy as usize * MAP_W + cx as usize;
+        let at = cy as usize * self.w + cx as usize;
         self.ground[at].wall() || self.ground[at] == Ground::Drawn && self.solid[at]
     }
 
     /// The ground of a cell; past the edge of the map the nearest cell goes on.
     fn at(&self, cx: i32, cy: i32) -> Ground {
-        let (x, y) = (cx.clamp(0, MAP_W as i32 - 1) as usize, cy.clamp(0, MAP_H as i32 - 1) as usize);
-        self.ground[y * MAP_W + x]
+        let (x, y) = (cx.clamp(0, self.w as i32 - 1) as usize, cy.clamp(0, self.h as i32 - 1) as usize);
+        self.ground[y * self.w + x]
     }
 }
 
@@ -530,7 +534,7 @@ impl Painter<'_> {
             Ground::StoneWall => stone_wall(p, &self.cells, x, y),
             Ground::WoodWall => wood_wall(p, &self.cells, x, y),
             Ground::Drawn => {
-                let id = self.cells.drawn[cy as usize * MAP_W + cx as usize].as_deref().unwrap_or_default();
+                let id = self.cells.drawn[cy as usize * self.cells.w + cx as usize].as_deref().unwrap_or_default();
                 self.drawn.get(id).map_or(p.outline, |picture| picture.get(x.rem_euclid(CELL), y.rem_euclid(CELL)))
             }
             ground => open_ground(p, ground, x, y, frame).unwrap_or(p.outline),
@@ -679,7 +683,7 @@ fn reflect(picture: &mut Pixels, cells: &Cells, thing: &Pixels, foot: (i32, i32)
             }
             let wobble = if (y / 3 + beat as i32) % 4 == 0 { PX as i32 / 2 } else { 0 };
             let (tx, ty) = (left + x + wobble, foot.1 + y);
-            if ty >= MAP_H as i32 * CELL || cells.at(tx.div_euclid(CELL), ty.div_euclid(CELL)) != Ground::Water {
+            if ty >= cells.h as i32 * CELL || cells.at(tx.div_euclid(CELL), ty.div_euclid(CELL)) != Ground::Water {
                 continue;
             }
             let strength = 0.42 * (1.0 - y as f32 / h as f32 * 0.6);
@@ -693,7 +697,7 @@ fn reflect(picture: &mut Pixels, cells: &Cells, thing: &Pixels, foot: (i32, i32)
 /// the edge of the map without going through a door. A place that is mostly one building has
 /// no roof: the party is already inside it.
 fn roofs(cells: &Cells, p: &Paint, exits: &[(usize, usize)]) -> Vec<Roof> {
-    let (w, h) = (MAP_W as i32, MAP_H as i32);
+    let (w, h) = (cells.w as i32, cells.h as i32);
     let blocks = |x: i32, y: i32| cells.at(x, y).wall() || cells.at(x, y) == Ground::Door;
     // Everything reached from the edge, around walls and doors, is outside.
     let mut outside = vec![false; (w * h) as usize];
@@ -1116,7 +1120,8 @@ pub fn paint(location: &Location, world: &World) -> Scene {
     }
     let painter = Painter { paint: Paint::of(world), cells, world, drawn };
     let _ = painter.world;
-    let (w, h) = (MAP_W as i32 * CELL, MAP_H as i32 * CELL);
+    let (map_w, map_h) = (painter.cells.w, painter.cells.h);
+    let (w, h) = (map_w as i32 * CELL, map_h as i32 * CELL);
     let has_water = painter.cells.ground.contains(&Ground::Water);
     let mut first = Pixels::new(w as u32, h as u32, CLEAR);
     for y in 0..h {
@@ -1128,9 +1133,9 @@ pub fn paint(location: &Location, world: &World) -> Scene {
     let tile = world::TILE as f32;
     let mut standing = Vec::new();
     let mut shadows: Vec<(i32, i32, f32, f32, f32)> = Vec::new();
-    for cy in 0..MAP_H as i32 {
-        for cx in 0..MAP_W as i32 {
-            let Some(growth) = painter.cells.growth[cy as usize * MAP_W + cx as usize] else { continue };
+    for cy in 0..map_h as i32 {
+        for cx in 0..map_w as i32 {
+            let Some(growth) = painter.cells.growth[cy as usize * map_w + cx as usize] else { continue };
             let (mut picture, rx, ry) = match growth {
                 Growth::Tree => (tree(&painter.paint, (cx, cy)), 13.0, 6.0),
                 Growth::Bush => (bush(&painter.paint, (cx, cy)), 13.0, 5.0),
@@ -1157,8 +1162,8 @@ pub fn paint(location: &Location, world: &World) -> Scene {
         // Only the water moves: the rest of the picture is copied, the water painted again.
         for frame in 1..WATER_FRAMES {
             let mut next = ground[0].clone();
-            for cy in 0..MAP_H as i32 {
-                for cx in 0..MAP_W as i32 {
+            for cy in 0..map_h as i32 {
+                for cx in 0..map_w as i32 {
                     if painter.cells.at(cx, cy) != Ground::Water {
                         continue;
                     }
@@ -1192,7 +1197,7 @@ pub fn paint(location: &Location, world: &World) -> Scene {
             reflect(picture, &painter.cells, thing, *foot, n);
         }
     }
-    let water = (0..MAP_H).flat_map(|y| (0..MAP_W).map(move |x| (x, y))).filter(|(x, y)| painter.cells.at(*x as i32, *y as i32) == Ground::Water).collect();
+    let water = (0..map_h).flat_map(|y| (0..map_w).map(move |x| (x, y))).filter(|(x, y)| painter.cells.at(*x as i32, *y as i32) == Ground::Water).collect();
     let exits: Vec<(usize, usize)> = location.exits.iter().map(|e| (e.x, e.y)).collect();
     let roofs = roofs(&painter.cells, &painter.paint, &exits);
     let indoors = !painter.cells.ground.iter().any(|g| matches!(g, Ground::Grass | Ground::Dirt | Ground::Sand | Ground::Water));
@@ -1205,13 +1210,13 @@ pub const DARK_BLOCK: i32 = 4;
 /// The dark over a place, and the holes the lamps make in it. `lights` are in the world's
 /// own pixels with a reach in cells; `beat` makes flames waver.
 pub fn darkness(hour: Hour, lights: &[Lamp], beat: u32) -> Pixels {
-    darkness_seen(hour, lights, beat, None, None)
+    darkness_seen((MAP_W, MAP_H), hour, lights, beat, None, None)
 }
 
 /// The dark, with what the party never saw of the place left wholly black; and fog, when
 /// `fog` gives the seconds it has drifted: thick in the distance, thin where there is light.
-pub fn darkness_seen(hour: Hour, lights: &[Lamp], beat: u32, seen: Option<&[u32]>, fog: Option<f32>) -> Pixels {
-    let (w, h) = (MAP_W as i32 * CELL / DARK_BLOCK, MAP_H as i32 * CELL / DARK_BLOCK);
+pub fn darkness_seen(size: (usize, usize), hour: Hour, lights: &[Lamp], beat: u32, seen: Option<&[u64]>, fog: Option<f32>) -> Pixels {
+    let (w, h) = (size.0 as i32 * CELL / DARK_BLOCK, size.1 as i32 * CELL / DARK_BLOCK);
     let mut dark = Pixels::new(w as u32, h as u32, CLEAR);
     let per_block = DARK_BLOCK as f32 / PX as f32;
     for y in 0..h {
@@ -1291,10 +1296,11 @@ pub fn vignette(w: i32, h: i32) -> Pixels {
 /// Where one may walk, drawn over the place on demand: open cells outlined, cells that block
 /// the way hatched, ways out marked.
 pub fn walk_grid(location: &Location, world: &World) -> Pixels {
-    let (w, h) = (MAP_W as i32 * CELL, MAP_H as i32 * CELL);
+    let (map_w, map_h) = location.size();
+    let (w, h) = (map_w as i32 * CELL, map_h as i32 * CELL);
     let mut grid = Pixels::new(w as u32, h as u32, CLEAR);
-    for cy in 0..MAP_H {
-        for cx in 0..MAP_W {
+    for cy in 0..map_h {
+        for cx in 0..map_w {
             let solid = location.tile_id(cx, cy).and_then(|id| world.tiles.get(id)).is_none_or(|t| !t.walkable) || location.props.iter().any(|p| p.blocking && p.x == cx && p.y == cy);
             let exit = location.exit_at(cx, cy).is_some();
             let (x0, y0) = (cx as i32 * CELL, cy as i32 * CELL);

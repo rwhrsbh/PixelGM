@@ -10,8 +10,12 @@ use std::collections::BTreeMap;
 /// Side of a map cell in pixels.
 pub const TILE: u32 = 16;
 /// A location fills the screen exactly: 30 by 16 cells, with a strip left for the interface.
+/// The size of an ordinary place, in cells.
 pub const MAP_W: usize = 30;
 pub const MAP_H: usize = 16;
+/// The size of a large place: a town, a forest, a warren of caves. Nothing is larger.
+pub const MAX_W: usize = 60;
+pub const MAX_H: usize = 32;
 
 /// Most colours a world may use, counting the transparent index 0.
 pub const PALETTE_MAX: usize = 32;
@@ -244,7 +248,7 @@ pub struct Location {
     /// The cells the party has seen, one row of bits to a row of the map: in the dark, what
     /// was never seen stays black.
     #[serde(default)]
-    pub seen: Vec<u32>,
+    pub seen: Vec<u64>,
 }
 
 /// A thing lying on a cell of a place.
@@ -278,6 +282,11 @@ pub struct Cue {
 }
 
 impl Location {
+    /// Cells across and down: what its map holds.
+    pub fn size(&self) -> (usize, usize) {
+        (self.map.first().map_or(MAP_W, |row| row.chars().count()).clamp(1, MAX_W), self.map.len().clamp(1, MAX_H))
+    }
+
     pub fn tile_id(&self, x: usize, y: usize) -> Option<&str> {
         let ch = *self.map.get(y)?.as_bytes().get(x)? as char;
         self.legend.get(&ch).map(String::as_str)
@@ -286,7 +295,8 @@ impl Location {
     /// Whether a cell cannot be walked into: outside the map, a solid tile, or something
     /// standing there.
     pub fn blocked(&self, x: i32, y: i32, tiles: &BTreeMap<String, TileDef>) -> bool {
-        if x < 0 || y < 0 || x >= MAP_W as i32 || y >= MAP_H as i32 {
+        let (w, h) = self.size();
+        if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
             return true;
         }
         let (x, y) = (x as usize, y as usize);

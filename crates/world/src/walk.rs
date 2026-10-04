@@ -1,6 +1,8 @@
 //! Moving the party about a location on foot.
 
-use crate::model::{Exit, MAP_H, MAP_W, Player, TILE, World};
+use crate::model::{Exit, Player, TILE, World};
+#[cfg(test)]
+use crate::model::{MAP_H, MAP_W};
 
 /// Half the width and half the height of the patch of ground the party's feet take up. It is
 /// smaller than a cell, so a one-cell gap can be walked through without lining up exactly.
@@ -18,7 +20,8 @@ impl World {
     /// Returns whether the party moved at all.
     pub fn walk(&mut self, dx: f32, dy: f32) -> bool {
         let Player { x, y } = self.player;
-        let limit = (MAP_W as f32 * TILE as f32, MAP_H as f32 * TILE as f32);
+        let (w, h) = self.here().size();
+        let limit = (w as f32 * TILE as f32, h as f32 * TILE as f32);
         // A pixel at a time, so the party ends flush against what stops it rather than a
         // whole stride short.
         let mut left = dx;
@@ -66,7 +69,8 @@ impl World {
         let (x, y) = self.player.cell();
         let location = self.here();
         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, &self.tiles) && location.exit_at(cx, cy).is_none();
-        let start = (x.clamp(0, MAP_W as i32 - 1) as usize, y.clamp(0, MAP_H as i32 - 1) as usize);
+        let (w, h) = self.here().size();
+        let start = (x.clamp(0, w as i32 - 1) as usize, y.clamp(0, h as i32 - 1) as usize);
         if let Some((cx, cy)) = crate::path::nearest(start, free) {
             self.player = Player::in_cell(cx, cy);
         }
