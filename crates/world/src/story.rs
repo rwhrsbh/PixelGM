@@ -191,6 +191,9 @@ pub enum Effect {
         /// For a creature: the faction it belongs to.
         #[serde(default)]
         faction: String,
+        /// What can be done with it, prepared now: a lever's pull, a lock's key.
+        #[serde(default)]
+        actions: Vec<ActionDraft>,
         /// For a prop that holds things: what is in it, how hard its lock is, its key.
         #[serde(default)]
         contents: Vec<ThingDraft>,
@@ -330,7 +333,7 @@ pub struct Action {
     pub spends: bool,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct ActionDraft {
     pub label: String,
@@ -949,7 +952,8 @@ impl World {
                     notes.extend(read_notes);
                     location.secrets.push(crate::model::Secret { x: sx, y: sy, dc: (*dc).clamp(5, 30) as i32, kind: kind.trim().to_lowercase(), note: note.trim().to_string(), effects, found: false });
                 }
-                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, count, shop, faction, contents, lock, key } => {
+                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, count, shop, faction, actions, contents, lock, key } => {
+                    let prepared = read_actions(actions, &mut notes);
                     let mut id = slug(id);
                     if id.is_empty() {
                         id = "thing".to_string();
@@ -970,11 +974,11 @@ impl World {
                     if kind.trim().eq_ignore_ascii_case("creature") {
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
                         if let Some((cx, cy)) = nearest(wanted, free) {
-                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: Vec::new(), monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(faction) });
+                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: prepared, monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(faction) });
                         }
                     } else {
                         let chest = (!contents.is_empty() || *lock > 0 || !key.trim().is_empty()).then(|| crate::model::Chest { items: contents.iter().filter_map(ThingDraft::item).collect(), lock: (*lock).clamp(0, 30) as i32, key: key.trim().to_string(), open: false });
-                        location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: Vec::new(), body: None, chest });
+                        location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: prepared, body: None, chest });
                     }
                 }
                 Effect::Exit { x, y, to, label } => {
