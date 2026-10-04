@@ -406,6 +406,9 @@ pub struct SteamLink {
     since_look: f32,
     /// Whether the Steam lobby being hosted was open when the screen was last drawn.
     lobby_open: bool,
+    /// Friends who are online, to be asked to the table one by one, and those asked already.
+    online: Vec<(String, u64)>,
+    asked: Vec<u64>,
 }
 
 /// How often the list of friends hosting is looked up while the lobby screen is open.
@@ -866,6 +869,8 @@ enum LobbyAction {
     JoinSteam(usize),
     /// Open Steam's overlay to invite friends to the table being hosted.
     Invite,
+    /// Ask the friend at this place in the list of those online to the table, through chat.
+    Ask(usize),
 }
 
 #[derive(Component)]
@@ -927,6 +932,14 @@ fn build_lobby(commands: &mut Commands, art: &Art, fonts: &Fonts, settings: &Set
                     let open = matches!(session, Session::Host(hosting) if matches!(hosting.lock().unwrap().net.lobby(), Some(Ok(_))));
                     if matches!(session, Session::Host(hosting) if hosting.lock().unwrap().net.port() == 0) {
                         button(line, art, fonts, T::SteamInvite, open, LobbyAction::Invite);
+                    }
+                    // Friends online, each asked with a press: this needs no overlay.
+                    if open {
+                        line.spawn((Node { width: percent(100), ..default() }, Text::default(), T::SteamAsk, fonts.body(), faded));
+                        for (n, (friend, id)) in link.online.iter().enumerate().take(12) {
+                            let mark = if link.asked.contains(id) { "✓ " } else { "" };
+                            text_button(line, art, fonts, format!("{mark}{friend}"), (LobbyAction::Ask(n), PixelButtonState(true)));
+                        }
                     }
                     if link.friends.is_empty() {
                         line.spawn((Text::default(), T::SteamNoFriends, fonts.body(), faded));
@@ -1018,6 +1031,7 @@ fn steam_start(mut link: ResMut<SteamLink>) {
     link.tried = true;
     match net::Steam::init() {
         Ok(steam) => {
+            link.online = steam.friends_online();
             info!("Steam is here: {} (overlay {})", steam.name(), if steam.overlay() { "on" } else { "off" });
             link.steam = Some(steam);
         }
@@ -1037,6 +1051,12 @@ fn steam_invites(time: Res<Time>, link: Res<SteamLink>, mut session: ResMut<Sess
     // A table's own thread lets Steam speak; in the menus and alone the game does.
     if matches!(*session, Session::Solo) {
         steam.pump();
+    }
+    // Steam needs a moment after the first frames to hook its overlay: say when it has.
+    static OVERLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let overlay = steam.overlay();
+    if OVERLAY.swap(overlay, std::sync::atomic::Ordering::Relaxed) != overlay {
+        info!("Steam overlay is now {}", if overlay { "on" } else { "off" });
     }
     let Some(lobby) = steam.asked_into() else { return };
     info!("invited through Steam into lobby {lobby}");
@@ -1093,7 +1113,7 @@ fn on_activate(
     mut table: ResMut<Table>,
     store: Res<Store>,
     mut next: ResMut<NextState<Screen>>,
-    link: Res<SteamLink>,
+    mut link: ResMut<SteamLink>,
     friends: Query<&PixelButtonState>,
 ) {
     let Ok(action) = buttons.get(used.entity) else { return };
@@ -1147,6 +1167,14 @@ fn on_activate(
                 *session = join_steam(steam, *lobby, &player_name(&settings));
             }
         }
+        LobbyAction::Ask(n) => {
+            if let (Some(steam), Session::Host(hosting), Some((_, friend))) = (&link.steam, &*session, link.online.get(*n).cloned()) {
+                if let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby() {
+                    steam.invite_friend(friend, lobby);
+                    link.asked.push(friend);
+                }
+            }
+        }
         LobbyAction::Invite => {
             if let (Some(steam), Session::Host(hosting)) = (&link.steam, &*session) {
                 if let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby() {
@@ -1179,8 +1207,10 @@ fn refresh_lobby(
         link.since_look = 0.0;
         if let Some(steam) = &link.steam {
             let now = steam.friends_hosting();
-            friends_changed = now != link.friends;
+            let online = steam.friends_online();
+            friends_changed = now != link.friends || online != link.online;
             link.friends = now;
+            link.online = online;
         }
     }
     let open = matches!(&*session, Session::Host(hosting) if matches!(hosting.lock().unwrap().net.lobby(), Some(Ok(_))));

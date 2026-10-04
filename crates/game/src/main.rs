@@ -42,6 +42,9 @@ use bevy::window::WindowResolution;
 
 fn main() -> AppExit {
     let args = shot::Args::parse(std::env::args().skip(1));
+    // Before any window exists: Steam's overlay is brought in even when the game was started
+    // by hand. A test instance kept off the desktop has no use for it.
+    let overlay = (!args.hidden && std::env::var_os("PIXELGM_HOME").is_none()).then(net::bring_overlay);
     // A hidden test window is one canvas; a real one is sized to the screen once it opens.
     let (width, height) = args.size.unwrap_or(if args.hidden { (960, 540) } else { (1920, 1080) });
     let store = store::Store::at(store::home());
@@ -80,5 +83,12 @@ fn main() -> AppExit {
         fight::FightPlugin,
     ))
     .add_plugins((view::ViewPlugin, shop_ui::ShopPlugin, translate::TranslatePlugin, bag_ui::BagPlugin, post::PostPlugin, motion::MotionPlugin, music::MusicPlugin, provider::ProviderPlugin, party_hud::PartyHudPlugin, graphics::GraphicsPlugin, weather::WeatherPlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
+    // How bringing the overlay in went is said once there is a log to say it in.
+    if let Some(overlay) = overlay {
+        app.add_systems(Startup, move || match &overlay {
+            Ok(how) => info!("Steam overlay: {how}"),
+            Err(why) => info!("Steam overlay not brought in: {why}"),
+        });
+    }
     app.run()
 }

@@ -99,6 +99,7 @@ texts! {
     LobbyHostWord: "хост", "host";
     LobbyNoHero: "без героя", "no hero yet";
     SteamInvite: "Пригласить друзей", "Invite friends";
+    SteamAsk: "Друзья в сети — нажми, чтобы позвать:", "Friends online — press to ask:";
     LobbyJoined: "Подключено. Ждём мир от хоста…", "Connected. Waiting for the host's world…";
     LobbyWrongVersion: "У хоста другая версия игры.", "The host runs another version of the game.";
     LobbyLost: "Связь с хостом потеряна. Игра сохранена — можно продолжить одному.", "The host is gone. The game was saved; you can go on alone.";

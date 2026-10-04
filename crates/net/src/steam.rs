@@ -56,6 +56,7 @@ pub struct Steam {
     asked_into: Arc<Mutex<Option<u64>>>,
     /// Keeps Steam telling of such invitations for as long as the client lives.
     _asked: Arc<steamworks::CallbackHandle>,
+    _asked_by_chat: Arc<steamworks::CallbackHandle>,
 }
 
 impl Steam {
@@ -73,6 +74,15 @@ impl Steam {
                 *asked_into.lock().unwrap() = Some(request.lobby_steam_id.raw());
             })
         };
+        // An invitation sent through chat arrives as the words it was sent with.
+        let asked_by_chat = {
+            let asked_into = asked_into.clone();
+            client.register_callback(move |request: steamworks::GameRichPresenceJoinRequested| {
+                if let Some(lobby) = lobby_in(&request.connect) {
+                    *asked_into.lock().unwrap() = Some(lobby);
+                }
+            })
+        };
         // Started by accepting an invitation while the game was not running: Steam passes
         // the lobby on the command line.
         let line = client.apps().launch_command_line();
@@ -80,7 +90,7 @@ impl Steam {
         if started_into.is_some() {
             *asked_into.lock().unwrap() = started_into;
         }
-        Ok(Self { client, pump: Arc::default(), asked_into, _asked: Arc::new(asked) })
+        Ok(Self { client, pump: Arc::default(), asked_into, _asked: Arc::new(asked), _asked_by_chat: Arc::new(asked_by_chat) })
     }
 
     /// Lets Steam speak: invitations arrive only while its callbacks are run. The threads of
@@ -97,6 +107,22 @@ impl Steam {
     /// Opens Steam's overlay on its dialog for inviting friends into a lobby.
     pub fn invite(&self, lobby: u64) {
         self.client.friends().activate_invite_dialog(LobbyId::from_raw(lobby));
+    }
+
+    /// Friends who are online now and could be asked to the table: their names and ids.
+    pub fn friends_online(&self) -> Vec<(String, u64)> {
+        let mut online: Vec<(String, u64)> = self.client.friends().get_friends(FriendFlags::IMMEDIATE).into_iter().filter(|f| !matches!(f.state(), steamworks::FriendState::Offline)).map(|f| (f.name(), f.id().raw())).collect();
+        online.sort();
+        online
+    }
+
+    /// Sends a friend an invitation to a lobby through Steam's chat: it needs no overlay.
+    /// Accepting it starts the game, or tells the running one, with the lobby to join.
+    pub fn invite_friend(&self, friend: u64, lobby: u64) {
+        let wanted = SteamId::from_raw(friend);
+        if let Some(friend) = self.client.friends().get_friends(FriendFlags::IMMEDIATE).into_iter().find(|f| f.id() == wanted) {
+            friend.invite_user_to_game(&format!("+connect_lobby {lobby}"));
+        }
     }
 
     /// Whether Steam's overlay can be drawn over the game: only when Steam itself started it.
@@ -121,6 +147,60 @@ impl Steam {
     fn run_callbacks(&self) {
         let _one_at_a_time = self.pump.lock().unwrap();
         self.client.run_callbacks();
+    }
+}
+
+/// Where Steam is installed on this machine, as its own settings say.
+#[cfg(windows)]
+fn steam_folder() -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new("reg").args(["query", r"HKCU\Software\Valve\Steam", "/v", "SteamPath"]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let path = text.lines().find_map(|line| line.split_once("REG_SZ").map(|(_, path)| path.trim().to_string()))?;
+    let folder = std::path::PathBuf::from(path);
+    folder.is_dir().then_some(folder)
+}
+
+/// Brings Steam's overlay into a game Steam did not start. Steam draws its overlay only in
+/// a process that carries its overlay library; started from Steam, a game is given it, and
+/// started by hand it is not. So the game takes it itself, before any window or renderer
+/// exists: the library is loaded from Steam's own folder, with the application named the
+/// way Steam would have named it. Must be called first thing in `main`. Does nothing when
+/// Steam started the game, or is not installed.
+pub fn bring_overlay() -> Result<&'static str, String> {
+    #[cfg(windows)]
+    {
+        unsafe extern "system" {
+            fn LoadLibraryW(name: *const u16) -> *mut core::ffi::c_void;
+            fn GetModuleHandleW(name: *const u16) -> *mut core::ffi::c_void;
+        }
+        let wide = |text: &std::ffi::OsStr| -> Vec<u16> { std::os::windows::ffi::OsStrExt::encode_wide(text).chain(std::iter::once(0)).collect() };
+        // SAFETY: asks whether a library of that name is already in this process.
+        if !unsafe { GetModuleHandleW(wide(std::ffi::OsStr::new("GameOverlayRenderer64.dll")).as_ptr()) }.is_null() {
+            return Ok("Steam started the game: the overlay is already here");
+        }
+        let folder = steam_folder().ok_or("Steam's folder was not found")?;
+        let library = folder.join("GameOverlayRenderer64.dll");
+        if !library.is_file() {
+            return Err(format!("{} is missing", library.display()));
+        }
+        let app = APP_ID.to_string();
+        // SAFETY: nothing else runs yet; the overlay library reads these when it is loaded.
+        unsafe {
+            for name in ["SteamAppId", "SteamGameId", "SteamOverlayGameId"] {
+                std::env::set_var(name, &app);
+            }
+            // A renderer on Vulkan is reached through Steam's layer, which this switches on.
+            std::env::set_var("ENABLE_VK_LAYER_VALVE_steam_overlay_1", "1");
+        }
+        // SAFETY: loads Steam's own overlay library from Steam's own folder.
+        if unsafe { LoadLibraryW(wide(library.as_os_str()).as_ptr()) }.is_null() {
+            return Err(format!("{} could not be loaded", library.display()));
+        }
+        Ok("the overlay library was loaded from Steam's folder")
+    }
+    #[cfg(not(windows))]
+    {
+        Err("only done on Windows".to_string())
     }
 }
 

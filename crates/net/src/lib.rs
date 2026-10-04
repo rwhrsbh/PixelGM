@@ -7,6 +7,7 @@
 //! same frames travel through Steam for players who are Steam friends (`steam`).
 
 pub mod steam;
+pub use steam::bring_overlay;
 pub use steam::Steam;
 
 use serde::Serialize;
