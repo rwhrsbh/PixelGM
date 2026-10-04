@@ -717,7 +717,7 @@ fn quick_bar(mut commands: Commands, game: Res<Game>, session: Res<Session>, set
         commands.entity(entity).despawn();
     }
     let height = crate::play::HUD_HEIGHT;
-    let bar = Node { position_type: PositionType::Absolute, left: px(112), bottom: px(1), height: px(height - 2.0), column_gap: px(2), align_items: AlignItems::Center, ..default() };
+    let bar = Node { position_type: PositionType::Absolute, left: px(4), bottom: px(1), height: px(height - 2.0), column_gap: px(2), align_items: AlignItems::Center, ..default() };
     commands.spawn((QuickBar, DespawnOnExit(crate::menu::Screen::Play), bar, GlobalZIndex(9), Pickable::IGNORE)).with_children(|row| {
         for (n, slot) in slots.iter().enumerate() {
             row.spawn((Node { width: px(height - 2.0), height: px(height - 2.0), border: UiRect::all(px(1)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(color(WOOD_DEEP)), BorderColor::all(color(if slot.is_some() { BRASS } else { WOOD_DARK })), Pickable::IGNORE))

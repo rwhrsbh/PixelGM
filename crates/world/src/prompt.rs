@@ -8,7 +8,7 @@ use crate::story::{KEPT_LINES, Speaker};
 use std::fmt::Write;
 
 /// How the master says what a creature fights with.
-const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "monster" the index of the D&D 5e SRD monster it is or most resembles (goblin, wolf, bandit, skeleton, giant-spider, ogre, guard, …), or give "stats" of its own: {"ac": 13, "hp": 11, "speed": 30, "attacks": [{"name": "…", "bonus": 4, "damage": "1d6+2", "range": 5}], "xp": 50}. Someone who sells things — a merchant, a smith, an innkeeper, a peddler — gets "shop": a list of 6 to 15 wares, each a thing as in "give" with its "rows" picture, its "kind" and numbers ("heal", "damage", "gear", "bonus", "rarity") and a "price" in coins (a ration 2, a torch 2, a healing potion 50, a common weapon 10 to 50, armour 30 to 400, a rare thing hundreds); the game shows the shop, takes the coins and restocks it daily — never sell through narration or "give". A settled place has at least one shop. Every place has a "danger" from 0 (a town, a camp, a home: nothing ever comes) to 5 (the lair itself). Where it is above 0, the game rolls each hour for something to wander in — one of your "wanderers", or one of your "encounters" — so give both; where you set hostile creatures yourself, or give "danger": 0, it rolls nothing. A creature that belongs to a faction takes "faction": its id. Hostile creatures come in packs: put one creature down for the pack and the game brings as many of its kind as make a fair fight for the party there is; give "count" (1 to 8) to set the number yourself — "count": 1 for one that stands alone, a boss or a lone beast. Match the danger to a first-level party unless told otherwise: a first-level hero has about ten hit points, so against one or two heroes a single hit must not average more than five (challenge 1/4 or less: giant-rat, kobold, bandit, giant-centipede — not swarm-of-insects, whose bite takes ten), and nothing hostile stands right where the party walks in."##;
+const FIGHTERS: &str = r##"A creature that might fight needs numbers. Give "monster" the index of the D&D 5e SRD monster it is or most resembles (goblin, wolf, bandit, skeleton, giant-spider, ogre, guard, …), or give "stats" of its own: {"ac": 13, "hp": 11, "speed": 30, "attacks": [{"name": "…", "bonus": 4, "damage": "1d6+2", "range": 5}], "xp": 50}. Someone who sells things — a merchant, a smith, an innkeeper, a peddler — gets "shop": a list of 6 to 15 wares, each a thing as in "give" with its "rows" picture, its "kind" and numbers ("heal", "damage", "gear", "bonus", "rarity") and a "price" in coins (a ration 2, a torch 2, a healing potion 50, a common weapon 10 to 50, armour 30 to 400, a rare thing hundreds); the game shows the shop, takes the coins and restocks it daily — never sell through narration or "give". A settled place has at least one shop. Every place has a "danger" from 0 (a town, a camp, a home: nothing ever comes) to 5 (the lair itself). Where it is above 0, the game rolls each hour for something to wander in — one of your "wanderers", or one of your "encounters" — so give both. Draw every wanderer now: a picture of its own in this answer's "sprites" (or one of SPRITES THAT EXIST that truly shows it), named in its "sprite". One you leave undrawn does not appear as a blank: when its hour comes you are asked again to draw it and tell of its coming. Where you set hostile creatures yourself, or give "danger": 0, it rolls nothing. A creature that belongs to a faction takes "faction": its id. Hostile creatures come in packs: put one creature down for the pack and the game brings as many of its kind as make a fair fight for the party there is; give "count" (1 to 8) to set the number yourself — "count": 1 for one that stands alone, a boss or a lone beast. Match the danger to a first-level party unless told otherwise: a first-level hero has about ten hit points, so against one or two heroes a single hit must not average more than five (challenge 1/4 or less: giant-rat, kobold, bandit, giant-centipede — not swarm-of-insects, whose bite takes ten), and nothing hostile stands right where the party walks in."##;
 
 /// How the master changes the world. Shared by drawing (prepared actions) and by play.
 const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
@@ -109,7 +109,7 @@ const LOCATION_SHAPE: &str = r##"{
   "id": "snake_case", "name": "…", "description": "two or three sentences the players read on arrival",
   "palette": {"g": "#rrggbb"},
   "danger": 0,
-  "wanderers": ["srd monster indices that may wander in here while the party lingers"],
+  "wanderers": [{"monster": "srd index it fights as", "name": "what it is called in this world", "sprite": "id of its picture, drawn in sprites", "description": "one sentence told when it comes"}],
   "encounters": ["3 or 4 things that may happen here that are not fights, two sentences each: a peddler passing, tracks, a wounded stranger, a find"],
   "light": "day, dusk, night or dark (a cave, a cellar): the hour and the light of the place",
   "weather": "clear, sun, rain, storm, snow or fog; clear indoors and underground",
@@ -528,6 +528,25 @@ pub fn event(world: &World) -> String {
     format!(
         "{}\nThe party has done nothing for a while. If this place and this story call for it, make something happen now of its own accord: someone arrives, something breaks, a sound, a change in the weather that matters. If nothing should happen, answer with an empty \"narration\".\n\nAnswer with this JSON object:\n{TURN_SHAPE}",
         situation(world, 0..)
+    )
+}
+
+/// Something hostile has come upon the party while it lingered, and the master never drew
+/// it: it draws it now, sets it down and tells how it shows itself. Nothing appears until
+/// this is answered.
+pub fn ambush(world: &World, comer: &crate::model::Wanderer, cell: (usize, usize)) -> String {
+    let who = if comer.name.is_empty() { comer.monster.clone() } else { format!("{} ({})", comer.name, comer.monster) };
+    let about = if comer.description.is_empty() { String::new() } else { format!(" — {}", comer.description) };
+    format!(
+        "{}\nTHE PARTY HAS LINGERED IN A DANGEROUS PLACE, AND SOMETHING HAS FOUND IT: {who}{about}. This is decided; do not turn it into nothing.\n\
+         1. DRAW it: one new picture in \"sprites\" (16 by 16, rows of palette characters, '0' transparent, outlined in colour 1, facing the viewer), drawn as this very creature of this world — not a sprite that exists.\n\
+         2. SET IT DOWN with a \"spawn\" effect: \"kind\": \"creature\", a new \"id\", its \"name\" and \"description\", \"sprite\": the id you just drew, \"x\": {}, \"y\": {} (or a free cell beside that), \"attitude\": \"hostile\", \"monster\": \"{}\"; leave \"count\" out to let the game match the pack to the party, or give it.\n\
+         3. TELL in \"narration\" how it shows itself — what the party hears, smells and sees first, from which side it comes, and one thing that makes this meeting its own (it is wounded, it drags prey, it is driven by something worse, it wears a faction's mark). Two to four sentences. Add \"music\" if the mood turns, \"shake\" or \"animate\" if it fits.\n\
+         Leave \"options\" empty: the fight begins at once.\n\nAnswer with this JSON object:\n{TURN_SHAPE}",
+        situation(world, 0..),
+        cell.0,
+        cell.1,
+        comer.monster
     )
 }
 

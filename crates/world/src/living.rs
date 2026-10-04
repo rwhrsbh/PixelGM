@@ -2,6 +2,8 @@
 //! while the party is busy, and what wanders into a place while the party stands in it.
 
 use crate::model::{Attitude, Creature, World};
+#[allow(unused_imports)]
+use crate::model::Wanderer;
 use crate::path::nearest;
 use rules::{Rng, srd};
 use serde::{Deserialize, Serialize};
@@ -48,8 +50,13 @@ pub struct Threat {
 pub enum Wandered {
     /// Something that is not a fight: words the master wrote with the place.
     Find(String),
-    /// A pack came in; the id of the one that stands for it.
-    Ambush(String),
+    /// Something hostile the master drew with the place has come: it stands there now. The
+    /// words are what to tell of it.
+    Came(String),
+    /// Something hostile is coming that the master never drew: what the place said may come,
+    /// and the cell it comes to. The master is asked now to draw it, set it down and tell of
+    /// it; nothing appears before.
+    Ambush(crate::model::Wanderer, (usize, usize)),
 }
 
 /// How often a thread is brought back: every so many turns.
@@ -133,11 +140,13 @@ impl World {
             return None;
         }
         // One in three is not a fight, while the master's lines last.
-        if !place.finds.is_empty() && (place.wanderers.is_empty() || rng.die(3) == 1) {
+        let comers: Vec<crate::model::Wanderer> = place.wanderers.clone();
+        if !place.finds.is_empty() && (comers.is_empty() || rng.die(3) == 1) {
             let place = self.locations.get_mut(&here)?;
             return Some(Wandered::Find(place.finds.remove(0)));
         }
-        let index = place.wanderers.get((rng.die(place.wanderers.len().max(1) as u32) - 1) as usize)?.clone();
+        let comer = comers.get((rng.die(comers.len().max(1) as u32) - 1) as usize)?.clone();
+        let index = comer.monster.clone();
         let monster = srd().monsters.get(&index)?;
         // It has crept up on the party: a few cells off, on the side with the most room, so
         // that the fight is on at once. Hostile things do not walk of themselves.
@@ -150,21 +159,30 @@ impl World {
         let from = ((px + dx).clamp(1, w as i32 - 2) as usize, (py + dy).clamp(1, h as i32 - 2) as usize);
         let free = |(x, y): (usize, usize)| !place.blocked(x as i32, y as i32, &self.tiles) && place.exit_at(x, y).is_none() && (x as i32, y as i32) != (px, py);
         let (x, y) = nearest(from, free)?;
+        // Never drawn: the master is asked for it now.
+        if comer.sprite.is_empty() || !self.sprites.contains_key(&comer.sprite) {
+            return Some(Wandered::Ambush(comer, (x, y)));
+        }
         let mut id = format!("wandering_{index}").replace('-', "_");
         let mut n = 2;
         while place.creatures.iter().any(|c| c.id == id) || place.props.iter().any(|p| p.id == id) {
             id = format!("wandering_{}_{n}", index.replace('-', "_"));
             n += 1;
         }
-        // Drawn as something of its kind already seen here, or as the marker.
-        let sprite = self.sprites.contains_key(&index).then(|| index.clone()).unwrap_or_else(|| crate::base::MARKER_SPRITE.to_string());
-        let comer = Creature {
-            id: id.clone(),
-            name: rules::tr(self.language.to_lowercase().starts_with("ru") || self.language.contains("усск"), &monster.name).to_string(),
-            description: String::new(),
+        let russian = self.language.to_lowercase().starts_with("ru") || self.language.contains("усск");
+        let name = if comer.name.is_empty() { rules::tr(russian, &monster.name).to_string() } else { comer.name.clone() };
+        let told = match (comer.description.is_empty(), russian) {
+            (false, _) => format!("{name}. {}", comer.description),
+            (true, true) => format!("{name} — совсем рядом."),
+            (true, false) => format!("{name} is upon you."),
+        };
+        let creature = Creature {
+            id,
+            name,
+            description: comer.description.clone(),
             x,
             y,
-            sprite,
+            sprite: comer.sprite.clone(),
             attitude: Attitude::Hostile,
             actions: Vec::new(),
             monster: Some(index),
@@ -178,7 +196,8 @@ impl World {
             haggled: false,
             faction: String::new(),
         };
-        self.locations.get_mut(&here)?.creatures.push(comer);
-        Some(Wandered::Ambush(id))
+        self.locations.get_mut(&here)?.creatures.push(creature);
+        self.story.say(crate::story::Speaker::Master, &told);
+        Some(Wandered::Came(told))
     }
 }

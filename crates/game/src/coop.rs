@@ -294,6 +294,9 @@ pub struct Table {
     /// Things the people of a place will say aloud, in the order they will be said, and the
     /// place they belong to: asked for once, shown one by one.
     pub chatter: (String, std::collections::VecDeque<(String, String)>),
+    /// Something hostile the dice said is coming and the master never drew, and the cell it
+    /// comes to: the master is asked to draw it and bring it in.
+    pub ambush: Option<(world::Wanderer, (usize, usize))>,
     /// What someone says right now, to be put up as a bubble: who, and the words.
     pub bubbles: Vec<(String, String)>,
     /// What other players have just set about, a line each, shown in the corner for a while.

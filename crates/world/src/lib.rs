@@ -17,7 +17,7 @@ pub mod turn;
 pub mod walk;
 
 pub use build::{LocationDraft, WorldDraft, build_location, build_world, extract_json, read_answer};
-pub use model::{Companion, Difficulty, Quest, Task};
+pub use model::{Companion, Difficulty, Quest, Task, Wanderer};
 pub use model::{MAX_H, MAX_W};
 pub use model::{Attitude, Creature, Exit, Location, MAP_H, MAP_W, Palette, Player, Prop, Sprite, Stub, TILE, TileDef, World};
 pub use model::{Chest, Cue, FeatOffer, Lying, Mark, Secret, TableRules, Token};

@@ -131,7 +131,7 @@ pub struct LocationDraft {
     pub large: bool,
     #[serde(deserialize_with = "lenient_int")]
     pub danger: i64,
-    pub wanderers: Vec<String>,
+    pub wanderers: Vec<crate::model::Wanderer>,
     pub encounters: Vec<String>,
     /// Colours added for this place, by letters not in use yet.
     pub palette: BTreeMap<String, String>,
@@ -688,7 +688,13 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
     let legend: BTreeMap<char, String> = symbol_of.iter().map(|(tile, symbol)| (*symbol, tile.to_string())).collect();
 
     let name = if draft.name.trim().is_empty() { id.clone() } else { draft.name.trim().to_string() };
-    let location = Location { danger: draft.danger.clamp(0, 5) as u8, wanderers: draft.wanderers.iter().map(|w| w.trim().to_lowercase().replace([' ', '_'], "-")).filter(|w| rules::srd().monsters.contains_key(w)).take(6).collect(), finds: draft.encounters.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).take(6).collect(), name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), mood: draft.mood.trim().to_lowercase(), marks: Vec::new(), seen: Vec::new(), items: Vec::new(), secrets: draft.secrets.iter().map(|s| { let (x, y) = clamp_cell(s.x, s.y); crate::model::Secret { x, y, dc: if s.dc <= 0 { 13 } else { s.dc.clamp(5, 30) as i32 }, kind: s.kind.trim().to_lowercase(), note: s.note.trim().to_string(), effects: crate::story::read_effects(&s.effects, &mut notes), found: false } }).collect() };
+    let location = Location { danger: draft.danger.clamp(0, 5) as u8, wanderers: draft
+            .wanderers
+            .iter()
+            .map(|w| crate::model::Wanderer { monster: w.monster.trim().to_lowercase().replace([' ', '_'], "-"), name: w.name.trim().to_string(), sprite: Some(slug(&w.sprite)).filter(|sprite| assets.sprites.contains_key(sprite) && sprite != MARKER_SPRITE).unwrap_or_default(), description: w.description.trim().to_string() })
+            .filter(|w| rules::srd().monsters.contains_key(&w.monster))
+            .take(6)
+            .collect(), finds: draft.encounters.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).take(6).collect(), name, description: draft.description.trim().to_string(), map, legend, spawn, props, creatures, exits, light: draft.light.trim().to_lowercase(), weather: draft.weather.trim().to_lowercase(), mood: draft.mood.trim().to_lowercase(), marks: Vec::new(), seen: Vec::new(), items: Vec::new(), secrets: draft.secrets.iter().map(|s| { let (x, y) = clamp_cell(s.x, s.y); crate::model::Secret { x, y, dc: if s.dc <= 0 { 13 } else { s.dc.clamp(5, 30) as i32 }, kind: s.kind.trim().to_lowercase(), note: s.note.trim().to_string(), effects: crate::story::read_effects(&s.effects, &mut notes), found: false } }).collect() };
     Ok(Built { id, location, stubs, notes })
 }
 

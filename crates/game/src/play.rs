@@ -637,7 +637,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
     commands.spawn((
         DespawnOnExit(Screen::Play),
         ChatLog,
-        Node { position_type: PositionType::Absolute, left: px(4), top: px(18), max_width: px(230), padding: UiRect::axes(px(3), px(1)), display: Display::None, ..default() },
+        Node { position_type: PositionType::Absolute, left: px(4), top: px(44), max_width: px(230), padding: UiRect::axes(px(3), px(1)), display: Display::None, ..default() },
         BackgroundColor(Color::srgba(0.1, 0.07, 0.06, 0.82)),
         GlobalZIndex(9),
         Text::default(),
@@ -668,7 +668,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
         ))
         .with_children(|strip| {
             // Neither line may wrap: the name gives way, cut at its edge, before the keys do.
-            strip.spawn((Node { flex_shrink: 1.0, min_width: px(0), max_width: px(100), overflow: Overflow::clip(), margin: UiRect::right(px(8)), ..default() }, Text::default(), PlaceName, TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT))));
+            strip.spawn((Node { flex_shrink: 1.0, min_width: px(0), max_width: px(100), overflow: Overflow::clip(), margin: UiRect::right(px(8)), ..default() }, Text::default(), TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT))));
             strip.spawn((Node { flex_shrink: 0.0, ..default() }, Text::default(), HudHint, TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT_SHADE))));
         });
     });
@@ -950,6 +950,17 @@ fn draw(
                 commands.spawn((InLocation, Hero, Frames(frames), Sprite::from_image(first), Anchor::BOTTOM_CENTER, Transform::default())).with_children(|me| shadow_under(me, &cache.shadow));
             }
         }
+    }
+}
+
+/// What the dice said is coming, and the master never drew, is put to the master now.
+fn ambush_ask(mut table: ResMut<Table>, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, store: Res<Store>, gm: Res<Gm>, master: Res<Master>) {
+    if table.ambush.is_none() {
+        return;
+    }
+    let Some((comer, cell)) = table.ambush.take() else { return };
+    if !session.is_client() {
+        master.ask(&gm, &store, &settings, Ask::Ambush { world: Box::new(game.world.clone()), comer, cell });
     }
 }
 
@@ -1381,8 +1392,10 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
             "danger" => {
                 let here = world.current.clone();
                 if let Some(place) = world.locations.get_mut(&here) {
-                    place.danger = amount.clamp(0, 5) as u8;
-                    place.wanderers = vec!["giant-rat".to_string()];
+                    // Above ten, the wanderer is one the master drew; otherwise it never was.
+                    let drawn = amount > 10;
+                    place.danger = (amount % 10).clamp(0, 5) as u8;
+                    place.wanderers = vec![world::Wanderer { monster: "giant-rat".into(), name: "Camp rat".into(), sprite: if drawn { "cat".into() } else { String::new() }, description: "Lean and bold, used to stealing from travellers.".into() }];
                     place.finds = vec!["A peddler passes, humming.".to_string()];
                 }
             }
@@ -1393,8 +1406,9 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
                     world.pass(60);
                     if let Some(what) = world.wander(&mut rng) {
                         info!("dev wander: {what:?}");
-                        if let world::living::Wandered::Find(text) = what {
-                            table.unread.push_back(Turn { narration: text, options: Vec::new() });
+                        match what {
+                            world::living::Wandered::Find(text) | world::living::Wandered::Came(text) => table.unread.push_back(Turn { narration: text, options: Vec::new() }),
+                            world::living::Wandered::Ambush(comer, cell) => table.ambush = Some((comer, cell)),
                         }
                         break;
                     }
@@ -2062,6 +2076,14 @@ fn receive(
                     }
                 }
             }
+            Answer::Ambush(draft) => {
+                // Drawn and told by the master: it stands there now, and the telling is read
+                // before the fight begins. One that could not be drawn does not come.
+                if let Ok(draft) = draft {
+                    let mut desk = Desk { game: &mut game, table: &mut table, phase: &mut phase, redraw: &mut redraw, background: &mut background, session: &session, settings: &settings, store: &store, gm: &gm, master: &master };
+                    finish(&mut desk, "", &draft);
+                }
+            }
             Answer::Chatter { place, lines } => {
                 table.chatter = (place, lines.into());
             }
@@ -2192,6 +2214,7 @@ fn hud(
     session: Res<Session>,
     settings: Res<Settings>,
     mut translator: ResMut<Translator>,
+    mut shown_place: ResMut<ShownPlace>,
 ) {
     let world = &game.world;
     let here = world.here();
@@ -2199,12 +2222,15 @@ fn hud(
     let other_tongue = foreign(world, *lang);
     let translator = translator.bypass_change_detection();
     let mut read = |text: &str| translator.read(other_tongue, text);
-    // A long name is cut, so that the line of keys beside it never wraps.
+    // The name of the place is shown whole, with the day and the hour, at the top of the map;
+    // the strip at the bottom is left to the things at hand and the keys.
     let full = read(&here.name);
-    let place = if full.chars().count() > 16 { format!("{}…", full.chars().take(15).collect::<String>().trim_end()) } else { full };
+    if shown_place.0 != full {
+        shown_place.0 = full.clone();
+    }
     for mut text in &mut names {
-        if text.0 != place {
-            text.0 = place.clone();
+        if text.0 != full {
+            text.0 = full.clone();
         }
     }
     toast.left = (toast.left - time.delta_secs()).max(0.0);
@@ -3080,7 +3106,17 @@ fn on_activate(
                         if !was_night {
                             game.world.clock = clock / 1440 * 1440 + 23 * 60;
                         }
-                        let came = matches!(game.world.wander(&mut rng), Some(world::living::Wandered::Ambush(_)));
+                        let came = match game.world.wander(&mut rng) {
+                            Some(world::living::Wandered::Came(told)) => {
+                                table.unread.push_back(Turn { narration: told, options: Vec::new() });
+                                true
+                            }
+                            Some(world::living::Wandered::Ambush(comer, cell)) => {
+                                table.ambush = Some((comer, cell));
+                                true
+                            }
+                            _ => false,
+                        };
                         game.world.clock = clock;
                         came
                     });
@@ -3248,6 +3284,10 @@ fn hero_of<'a>(world: &'a World, player: &str) -> Option<&'a str> {
     world.party.get(index).map(|h| h.name.as_str())
 }
 
+/// The name of the place the party is in, as this player reads it.
+#[derive(Resource, Default)]
+struct ShownPlace(String);
+
 /// The world's clock runs a minute to a second of play, on the host's machine. Alone it
 /// stops with the game paused or the window out of sight; a fight counts its own rounds.
 fn run_clock(time: Res<Time>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, session: Res<Session>, window: Single<&Window, With<bevy::window::PrimaryWindow>>, mut redraw: ResMut<Redraw>, mut since: Local<f32>, mut table: ResMut<Table>, lang: Res<Lang>) {
@@ -3281,9 +3321,13 @@ fn run_clock(time: Res<Time>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, 
                 game.world.story.say(Speaker::Master, &text);
                 show(Turn { narration: text, options: Vec::new() }, &mut phase, &mut table);
             }
-            Some(world::living::Wandered::Ambush(_)) => {
+            Some(world::living::Wandered::Came(told)) => {
                 game.set_changed();
                 redraw.0 = true;
+                show(Turn { narration: told, options: Vec::new() }, &mut phase, &mut table);
+            }
+            Some(world::living::Wandered::Ambush(comer, cell)) => {
+                table.ambush = Some((comer, cell));
                 table.notices.push(T::SomethingComes.text(*lang).to_string());
             }
             None => {}
@@ -3295,14 +3339,14 @@ fn run_clock(time: Res<Time>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, 
 struct ClockFace;
 
 /// The day and the hour, in the corner of the map by the party.
-fn clock_face(mut commands: Commands, game: Res<Game>, lang: Res<Lang>, fonts: Res<Fonts>, mut faces: Query<&mut Text, With<ClockFace>>) {
+fn clock_face(mut commands: Commands, game: Res<Game>, lang: Res<Lang>, fonts: Res<Fonts>, place: Res<ShownPlace>, mut faces: Query<&mut Text, With<ClockFace>>) {
     let (day, hour, minute) = game.world.time();
     let mark = match game.world.daylight() {
         "day" => "",
         "dusk" => " ~",
         _ => " *",
     };
-    let shown = format!("{} {day} · {hour:02}:{minute:02}{mark}", T::DayWord.text(*lang));
+    let shown = format!("{} · {} {day} · {hour:02}:{minute:02}{mark}", place.0, T::DayWord.text(*lang));
     match faces.single_mut() {
         Ok(mut text) => {
             if text.0 != shown {
@@ -3313,7 +3357,7 @@ fn clock_face(mut commands: Commands, game: Res<Game>, lang: Res<Lang>, fonts: R
             commands.spawn((
                 ClockFace,
                 DespawnOnExit(Screen::Play),
-                Node { position_type: PositionType::Absolute, right: px(crate::view::COLUMN + 3.0), top: px(3), padding: UiRect::axes(px(4), px(1)), ..default() },
+                Node { position_type: PositionType::Absolute, left: px(3), top: px(3), padding: UiRect::axes(px(4), px(1)), ..default() },
                 BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.72)),
                 Text::new(shown),
                 fonts.body(),
@@ -3396,7 +3440,7 @@ fn goal_line(mut commands: Commands, game: Res<Game>, lang: Res<Lang>, fonts: Re
     commands.spawn((
         GoalLine,
         DespawnOnExit(Screen::Play),
-        Node { position_type: PositionType::Absolute, left: px(3), top: px(3), max_width: px(300), padding: UiRect::axes(px(4), px(1)), ..default() },
+        Node { position_type: PositionType::Absolute, left: px(3), top: px(16), max_width: px(300), padding: UiRect::axes(px(4), px(1)), ..default() },
         BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.72)),
         Text::new(text),
         fonts.body(),
@@ -4120,7 +4164,9 @@ impl Plugin for PlayPlugin {
             .init_resource::<Pick>()
             .init_resource::<Approach>()
             .init_resource::<UseFor>()
+            .init_resource::<ShownPlace>()
             .add_observer(on_resize)
+            .add_systems(Update, ambush_ask.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, brush_paint.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (place_allies, live_world, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (run_clock, clock_face).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))

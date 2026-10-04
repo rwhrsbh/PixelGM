@@ -220,9 +220,9 @@ pub struct Location {
     /// How dangerous it is to linger here, 0 (safe) to 5.
     #[serde(default)]
     pub danger: u8,
-    /// The monsters of the rules that may wander in, by index.
+    /// Those who may wander in: each drawn by the master when the place was.
     #[serde(default)]
-    pub wanderers: Vec<String>,
+    pub wanderers: Vec<Wanderer>,
     /// Things that may happen here that are not fights, a few lines each, used up one by one.
     #[serde(default)]
     pub finds: Vec<String>,
@@ -497,6 +497,43 @@ impl Companion {
     /// The cells of the pack taken up.
     pub fn pack_used(&self) -> u32 {
         self.pack.iter().map(|i| i.size().0 as u32 * i.size().1 as u32).sum()
+    }
+}
+
+/// Something that may wander into a place: the monster of the rules it fights as, what it
+/// is called in this world, and the picture the master drew of it.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(from = "WandererIn")]
+pub struct Wanderer {
+    pub monster: String,
+    pub name: String,
+    pub sprite: String,
+    pub description: String,
+}
+
+/// A wanderer as written: whole, or only the monster's index, as older saves have it.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WandererIn {
+    Index(String),
+    Whole {
+        #[serde(default)]
+        monster: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        sprite: String,
+        #[serde(default)]
+        description: String,
+    },
+}
+
+impl From<WandererIn> for Wanderer {
+    fn from(written: WandererIn) -> Self {
+        match written {
+            WandererIn::Index(monster) => Wanderer { monster, ..Default::default() },
+            WandererIn::Whole { monster, name, sprite, description } => Wanderer { monster, name, sprite, description },
+        }
     }
 }
 

@@ -1166,21 +1166,44 @@ mod tests {
         assert!(w.threats.is_empty() && w.threads.is_empty());
         // A dangerous place with something to wander in: sooner or later it comes.
         w.here_mut().danger = 5;
-        w.here_mut().wanderers = vec!["wolf".into()];
+        w.here_mut().wanderers = vec![crate::model::Wanderer { monster: "wolf".into(), name: "Marsh wolf".into(), sprite: "cat".into(), description: String::new() }];
         w.here_mut().finds = vec!["A peddler passes.".into()];
         let mut rng = Rng::seeded(7);
-        let mut seen = Vec::new();
-        for _ in 0..200 {
-            if let Some(what) = w.wander(&mut rng) {
-                seen.push(what);
-                // Once something hostile stands here, nothing more is rolled.
-                if w.hostiles().next().is_some() {
+        // One the master drew with the place comes at once, three cells off, named and drawn
+        // as the master made it, with a line to tell.
+        let mut came = None;
+        for _ in 0..300 {
+            match w.wander(&mut rng) {
+                Some(crate::living::Wandered::Came(told)) => {
+                    came = Some(told);
                     break;
                 }
+                Some(crate::living::Wandered::Ambush(..)) => panic!("it was drawn"),
+                _ => {}
             }
         }
-        assert!(seen.iter().any(|s| matches!(s, crate::living::Wandered::Ambush(_))), "{seen:?}");
+        assert!(came.unwrap().contains("Marsh wolf"));
+        let comer = w.here().creatures.iter().find(|c| c.id.starts_with("wandering_")).unwrap().clone();
+        assert_eq!((comer.name.as_str(), comer.sprite.as_str()), ("Marsh wolf", "cat"));
+        let (px, py) = w.player.cell();
+        assert!((comer.x as i32 - px).abs() + (comer.y as i32 - py).abs() <= 5);
+        // With something hostile standing here, nothing more is rolled.
         assert_eq!(w.wander(&mut rng), None);
+        // One the master forgot to draw does not appear: the master is asked for it.
+        w.here_mut().creatures.retain(|c| !c.id.starts_with("wandering_"));
+        w.here_mut().finds.clear();
+        w.here_mut().wanderers = vec![serde_json::from_str("\"wolf\"").unwrap()];
+        let mut asked = None;
+        for _ in 0..300 {
+            if let Some(crate::living::Wandered::Ambush(comer, cell)) = w.wander(&mut rng) {
+                asked = Some((comer, cell));
+                break;
+            }
+        }
+        let (comer, cell) = asked.expect("sooner or later it comes");
+        assert!(w.hostiles().next().is_none());
+        let text = crate::prompt::ambush(&w, &comer, cell);
+        assert!(text.contains("wolf") && text.contains("\"sprites\"") && text.contains(&format!("\"x\": {}, \"y\": {}", cell.0, cell.1)), "{text}");
         w.here_mut().danger = 0;
     }
 

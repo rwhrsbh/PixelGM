@@ -243,6 +243,23 @@ pub fn turn(said: &str) -> String {
     .to_string()
 }
 
+/// The answer to "something has found the party": a drawn sprite, the creature set down, and
+/// a few words of how it comes.
+pub fn ambush(monster: &str, name: &str, cell: (usize, usize)) -> String {
+    let rows: Vec<String> = (0..16).map(|y| (0..16).map(|x| if (4..12).contains(&x) && (5..14).contains(&y) { if x == 4 || x == 11 || y == 5 || y == 13 { '1' } else if y < 8 && (x == 6 || x == 9) { 'e' } else { '6' } } else { '0' }).collect()).collect();
+    let shown = if name.is_empty() { monster } else { name };
+    json!({
+        "narration": format!("A dry scrabbling in the leaves, then eyes: {shown} comes out of the dark, drawn by the smell of the camp."),
+        "sprites": [{ "id": "comer_drawn", "rows": rows }],
+        "effects": [
+            { "op": "spawn", "kind": "creature", "id": "comer", "name": shown, "description": "It found you.", "x": cell.0, "y": cell.1, "sprite": "comer_drawn", "attitude": "hostile", "monster": monster },
+            { "op": "shake", "seconds": 0.6 }
+        ],
+        "options": []
+    })
+    .to_string()
+}
+
 /// The answer to "what do the people here say aloud".
 pub fn chatter(ids: &[String]) -> String {
     let lines: Vec<Value> = ids.iter().cycle().take(if ids.is_empty() { 0 } else { 4 }).enumerate().map(|(n, id)| json!({ "who": id, "text": format!("Line {} of small talk.", n + 1) })).collect();

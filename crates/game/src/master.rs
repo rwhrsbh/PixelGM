@@ -72,6 +72,13 @@ pub enum Ask {
     Event {
         world: Box<World>,
     },
+    /// Something hostile the master never drew has found the party: it draws it now, sets it
+    /// down and tells of it.
+    Ambush {
+        world: Box<World>,
+        comer: world::Wanderer,
+        cell: (usize, usize),
+    },
     /// What the people of the place say aloud while the party walks about.
     Chatter {
         world: Box<World>,
@@ -87,6 +94,8 @@ pub enum Answer {
     Location { id: String, from: String, ahead: bool, draft: Result<Box<LocationDraft>, Trouble> },
     Turn { said: String, near: Option<String>, draft: Result<Box<TurnDraft>, Trouble> },
     Event(Result<Box<TurnDraft>, Trouble>),
+    /// Something that came upon the party, drawn and told.
+    Ambush(Result<Box<TurnDraft>, Trouble>),
     /// What the people of a place say aloud, for speech bubbles.
     Chatter { place: String, lines: Vec<(String, String)> },
     Chapter(Result<ChapterDraft, Trouble>),
@@ -321,6 +330,7 @@ impl Master {
                 Ask::Turn { world, said, direction, .. } => format!("a turn, {} characters said{}, from {:?} in '{}' facing {:?}", said.chars().count(), if direction.is_some() { ", directed" } else { "" }, world.player.cell(), world.current, world.facing),
                 Ask::Event { .. } => "an event of its own".to_string(),
                 Ask::Chatter { .. } => "small talk for the place".to_string(),
+                Ask::Ambush { comer, cell, .. } => format!("an ambush: '{}' at {cell:?}", comer.monster),
                 Ask::Chapter { .. } => "a chapter".to_string(),
                 Ask::Feats { hero, secret, .. } => format!("abilities for hero {hero}{}", if *secret { " (secret)" } else { "" }),
                 Ask::Stunt { .. } => "a stunt in a fight".to_string(),
@@ -433,6 +443,19 @@ impl Master {
                 Ask::Invent { world, request, for_player } => {
                     let card: Result<CreatureCard, Trouble> = if fake { faked(fake::creature(&request)) } else { call.read(prompt::play_prompt(&world), &prompt::invent(&world, &request)) };
                     Answer::Card { for_player, card: card.map(Box::new) }
+                }
+                Ask::Ambush { world, comer, cell } => {
+                    let draft: Result<TurnDraft, Trouble> = if fake { faked(fake::ambush(&comer.monster, &comer.name, cell)) } else { call.read(prompt::play_prompt(&world), &prompt::ambush(&world, &comer, cell)) };
+                    // Nothing comes without a picture of its own: an answer that draws none,
+                    // or sets nothing down, is thrown away.
+                    let drawn = draft.and_then(|d| {
+                        let spawns = d.effects.iter().any(|e| e.get("op").and_then(|o| o.as_str()) == Some("spawn"));
+                        if spawns && !d.sprites.is_empty() { Ok(d) } else { Err(Trouble::Unreadable("the ambush came with no picture or nothing set down".to_string())) }
+                    });
+                    if let Err(trouble) = &drawn {
+                        info!("the ambush did not come: {trouble:?}");
+                    }
+                    Answer::Ambush(drawn.map(Box::new))
                 }
                 Ask::Chatter { world } => {
                     let ids: Vec<String> = world.here().creatures.iter().filter(|c| c.attitude != world::Attitude::Hostile).map(|c| c.id.clone()).chain(world.companions_here().into_iter().map(|n| world.companions[n].creature.id.clone())).collect();
