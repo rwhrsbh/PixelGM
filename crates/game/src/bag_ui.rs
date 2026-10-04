@@ -48,6 +48,8 @@ pub struct BagState {
     built: String,
     icons: HashMap<String, Handle<Image>>,
     dolls: HashMap<String, Vec<Handle<Image>>>,
+    /// Whether a shop was open beside the bag when it was last drawn.
+    shop_open: bool,
 }
 
 #[derive(Component)]
@@ -65,6 +67,8 @@ enum Target {
     NextHero,
     /// The purse: a click lays ten coins on the ground, to be picked up by another.
     Gold,
+    /// A companion's hand (`true`) or back: a weapon or armour is handed over, or taken back.
+    Ally(usize, bool),
 }
 
 #[derive(Component)]
@@ -135,7 +139,8 @@ fn bag(world: &World, hero: usize) -> &[Item] {
 fn fingerprint(world: &World, state: &BagState, hero: Option<usize>, lang: Lang) -> String {
     let gold = world.story.bags.get(state.hero).map_or(0, |b| b.gold);
     let rest = fingerprint_things(world, state, hero, lang);
-    format!("{gold}|{rest}")
+    let with: Vec<(&str, Option<&str>, Option<&str>)> = world.companions.iter().map(|c| (c.creature.name.as_str(), c.weapon.as_ref().map(|w| w.name.as_str()), c.armor.as_ref().map(|a| a.name.as_str()))).collect();
+    format!("{gold}|{with:?}|{rest}")
 }
 
 fn fingerprint_things(world: &World, state: &BagState, hero: Option<usize>, lang: Lang) -> String {
@@ -260,9 +265,16 @@ fn build(
     contents: Query<Entity, With<BagContent>>,
     mut state: ResMut<BagState>,
     mut images: ResMut<Assets<Image>>,
+    shopping: Res<crate::shop_ui::Shopping>,
 ) {
     if *phase != Phase::Bag {
         return;
+    }
+    // A shop lies where the companions' panel would: one or the other.
+    let shopping = shopping.0.is_some();
+    if state.shop_open != shopping {
+        state.shop_open = shopping;
+        state.built.clear();
     }
     let Ok(root) = roots.single() else { return };
     let world = &game.world;
@@ -312,6 +324,15 @@ fn build(
     if let Some(light) = world.held_light(h).cloned() {
         worn_icons.push((Slot::Shield, icon_of(&light, &mut state)));
     }
+    // Those who travel with this player: what each was given to fight with and to wear.
+    let with: Vec<(usize, String, Option<Handle<Image>>, Option<Handle<Image>>)> = world
+        .companions_here()
+        .into_iter()
+        .map(|n| {
+            let c = &world.companions[n];
+            (n, c.creature.name.clone(), c.weapon.as_ref().map(|w| icon_of(w, &mut state)), c.armor.as_ref().map(|a| icon_of(a, &mut state)))
+        })
+        .collect();
     let doll = hero.map(|hero| {
         let key = format!("{}|{}", crate::doll::key(hero), world.held_light(h).is_some());
         state.dolls.entry(key).or_insert_with(|| crate::doll::frames_holding(hero, world.held_light(h).is_some()).into_iter().map(|f| images.add(f.into_image())).collect())[0].clone()
@@ -319,6 +340,27 @@ fn build(
     let loose: Vec<(usize, String)> = bag(world, h).iter().enumerate().filter(|(_, i)| i.at.is_none()).map(|(n, i)| (n, item_name(i, ru))).collect();
 
     commands.entity(root).with_children(|root| {
+        if !with.is_empty() && !shopping {
+            let tall = 20.0 + with.len() as f32 * 34.0;
+            root.spawn((BagContent, Node { padding: UiRect::all(px(7)), flex_direction: FlexDirection::Column, row_gap: px(2), ..abs(PANEL.0 - 96.0, PANEL.1, 94.0, tall) })).with_children(|panel| {
+                panel.spawn(panel_backing(&art));
+                panel.spawn((Text::new(T::Companions.text(*lang)), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
+                for (n, name, weapon, armor) in &with {
+                    let short: String = name.chars().take(13).collect();
+                    panel.spawn((Text::new(short), fonts.body(), TextColor(color(WAX_DARK)), TextLayout::no_wrap()));
+                    panel.spawn(Node { column_gap: px(3), ..default() }).with_children(|line| {
+                        for (hand, icon) in [(true, weapon), (false, armor)] {
+                            line.spawn((Node { width: px(20), height: px(20), border: UiRect::all(px(1)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, Button, Target::Ally(*n, hand), BackgroundColor(color(WOOD_DARK)), BorderColor::all(color(BRASS_DARK))))
+                                .with_children(|slot| {
+                                    if let Some(icon) = icon {
+                                        slot.spawn((Node { width: px(16), height: px(16), ..default() }, ImageNode::new(icon.clone()), FocusPolicy::Pass, Pickable::IGNORE));
+                                    }
+                                });
+                        }
+                    });
+                }
+            });
+        }
         root.spawn((BagContent, abs(PANEL.0, PANEL.1, PANEL.2, PANEL.3))).with_children(|panel| {
             panel.spawn(panel_backing(&art));
             if let Some(hero) = hero {
@@ -494,6 +536,30 @@ fn press(
         }
         let world = &mut game.world;
         let to = match (*target, &state.held) {
+            (Target::Ally(n, hand), held) => {
+                // With a weapon or armour in hand: given. With nothing: taken back.
+                let done = match held {
+                    Some(Held::Item(i)) => {
+                        if session.is_client() {
+                            session.intend(Intent::ArmCompanion { companion: n, index: *i });
+                        }
+                        world.arm_companion(n, hero, *i)
+                    }
+                    Some(Held::Worn(..)) => false,
+                    None => {
+                        if session.is_client() {
+                            session.intend(Intent::DisarmCompanion { companion: n, weapon: hand });
+                        }
+                        world.disarm_companion(n, hero, hand)
+                    }
+                };
+                if done {
+                    state.held = None;
+                }
+                sound.write(Play(if done { Sfx::Item } else { Sfx::Error }));
+                state.built.clear();
+                continue;
+            }
             (Target::Gold, _) => {
                 // Ten coins, or what is left, laid beside the hero.
                 let (cx, cy) = world.player.cell();

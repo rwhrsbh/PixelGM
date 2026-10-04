@@ -3533,6 +3533,18 @@ fn guests(
                 }
                 None
             }
+            Intent::ArmCompanion { companion, index } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    game.world.arm_companion(companion, hero, index);
+                }
+                None
+            }
+            Intent::DisarmCompanion { companion, weapon } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    game.world.disarm_companion(companion, hero, weapon);
+                }
+                None
+            }
             Intent::DropGold { amount, cell } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     let home = enter_scene(&mut game, &mut table, &player);

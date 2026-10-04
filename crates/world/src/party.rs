@@ -494,8 +494,45 @@ impl World {
         if self.companions.iter().any(|c| c.creature.id == creature.id) {
             creature.id = format!("{}_{}", creature.id, self.companions.len() + 1);
         }
-        self.companions.push(crate::model::Companion { creature, hp: max_hp, max_hp, owner: owner.to_string() });
+        self.companions.push(crate::model::Companion { creature, hp: max_hp, max_hp, owner: owner.to_string(), weapon: None, armor: None });
         Ok(())
+    }
+
+    /// A hero hands a companion a weapon or armour out of their bag; what the companion had
+    /// in that hand goes back into the bag. `false` when the thing is neither.
+    pub fn arm_companion(&mut self, n: usize, hero: usize, i: usize) -> bool {
+        self.ensure_bags();
+        let Some(item) = self.story.bags.get(hero).and_then(|b| b.inventory.get(i)).cloned() else { return false };
+        let Some(kind) = item.gear.as_deref().and_then(crate::bag::gear_kind) else { return false };
+        if n >= self.companions.len() {
+            return false;
+        }
+        let bag = &mut self.story.bags[hero];
+        if bag.inventory[i].count > 1 {
+            bag.inventory[i].count -= 1;
+        } else {
+            bag.inventory.remove(i);
+        }
+        let given = crate::story::Item { count: 1, at: None, ..item };
+        let slot = if kind == crate::bag::Gear::Weapon { &mut self.companions[n].weapon } else { &mut self.companions[n].armor };
+        if let Some(old) = slot.replace(given) {
+            self.story.bags[hero].receive(old);
+        }
+        true
+    }
+
+    /// A hero takes back what a companion was given.
+    pub fn disarm_companion(&mut self, n: usize, hero: usize, weapon: bool) -> bool {
+        self.ensure_bags();
+        let Some(companion) = self.companions.get_mut(n) else { return false };
+        let taken = if weapon { companion.weapon.take() } else { companion.armor.take() };
+        match (taken, self.story.bags.get_mut(hero)) {
+            (Some(item), Some(bag)) => {
+                bag.receive(item);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// A companion leaves the party and stays in the place it is in.
@@ -612,6 +649,32 @@ impl World {
             ally.id = format!("ally_{n}");
             ally.side = Side::Party;
             ally.hp = companion.hp.min(ally.max_hp);
+            // What the party gave them counts: a weapon's dice in place of their first blow
+            // (with their own aim), armour when it turns blows better than their hide.
+            if let Some(index) = companion.weapon.as_ref().and_then(|w| w.gear.clone()) {
+                let (base, better) = rules::gear(&index);
+                // One who had no blow of their own strikes as a plain soldier would.
+                if ally.strikes.is_empty() {
+                    ally.strikes.push(rules::combat::Strike { bonus: 3, ..Default::default() });
+                }
+                let strike = &mut ally.strikes[0];
+                if let Some(data) = srd().weapons.get(base) {
+                    let own = strike.damage.first().map_or(0, |d| d.bonus);
+                    strike.name = companion.weapon.as_ref().map_or_else(|| data.name.clone(), |w| w.name.clone());
+                    strike.damage = vec![rules::Dice { bonus: own.max(0) + better, ..data.dice }];
+                    strike.bonus += better;
+                    strike.range = (data.range.0 / 5).max(1);
+                    strike.long_range = (data.range.1 / 5).max(1);
+                }
+            }
+            if let Some(index) = companion.armor.as_ref().and_then(|a| a.gear.clone()) {
+                let (base, better) = rules::gear(&index);
+                if base == "shield" {
+                    ally.ac += 2;
+                } else if let Some(data) = srd().armors.get(base) {
+                    ally.ac = ally.ac.max(data.base + better + if data.adds_dex { data.max_dex.unwrap_or(2).min(2) } else { 0 });
+                }
+            }
             (ally.x, ally.y) = (cell.0 as i32, cell.1 as i32);
             combatants.push(ally);
         }
@@ -1052,6 +1115,22 @@ mod tests {
         }
         w.end_fight();
         assert_eq!(w.companions[0].hp, 3);
+        // A sword handed over is fought with; taken back, it lies in the bag again.
+        w.apply(&crate::story::read_effects(&[json!({ "op": "give", "name": "Greatsword" })], &mut Vec::new()), None);
+        let i = w.story.bags[0].inventory.iter().position(|i| i.name == "Greatsword").unwrap();
+        assert!(w.arm_companion(0, 0, i));
+        assert!(w.story.bags[0].inventory.iter().all(|i| i.name != "Greatsword"));
+        apply(&mut w, json!([{ "op": "spawn", "kind": "creature", "id": "rat", "name": "Rat", "x": 9, "y": 9, "sprite": "cat", "attitude": "hostile", "monster": "giant-rat", "count": 1 }]));
+        assert!(w.start_fight(Rng::seeded(5)));
+        let ally = w.fight.as_ref().unwrap().combatants.iter().find(|c| c.id == "ally_0").unwrap();
+        assert_eq!((ally.strikes[0].name.as_str(), ally.strikes[0].damage[0].count, ally.strikes[0].damage[0].sides), ("Greatsword", 2, 6));
+        for c in w.fight.as_mut().unwrap().combatants.iter_mut().filter(|c| c.side == Side::Enemy) {
+            c.hp = 0;
+            c.dead = true;
+        }
+        w.end_fight();
+        assert!(w.disarm_companion(0, 0, true));
+        assert!(w.story.bags[0].inventory.iter().any(|i| i.name == "Greatsword"));
         apply(&mut w, json!([{ "op": "dismiss", "id": "guard" }]));
         assert!(w.companions.is_empty() && w.here().creatures.iter().any(|c| c.id == "guard"));
     }

@@ -374,7 +374,8 @@ and picture; casual and hardcore change defeat, saving and what is shown of enem
 
 Not done, on purpose or for lack of a way to check:
 
-- A companion has no bag and its gear cannot be changed; a lone player whose hero is dead
+- A companion takes one weapon and one piece of armour from the party (two slots beside the
+  bag) but has no bag of its own; a lone player whose hero is dead
   does not go on as the companion outside a fight.
 - A weak model is never asked for a large place, so there are no four-piece maps.
 - Tiredness on hardcore.

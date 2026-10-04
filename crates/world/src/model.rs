@@ -476,6 +476,11 @@ pub struct Companion {
     /// The player who took them on; empty alone.
     #[serde(default)]
     pub owner: String,
+    /// A weapon the party gave them to fight with, and armour (or a shield) to wear.
+    #[serde(default)]
+    pub weapon: Option<crate::story::Item>,
+    #[serde(default)]
+    pub armor: Option<crate::story::Item>,
 }
 
 /// A world begins at eight in the morning of its first day.

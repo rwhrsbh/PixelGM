@@ -65,6 +65,9 @@ pub enum Intent {
     Sell { keeper: String, index: usize },
     /// A try at a better price.
     Haggle { keeper: String },
+    /// A weapon or armour handed to a companion out of one's bag, or taken back.
+    ArmCompanion { companion: usize, index: usize },
+    DisarmCompanion { companion: usize, weapon: bool },
     /// Coins laid on the ground of a cell.
     DropGold { amount: u32, cell: (usize, usize) },
     /// A thing put on a quick slot, by name; an empty name clears the slot.
