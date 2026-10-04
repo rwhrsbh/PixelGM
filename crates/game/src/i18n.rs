@@ -414,6 +414,7 @@ texts! {
     ProvOrder: "выше — пробуется раньше", "the higher, the sooner tried";
     ProvNone: "Ничего не выбрано", "Nothing chosen";
     ProvAdd: "Добавить", "Add";
+    ProvNoMatch: "В списке нет моделей с таким текстом.", "No model on offer has that in its name.";
     ProvFetch: "Загрузить список", "Fetch the list";
     ProvFetching: "Загружаю список моделей…", "Fetching the models…";
     ProvOffered: "Моделей в списке:", "Models on offer:";

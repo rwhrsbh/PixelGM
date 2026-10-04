@@ -85,7 +85,9 @@ impl Provider {
             Kind::Custom => !self.url.trim().is_empty(),
             _ => true,
         };
-        addressed && !self.voices.is_empty() && (self.kind == Kind::Custom || !self.keys.is_empty())
+        // NVIDIA's hosted speaking models answer only over gRPC, not at an address like the
+        // others: there is no /audio/speech there (it answers 404), so they are not asked.
+        self.kind != Kind::Nim && addressed && !self.voices.is_empty() && (self.kind == Kind::Custom || !self.keys.is_empty())
     }
 
     /// Where a speaking model is asked, and with what. Cloudflare runs its models at an
@@ -115,8 +117,12 @@ impl Provider {
 
     /// The speaking models the provider offers.
     pub fn list_voices(&self) -> Result<Vec<String>, String> {
-        if self.kind == Kind::Cloudflare {
-            return self.list_from(&format!("https://api.cloudflare.com/client/v4/accounts/{}/ai/models/search?task=Text-to-Speech&per_page=100", self.account.trim()));
+        match self.kind {
+            Kind::Cloudflare => return self.list_from(&format!("https://api.cloudflare.com/client/v4/accounts/{}/ai/models/search?task=Text-to-Speech&per_page=100", self.account.trim())),
+            // OpenRouter tells its models that give sound apart itself.
+            Kind::OpenRouter => return self.list_from("https://openrouter.ai/api/v1/models?output_modalities=audio"),
+            Kind::Nim => return Err("NVIDIA NIM gives speech only over gRPC; choose a voice from another provider".to_string()),
+            Kind::Custom => {}
         }
         // Elsewhere the speaking models are told from the rest by their names.
         let speaks = |id: &str| ["tts", "speech", "audio", "voice", "kokoro", "piper", "orpheus", "magpie", "fastpitch"].iter().any(|word| id.to_lowercase().contains(word));
@@ -560,6 +566,8 @@ mod tests {
         let (sound, _) = rotation.speak(&[cloud], "Hi.", true, &speaker).unwrap();
         assert_eq!(&sound[..3], b"ABC");
         assert_eq!(speaker.0.borrow()[0].0, "https://api.cloudflare.com/client/v4/accounts/acc/ai/run/@cf/myshell-ai/melotts");
+        // NVIDIA's speaking models cannot be asked this way, whatever is chosen.
+        assert!(!Provider { voices: vec!["magpie-tts".into()], ..nim(&["k"], &[]) }.voice_ready());
         // A provider with no speaking model is passed over.
         assert!(rotation.speak(&[nim(&["k"], &["chat"])], "x", false, &speaker).is_err());
     }

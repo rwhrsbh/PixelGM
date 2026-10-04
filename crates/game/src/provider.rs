@@ -250,7 +250,8 @@ fn offered(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, mut desk: R
     let more = !stale && desk.offered.len() > shown.len();
     commands.entity(list).despawn_children().with_children(|rows| {
         if shown.is_empty() {
-            rows.spawn((Text::new(T::ProvFetchHint.text(*lang)), fonts.body(), TextColor(color(FADED))));
+            let words = if !stale && !desk.offered.is_empty() { T::ProvNoMatch } else { T::ProvFetchHint };
+            rows.spawn((Text::new(words.text(*lang)), fonts.body(), TextColor(color(FADED))));
         }
         for (n, id) in shown.iter().enumerate() {
             text_button(rows, &art, &fonts, id.clone(), Act::Pick(n));
