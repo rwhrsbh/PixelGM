@@ -1414,6 +1414,15 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
                 }
                 world.start_fight(Rng::from_clock());
             }
+            // `lose`: every hero in the fight falls, so that a defeat can be tested.
+            "lose" => {
+                if let Some(fight) = world.fight.as_mut() {
+                    for c in fight.combatants.iter_mut().filter(|c| c.side == Side::Party) {
+                        c.hp = 0;
+                        c.stable = true;
+                    }
+                }
+            }
             // `win`: every enemy in the fight falls, so that its end can be tested.
             "win" => {
                 if let Some(fight) = world.fight.as_mut() {

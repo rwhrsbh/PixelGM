@@ -77,7 +77,7 @@ texts! {
     CreatingHint: "Это один большой запрос: обычно от полуминуты до двух минут.", "This is one large request: usually half a minute to two minutes.";
     Elapsed: "Прошло", "Elapsed:";
     CreateFailed: "Мир создать не удалось.", "The world could not be created.";
-    HudHint: "I сумка  C герой  J журнал  M карта  Esc", "I bag  C hero  J journal  M map  Esc";
+    HudHint: "I сумка C герой J журнал M карта Esc", "I bag C hero J journal M map Esc";
     LobbyHelp: "Один игрок создаёт игру и ведёт мир; остальные подключаются к нему — через Steam или по адресу. Создав игру, начни или загрузи мир как обычно.", "One player hosts and holds the world; the others join through Steam or at the host's address. After hosting, start or load a world as usual.";
     LobbyName: "Твоё имя", "Your name";
     LobbyAddress: "Адрес хоста", "Host address";
@@ -106,7 +106,7 @@ texts! {
     SeatLeave: "Отдать место модели", "Give the seat back to the model";
     SeatNoHero: "Вести игру без героя", "Run the game without a hero";
     SeatYours: "Ты ведёшь игру. G — панель мастера.", "You run the game. G opens the master's panel.";
-    HudMaster: " · G — мастер", " · G master";
+    HudMaster: " G", " G";
     DraftTitle: "Черновик модели", "The model's draft";
     Accept: "Принять", "Accept";
     Reject: "Отклонить", "Reject";

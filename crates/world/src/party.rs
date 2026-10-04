@@ -795,6 +795,16 @@ impl World {
                 hero.hp = 1;
                 hero.death = Default::default();
             }
+            // Those who beat the party leave it for dead and lose interest, or the fight
+            // would begin again at once.
+            if !won {
+                let here = self.current.clone();
+                if let Some(location) = self.locations.get_mut(&here) {
+                    for creature in location.creatures.iter_mut().filter(|c| c.attitude == Attitude::Hostile) {
+                        creature.attitude = Attitude::Neutral;
+                    }
+                }
+            }
         }
         // Companions keep their wounds; the dead are gone for good.
         for n in (0..self.companions.len()).rev() {
