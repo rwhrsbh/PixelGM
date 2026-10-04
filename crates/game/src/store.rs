@@ -43,6 +43,8 @@ pub struct Settings {
     /// The picture fills the window at any scale, with no bars, rather than keeping every
     /// pixel the same size.
     pub fill: bool,
+    /// The game has been put in fullscreen once: after that the player's choice stands.
+    pub fullscreen_set: bool,
     /// How tall the window of the telling is: 0, 1 or 2.
     pub narration: u8,
     /// How near the map is drawn: a place in `view::ZOOMS`.
@@ -83,7 +85,7 @@ impl Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 2, zoom: 2, online_music: true, custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new() }
+        Self { lang: Lang::Ru, fullscreen: true, fullscreen_set: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 2, zoom: 2, online_music: true, custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new() }
     }
 }
 
@@ -161,7 +163,15 @@ impl Store {
     /// Missing or unreadable settings fall back to defaults: a broken file must not stop the
     /// game from starting.
     pub fn load_settings(&self) -> Settings {
-        fs::read_to_string(self.dir.join("settings.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let mut settings: Settings = fs::read_to_string(self.dir.join("settings.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        // The game starts in fullscreen. Settings saved before that was so are switched
+        // once; a player who then goes back to a window is left with a window.
+        if !settings.fullscreen_set {
+            settings.fullscreen = true;
+            settings.fullscreen_set = true;
+            let _ = self.save_settings(&settings);
+        }
+        settings
     }
 
     pub fn save_settings(&self, settings: &Settings) -> io::Result<()> {
@@ -328,7 +338,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, narration: 2, zoom: 1, online_music: false, custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new() };
+        let settings = Settings { lang: Lang::En, fullscreen: true, fullscreen_set: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, narration: 2, zoom: 1, online_music: false, custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new() };
         store.save_settings(&settings).unwrap();
         assert_eq!(store.load_settings(), settings);
     }
@@ -336,10 +346,10 @@ mod tests {
     #[test]
     fn missing_and_broken_settings_give_defaults() {
         let store = temp_store("broken");
-        assert_eq!(store.load_settings(), Settings::default());
+        assert_eq!(store.load_settings(), Settings { fullscreen_set: true, ..Settings::default() });
         fs::create_dir_all(&store.dir).unwrap();
         fs::write(store.dir.join("settings.json"), "{ not json").unwrap();
-        assert_eq!(store.load_settings(), Settings::default());
+        assert_eq!(store.load_settings(), Settings { fullscreen_set: true, ..Settings::default() });
     }
 
     #[test]
@@ -347,7 +357,11 @@ mod tests {
         let store = temp_store("older");
         fs::create_dir_all(&store.dir).unwrap();
         fs::write(store.dir.join("settings.json"), r#"{ "lang": "En" }"#).unwrap();
-        assert_eq!(store.load_settings(), Settings { lang: Lang::En, ..Settings::default() });
+        // What was saved before the game started in fullscreen is switched to it, once.
+        assert_eq!(store.load_settings(), Settings { lang: Lang::En, fullscreen: true, fullscreen_set: true, ..Settings::default() });
+        let windowed = Settings { fullscreen: false, ..store.load_settings() };
+        store.save_settings(&windowed).unwrap();
+        assert!(!store.load_settings().fullscreen, "a player who went back to a window keeps the window");
     }
 
     #[test]

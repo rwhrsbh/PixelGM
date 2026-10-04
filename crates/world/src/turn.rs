@@ -303,6 +303,10 @@ impl World {
         self.story.say(Speaker::Master, &draft.narration);
         notes.extend(self.apply(&effects, None));
         let mut options = read_actions(&draft.options, &mut notes);
+        // A fight that has begun is fought, not chosen: what to do next is the fight's own.
+        if self.fight.is_some() {
+            options.clear();
+        }
         // A choice that needs the party beside something is also kept on that thing, to be
         // found there when the party walks up; one naming nothing here needs nobody.
         let here = self.current.clone();

@@ -72,6 +72,11 @@ fn fit_window(mut done: Local<Option<u8>>, settings: Res<crate::store::Settings>
     if *done == Some(settings.window_size) {
         return;
     }
+    // In fullscreen the window is the screen: sizing it in the same breath as it goes
+    // fullscreen left it a small window in the corner. It is sized when it is a window again.
+    if settings.fullscreen {
+        return;
+    }
     let Some(monitor) = monitors.iter().next() else { return };
     *done = Some(settings.window_size);
     if window.mode != bevy::window::WindowMode::Windowed || !window.visible {

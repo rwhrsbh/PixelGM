@@ -227,8 +227,13 @@ fn apply_language(settings: Res<Settings>, mut lang: ResMut<Lang>) {
 }
 
 fn apply_window_mode(settings: Res<Settings>, mut window: Single<&mut Window, With<PrimaryWindow>>) {
+    // A window kept off the desktop for a test stays the size it was given.
+    if !window.visible {
+        return;
+    }
     let wanted = if settings.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
     if window.mode != wanted {
+        info!("the window goes {}", if settings.fullscreen { "fullscreen" } else { "windowed" });
         window.mode = wanted;
     }
 }
