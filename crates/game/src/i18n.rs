@@ -405,7 +405,7 @@ texts! {
     OnlineMusicHint: "Сотни треков (Kevin MacLeod, CC BY 4.0; OpenGameArt, CC0) подкачиваются по настроению и хранятся на диске; без сети играет скачанное", "Hundreds of pieces (Kevin MacLeod, CC BY 4.0; OpenGameArt, CC0) are fetched by mood and kept on disk; offline, what was fetched plays";
     ProviderOpen: "Провайдеры и модели…", "Providers and models…";
     KeysProvider: "Ключи и модели провайдера", "The provider's keys and models";
-    ProvAccount: "Account ID", "Account ID";
+    ProvAccount: "ID аккаунта", "Account ID";
     ProvKeys: "Ключей:", "Keys:";
     ProvAddKey: "Добавить ключ", "Add key";
     ProvChat: "Модели мастера", "Master's models";

@@ -423,7 +423,25 @@ mod tests {
         let store = temp_store("settings");
         let settings = Settings { lang: Lang::En, fullscreen: true, fullscreen_set: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, narration: 2, zoom: 1, online_music: false, providers: Vec::new(), custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new() };
         store.save_settings(&settings).unwrap();
-        assert_eq!(store.load_settings(), settings);
+        // A provider of one's own kept the old way comes back as one of the providers,
+        // with its address, its model and its key; the rest is as it was saved.
+        let loaded = store.load_settings();
+        let own = loaded.providers.iter().find(|p| p.kind == llm::providers::Kind::Custom).expect("carried over");
+        assert_eq!((own.on, own.url.as_str(), own.models.len(), own.keys.len()), (settings.custom_on, settings.custom_url.as_str(), 1, usize::from(!settings.custom_key.is_empty())));
+        assert_eq!(own.models[0], settings.custom_model);
+        assert_eq!(Settings { providers: Vec::new(), custom_model: settings.custom_model.clone(), custom_on: settings.custom_on, ..loaded.clone() }, settings);
+        // Keys are sealed, take turns in the order added, and a key is kept once.
+        let mut nim = ProviderSetting::of(llm::providers::Kind::Nim);
+        assert!(nim.add_key("nvapi-one") && nim.add_key(" nvapi-two ") && !nim.add_key("nvapi-one"));
+        assert_eq!(nim.plain_keys(), ["nvapi-one", "nvapi-two"]);
+        assert!(nim.keys.iter().all(|k| !k.contains("nvapi")));
+        // Switched on with a model, it is the master; with none it is not asked.
+        let mut with = Settings::default();
+        with.providers.push(ProviderSetting { on: true, ..nim.clone() });
+        assert!(with.providers().is_empty());
+        with.providers[0].models.push("meta/llama-3.3-70b-instruct".into());
+        assert_eq!(with.providers().len(), 1);
+        assert_eq!((with.providers()[0].effort.as_str(), with.active_provider()), ("medium", Some(llm::providers::Kind::Nim)));
     }
 
     #[test]
