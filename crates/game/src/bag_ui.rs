@@ -69,6 +69,10 @@ enum Target {
     Gold,
     /// A companion's hand (`true`) or back: a weapon or armour is handed over, or taken back.
     Ally(usize, bool),
+    /// A companion's pack: a thing in hand is put in.
+    AllyPack(usize),
+    /// A thing in a companion's pack: taken out.
+    AllyItem(usize, usize),
 }
 
 #[derive(Component)]
@@ -139,7 +143,7 @@ fn bag(world: &World, hero: usize) -> &[Item] {
 fn fingerprint(world: &World, state: &BagState, hero: Option<usize>, lang: Lang) -> String {
     let gold = world.story.bags.get(state.hero).map_or(0, |b| b.gold);
     let rest = fingerprint_things(world, state, hero, lang);
-    let with: Vec<(&str, Option<&str>, Option<&str>)> = world.companions.iter().map(|c| (c.creature.name.as_str(), c.weapon.as_ref().map(|w| w.name.as_str()), c.armor.as_ref().map(|a| a.name.as_str()))).collect();
+    let with: Vec<(&str, Option<&str>, Option<&str>, Vec<(&str, u32)>)> = world.companions.iter().map(|c| (c.creature.name.as_str(), c.weapon.as_ref().map(|w| w.name.as_str()), c.armor.as_ref().map(|a| a.name.as_str()), c.pack.iter().map(|i| (i.name.as_str(), i.count)).collect())).collect();
     format!("{gold}|{with:?}|{rest}")
 }
 
@@ -325,12 +329,14 @@ fn build(
         worn_icons.push((Slot::Shield, icon_of(&light, &mut state)));
     }
     // Those who travel with this player: what each was given to fight with and to wear.
-    let with: Vec<(usize, String, Option<Handle<Image>>, Option<Handle<Image>>)> = world
+    #[allow(clippy::type_complexity)]
+    let with: Vec<(usize, String, Option<Handle<Image>>, Option<Handle<Image>>, Vec<(Handle<Image>, u32)>, u32)> = world
         .companions_here()
         .into_iter()
         .map(|n| {
             let c = &world.companions[n];
-            (n, c.creature.name.clone(), c.weapon.as_ref().map(|w| icon_of(w, &mut state)), c.armor.as_ref().map(|a| icon_of(a, &mut state)))
+            let pack = c.pack.iter().map(|i| (icon_of(i, &mut state), i.count)).collect();
+            (n, c.creature.name.clone(), c.weapon.as_ref().map(|w| icon_of(w, &mut state)), c.armor.as_ref().map(|a| icon_of(a, &mut state)), pack, c.pack_used())
         })
         .collect();
     let doll = hero.map(|hero| {
@@ -341,11 +347,11 @@ fn build(
 
     commands.entity(root).with_children(|root| {
         if !with.is_empty() && !shopping {
-            let tall = 20.0 + with.len() as f32 * 34.0;
+            let tall = 20.0 + with.len() as f32 * 104.0;
             root.spawn((BagContent, Node { padding: UiRect::all(px(7)), flex_direction: FlexDirection::Column, row_gap: px(2), ..abs(PANEL.0 - 96.0, PANEL.1, 94.0, tall) })).with_children(|panel| {
                 panel.spawn(panel_backing(&art));
                 panel.spawn((Text::new(T::Companions.text(*lang)), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
-                for (n, name, weapon, armor) in &with {
+                for (n, name, weapon, armor, pack, used) in &with {
                     let short: String = name.chars().take(13).collect();
                     panel.spawn((Text::new(short), fonts.body(), TextColor(color(WAX_DARK)), TextLayout::no_wrap()));
                     panel.spawn(Node { column_gap: px(3), ..default() }).with_children(|line| {
@@ -358,6 +364,20 @@ fn build(
                                 });
                         }
                     });
+                    // The pack: what it holds, and how much of its sixteen cells is taken.
+                    panel.spawn((Text::new(format!("{} {used}/{}", T::PackWord.text(*lang), world::model::PACK_CELLS)), fonts.body(), TextColor(color(FADED)), TextLayout::no_wrap()));
+                    panel
+                        .spawn((Node { width: px(80), height: px(44), flex_wrap: FlexWrap::Wrap, align_content: AlignContent::FlexStart, column_gap: px(1), row_gap: px(1), padding: UiRect::all(px(1)), ..default() }, Button, Target::AllyPack(*n), BackgroundColor(color(WOOD_DARK))))
+                        .with_children(|grid| {
+                            for (k, (icon, count)) in pack.iter().enumerate() {
+                                grid.spawn((Node { width: px(18), height: px(18), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, Button, Target::AllyItem(*n, k), BackgroundColor(color(WOOD_DEEP)))).with_children(|cell| {
+                                    cell.spawn((Node { width: px(16), height: px(16), ..default() }, ImageNode::new(icon.clone()), FocusPolicy::Pass, Pickable::IGNORE));
+                                    if *count > 1 {
+                                        cell.spawn((Node { position_type: PositionType::Absolute, right: px(0), bottom: px(-2), ..default() }, Text::new(count.to_string()), fonts.body(), TextColor(color(PARCHMENT)), Pickable::IGNORE));
+                                    }
+                                });
+                            }
+                        });
                 }
             });
         }
@@ -536,6 +556,43 @@ fn press(
         }
         let world = &mut game.world;
         let to = match (*target, &state.held) {
+            (Target::AllyPack(n), Some(Held::Item(i))) => {
+                if session.is_client() {
+                    session.intend(Intent::PackCompanion { companion: n, index: *i });
+                }
+                let done = world.pack_companion(n, hero, *i);
+                if done {
+                    state.held = None;
+                }
+                sound.write(Play(if done { Sfx::Item } else { Sfx::Error }));
+                state.built.clear();
+                continue;
+            }
+            (Target::AllyPack(_), _) => continue,
+            (Target::AllyItem(n, k), held) => {
+                // With a thing in hand it goes into the pack; with none, this one comes out.
+                let done = match held {
+                    Some(Held::Item(i)) => {
+                        if session.is_client() {
+                            session.intend(Intent::PackCompanion { companion: n, index: *i });
+                        }
+                        world.pack_companion(n, hero, *i)
+                    }
+                    Some(Held::Worn(..)) => false,
+                    None => {
+                        if session.is_client() {
+                            session.intend(Intent::UnpackCompanion { companion: n, item: k });
+                        }
+                        world.unpack_companion(n, hero, k)
+                    }
+                };
+                if done {
+                    state.held = None;
+                }
+                sound.write(Play(if done { Sfx::Item } else { Sfx::Error }));
+                state.built.clear();
+                continue;
+            }
             (Target::Ally(n, hand), held) => {
                 // With a weapon or armour in hand: given. With nothing: taken back.
                 let done = match held {

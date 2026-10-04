@@ -421,6 +421,10 @@ pub struct World {
     /// Those who travel with the party.
     #[serde(default)]
     pub companions: Vec<Companion>,
+    /// The minute the party last woke from a night's rest: in a hardcore world a day and a
+    /// night without sleep tells.
+    #[serde(default = "morning")]
+    pub rested: u32,
     /// Minutes since midnight of the first day. It runs a minute to a second of play.
     #[serde(default = "morning")]
     pub clock: u32,
@@ -481,6 +485,19 @@ pub struct Companion {
     pub weapon: Option<crate::story::Item>,
     #[serde(default)]
     pub armor: Option<crate::story::Item>,
+    /// What they carry for the party: a small pack, sixteen cells of it.
+    #[serde(default)]
+    pub pack: Vec<crate::story::Item>,
+}
+
+/// The cells a companion's pack holds: four by four.
+pub const PACK_CELLS: u32 = 16;
+
+impl Companion {
+    /// The cells of the pack taken up.
+    pub fn pack_used(&self) -> u32 {
+        self.pack.iter().map(|i| i.size().0 as u32 * i.size().1 as u32).sum()
+    }
 }
 
 /// A world begins at eight in the morning of its first day.

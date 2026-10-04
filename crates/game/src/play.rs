@@ -712,6 +712,7 @@ fn scene_key(world: &World) -> u64 {
     here.legend.hash(&mut hasher);
     here.light.hash(&mut hasher);
     world.companions.len().hash(&mut hasher);
+    world.party.iter().filter(|h| h.dead || h.hp <= 0).count().hash(&mut hasher);
     here.marks.hash(&mut hasher);
     for prop in &here.props {
         (&prop.id, prop.x, prop.y, &prop.sprite, &prop.name).hash(&mut hasher);
@@ -924,7 +925,12 @@ fn draw(
         }
         None => {
             // Those who travel with the heroes walk a step behind them.
+            // With every hero down, the first companion carries on in the hero's place.
+            let lead = (!world.party.is_empty() && world.party.iter().all(|h| h.dead || h.hp <= 0)).then(|| world.companions_here().first().copied()).flatten();
             for n in world.companions_here() {
+                if Some(n) == lead {
+                    continue;
+                }
                 let companion = &world.companions[n];
                 if let Some(image) = ally_images[n].clone() {
                     commands.spawn((InLocation, Ally { owner: companion.owner.clone(), rank: world.companions.iter().take(n).filter(|c| c.owner == companion.owner).count(), id: companion.creature.id.clone() }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::default())).with_children(|me| shadow_under(me, &cache.shadow));
@@ -938,7 +944,8 @@ fn draw(
                     .spawn((InLocation, Fellow(other.name.clone()), Frames(frames), Gait { last: Vec2::new(other.x, other.y), ..default() }, Sprite::from_image(first), Anchor::BOTTOM_CENTER, Transform::default()))
                     .with_children(|me| shadow_under(me, &cache.shadow));
             }
-            if let Some(frames) = frames_of(my_hero(world, &me, solo), &mut dolls, &mut images) {
+            let led = lead.and_then(|n| ally_images[n].clone()).map(|image| vec![image; 4 * crate::doll::STEPS]);
+            if let Some(frames) = led.or_else(|| frames_of(my_hero(world, &me, solo), &mut dolls, &mut images)) {
                 let first = frames[0].clone();
                 commands.spawn((InLocation, Hero, Frames(frames), Sprite::from_image(first), Anchor::BOTTOM_CENTER, Transform::default())).with_children(|me| shadow_under(me, &cache.shadow));
             }
@@ -3576,6 +3583,18 @@ fn guests(
             Intent::ArmCompanion { companion, index } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     game.world.arm_companion(companion, hero, index);
+                }
+                None
+            }
+            Intent::PackCompanion { companion, index } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    game.world.pack_companion(companion, hero, index);
+                }
+                None
+            }
+            Intent::UnpackCompanion { companion, item } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    game.world.unpack_companion(companion, hero, item);
                 }
                 None
             }

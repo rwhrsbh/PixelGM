@@ -68,6 +68,9 @@ pub enum Intent {
     /// A weapon or armour handed to a companion out of one's bag, or taken back.
     ArmCompanion { companion: usize, index: usize },
     DisarmCompanion { companion: usize, weapon: bool },
+    /// A thing put into a companion's pack, or taken out of it.
+    PackCompanion { companion: usize, index: usize },
+    UnpackCompanion { companion: usize, item: usize },
     /// Coins laid on the ground of a cell.
     DropGold { amount: u32, cell: (usize, usize) },
     /// A thing put on a quick slot, by name; an empty name clears the slot.

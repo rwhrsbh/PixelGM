@@ -651,6 +651,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         acting: None,
         quest: draft.quest.quest(),
         clock: crate::model::morning(),
+        rested: crate::model::morning(),
         companions: Vec::new(),
         factions: draft.factions.iter().map(|f| crate::living::Faction { id: slug(&f.id), name: f.name.trim().to_string(), description: f.description.trim().to_string(), standing: f.standing.clamp(-3, 3), met: false }).filter(|f| !f.id.is_empty()).take(6).collect(),
         threads: Vec::new(),

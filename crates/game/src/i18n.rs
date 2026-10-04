@@ -263,6 +263,8 @@ texts! {
     SheetSize: "Размер", "Size";
     GoldCount: "Золото:", "Gold:";
     Companions: "Спутники", "Companions";
+    PackWord: "Ноша", "Pack";
+    Tired: "устал", "tired";
     RedrawPlace: "Перерисовать это место", "Draw this place again";
     RedrawNoWay: "Некуда отступить: рядом нет нарисованных мест", "No drawn place beside this one to walk in from";
     SomethingComes: "Кто-то приближается…", "Something is coming…";

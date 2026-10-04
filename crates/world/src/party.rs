@@ -388,6 +388,11 @@ impl World {
             // No party yet: a plain d20.
             None => (String::new(), Roll::d20(rng, 0, Edge::Plain)),
         };
+        // Worn out, everything is two harder.
+        let mut roll = roll;
+        if self.tired() {
+            roll.bonus -= 2;
+        }
         let success = roll.total() >= check.difficulty;
         let branch = if success { check.success } else { check.failure };
         self.story.say(Speaker::Master, &branch.narration);
@@ -494,7 +499,7 @@ impl World {
         if self.companions.iter().any(|c| c.creature.id == creature.id) {
             creature.id = format!("{}_{}", creature.id, self.companions.len() + 1);
         }
-        self.companions.push(crate::model::Companion { creature, hp: max_hp, max_hp, owner: owner.to_string(), weapon: None, armor: None });
+        self.companions.push(crate::model::Companion { creature, hp: max_hp, max_hp, owner: owner.to_string(), weapon: None, armor: None, pack: Vec::new() });
         Ok(())
     }
 
@@ -519,6 +524,57 @@ impl World {
             self.story.bags[hero].receive(old);
         }
         true
+    }
+
+    /// A hero gives a companion a thing to carry. `false` when the pack has no room for it.
+    pub fn pack_companion(&mut self, n: usize, hero: usize, i: usize) -> bool {
+        self.ensure_bags();
+        let Some(item) = self.story.bags.get(hero).and_then(|b| b.inventory.get(i)).cloned() else { return false };
+        let Some(companion) = self.companions.get(n) else { return false };
+        let size = item.size().0 as u32 * item.size().1 as u32;
+        let stacks = item.gear.is_none() && companion.pack.iter().any(|p| p.gear.is_none() && p.name == item.name);
+        if !stacks && companion.pack_used() + size > crate::model::PACK_CELLS {
+            return false;
+        }
+        let bag = &mut self.story.bags[hero];
+        if bag.inventory[i].count > 1 {
+            bag.inventory[i].count -= 1;
+        } else {
+            bag.inventory.remove(i);
+        }
+        let pack = &mut self.companions[n].pack;
+        match pack.iter_mut().find(|p| p.gear.is_none() && item.gear.is_none() && p.name == item.name) {
+            Some(heap) => heap.count += 1,
+            None => pack.push(crate::story::Item { count: 1, at: None, ..item }),
+        }
+        true
+    }
+
+    /// A hero takes one of a thing out of a companion's pack.
+    pub fn unpack_companion(&mut self, n: usize, hero: usize, k: usize) -> bool {
+        self.ensure_bags();
+        let Some(companion) = self.companions.get_mut(n) else { return false };
+        if k >= companion.pack.len() || hero >= self.story.bags.len() {
+            return false;
+        }
+        let one = crate::story::Item { count: 1, at: None, ..companion.pack[k].clone() };
+        if companion.pack[k].count > 1 {
+            companion.pack[k].count -= 1;
+        } else {
+            companion.pack.remove(k);
+        }
+        self.story.bags[hero].receive(one);
+        true
+    }
+
+    /// Whether the party has gone a day and a night without sleep, in a world where that tells.
+    pub fn tired(&self) -> bool {
+        self.table.difficulty == crate::model::Difficulty::Hardcore && self.clock.saturating_sub(self.rested) > 24 * 60
+    }
+
+    /// Whether anyone is left to act for the party here: a hero, or one who travels with it.
+    pub fn party_stands(&self) -> bool {
+        (0..self.party.len()).any(|i| self.takes_part(i)) || !self.companions_here().is_empty()
     }
 
     /// A hero takes back what a companion was given.
@@ -580,7 +636,7 @@ impl World {
     /// for as many as the master said, or as many as make a fair fight. The others take the
     /// nearest free cells. `true` when anyone was added.
     pub fn muster(&mut self) -> bool {
-        if !(0..self.party.len()).any(|i| self.takes_part(i)) {
+        if !self.party_stands() {
             return false;
         }
         // A hostile one stands for its pack; anyone the master counted out comes in that number.
@@ -618,7 +674,7 @@ impl World {
     /// Starts a fight with every hostile creature here. `false` when there is nobody to
     /// fight or nobody to do the fighting.
     pub fn start_fight(&mut self, rng: Rng) -> bool {
-        if self.fight.is_some() || !(0..self.party.len()).any(|i| self.takes_part(i)) || self.hostiles().next().is_none() {
+        if self.fight.is_some() || !self.party_stands() || self.hostiles().next().is_none() {
             return false;
         }
         // Whoever turned on the party a moment ago is joined by the rest of its pack.
@@ -637,7 +693,12 @@ impl World {
             let free = |c: (usize, usize)| !here.blocked(c.0 as i32, c.1 as i32, &self.tiles) && !taken.contains(&c);
             let cell = nearest(start, free).unwrap_or(start);
             taken.push(cell);
-            combatants.push(Combatant::hero(hero, &hero_id(i), (cell.0 as i32, cell.1 as i32)));
+            let mut fighter = Combatant::hero(hero, &hero_id(i), (cell.0 as i32, cell.1 as i32));
+            // Worn out, a hero strikes two worse.
+            if self.tired() {
+                fighter.strikes.iter_mut().for_each(|s| s.bonus -= 2);
+            }
+            combatants.push(fighter);
         }
         // Those who travel with the heroes here fight beside them.
         for n in self.companions_here() {
@@ -800,6 +861,7 @@ impl World {
 
     /// A night's rest for everyone.
     pub fn long_rest(&mut self) {
+        self.rested = self.clock + 8 * 60;
         for hero in &mut self.party {
             hero.long_rest();
         }
@@ -874,6 +936,26 @@ impl World {
                             && let Some(h) = hero.and_then(|h| self.party.get_mut(h))
                         {
                             h.spend_slot(*slot);
+                        }
+                        events
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            FightIntent::UseItem(i) if fight.actor().id.starts_with("ally_") => {
+                let n = fight.actor().id.strip_prefix("ally_").and_then(|n| n.parse::<usize>().ok()).filter(|n| *n < self.companions.len());
+                let dice = n.and_then(|n| self.companions[n].pack.get(*i)).filter(|item| !item.heal.trim().is_empty()).and_then(|item| Dice::parse(&item.heal, 0));
+                match (n, dice) {
+                    (Some(n), Some(dice)) => {
+                        let mut rng = Rng::from_clock();
+                        let events = fight.mend_self(dice.roll(&mut rng).max(1));
+                        if !events.is_empty() {
+                            let pack = &mut self.companions[n].pack;
+                            if pack[*i].count > 1 {
+                                pack[*i].count -= 1;
+                            } else {
+                                pack.remove(*i);
+                            }
                         }
                         events
                     }
@@ -1131,6 +1213,38 @@ mod tests {
         w.end_fight();
         assert!(w.disarm_companion(0, 0, true));
         assert!(w.story.bags[0].inventory.iter().any(|i| i.name == "Greatsword"));
+        // The pack holds sixteen cells: a potion goes in, a seventeenth cell does not.
+        w.apply(&crate::story::read_effects(&[json!({ "op": "give", "name": "Potion", "kind": "potion", "heal": "2d4+2" })], &mut Vec::new()), None);
+        let potion = w.story.bags[0].inventory.iter().position(|i| i.name == "Potion").unwrap();
+        assert!(w.pack_companion(0, 0, potion));
+        assert_eq!((w.companions[0].pack.len(), w.companions[0].pack_used()), (1, 1));
+        w.companions[0].pack.push(crate::story::Item { name: "Crate".into(), count: 1, size_cells: Some((4, 4)), ..Default::default() });
+        let sword = w.story.bags[0].inventory.iter().position(|i| i.name == "Greatsword").unwrap();
+        assert!(!w.pack_companion(0, 0, sword), "no room");
+        w.companions[0].pack.pop();
+        // With the hero dead, the companion alone still stands for the party and can fight.
+        w.party[0].dead = true;
+        assert!(w.party_stands());
+        apply(&mut w, json!([{ "op": "spawn", "kind": "creature", "id": "rat2", "name": "Rat", "x": 9, "y": 9, "sprite": "cat", "attitude": "hostile", "monster": "giant-rat", "count": 1 }]));
+        assert!(w.start_fight(Rng::seeded(6)));
+        let fight = w.fight.as_mut().unwrap();
+        fight.turn = fight.order.iter().position(|i| fight.combatants[*i].id == "ally_0").unwrap();
+        let me = fight.order[fight.turn];
+        fight.combatants[me].hp = 1;
+        fight.combatants[me].action_left = true;
+        assert!(matches!(w.fight_act(&FightIntent::UseItem(0)).as_slice(), [Event::Healed { .. }]));
+        assert!(w.companions[0].pack.is_empty());
+        w.fight = None;
+        w.party[0].dead = false;
+        assert!(w.unpack_companion(0, 0, 0) == false);
+        // Hardcore: a day and a night without sleep tells, and a night's rest mends it.
+        w.table.difficulty = crate::model::Difficulty::Hardcore;
+        assert!(!w.tired());
+        w.pass(25 * 60);
+        assert!(w.tired());
+        w.long_rest();
+        w.pass(8 * 60);
+        assert!(!w.tired());
         apply(&mut w, json!([{ "op": "dismiss", "id": "guard" }]));
         assert!(w.companions.is_empty() && w.here().creatures.iter().any(|c| c.id == "guard"));
     }

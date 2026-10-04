@@ -143,6 +143,10 @@ fn describe(event: &Event, fight: &Encounter, lang: Lang) -> Option<String> {
 /// What the acting hero carries that can be drunk or eaten in a fight: its place in the bag,
 /// its name, what it heals and how many there are.
 fn usable(world: &World, fight: &Encounter) -> Vec<(usize, String, String, u32)> {
+    let healing = |items: &[world::Item]| items.iter().enumerate().filter(|(_, item)| !item.heal.trim().is_empty()).map(|(i, item)| (i, item.name.clone(), item.heal.clone(), item.count as u32)).collect();
+    if let Some(ally) = fight.actor().id.strip_prefix("ally_").and_then(|n| n.parse::<usize>().ok()).and_then(|n| world.companions.get(n)) {
+        return healing(&ally.pack);
+    }
     let Some(bag) = hero_index(&fight.actor().id).and_then(|h| world.story.bags.get(h)) else { return Vec::new() };
     bag.inventory.iter().enumerate().filter(|(_, item)| !item.heal.trim().is_empty()).map(|(i, item)| (i, item.name.clone(), item.heal.clone(), item.count as u32)).collect()
 }

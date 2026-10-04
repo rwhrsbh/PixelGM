@@ -50,7 +50,8 @@ fn build(
     let acting = world.fight.as_ref().map(|f| f.actor().id.clone());
     let _ = &phase;
     let print = format!(
-        "{mine:?}|{acting:?}|{:?}|{:?}",
+        "{mine:?}|{acting:?}|{}|{:?}|{:?}",
+        world.tired(),
         world.party.iter().enumerate().map(|(i, h)| (&h.name, hp_of(i, h), h.max_hp, h.ac(), h.level, h.dead, h.look, &h.armor, h.shield, h.weapons.first())).collect::<Vec<_>>(),
         (&world.owners, &world.present, *lang, world.companions.iter().enumerate().map(|(n, c)| (&c.creature.name, world.fight.as_ref().and_then(|f| f.combatants.iter().find(|f| f.id == format!("ally_{n}"))).map_or(c.hp, |f| f.hp), c.max_hp)).collect::<Vec<_>>())
     );
@@ -103,6 +104,9 @@ fn build(
                         back.spawn((Node { width: px((36.0 * share).round()), height: px(4), ..default() }, BackgroundColor(color(bar))));
                     });
                     let state = if hero.dead { T::HudFallen.text(*lang).to_string() } else if away { T::HudAway.text(*lang).to_string() } else { format!("{}/{}", hp.max(0), hero.max_hp) };
+                    if world.tired() && !hero.dead {
+                        frame.spawn((Text::new(T::Tired.text(*lang)), fonts.body(), TextColor(color(WAX)), TextLayout::no_wrap()));
+                    }
                     frame.spawn((Text::new(state), fonts.body(), TextColor(color(TALLOW)), TextLayout::no_wrap()));
                     frame.spawn((Text::new(format!("{} {}", T::ArmorClass.text(*lang), hero.ac())), fonts.body(), TextColor(color(PARCHMENT_SHADE)), TextLayout::no_wrap()));
                 });

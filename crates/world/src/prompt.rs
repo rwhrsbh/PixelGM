@@ -328,6 +328,13 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     } else {
         let _ = writeln!(text, "- Every walkable cell of this place can be reached on foot from where the party stands: nothing has to be bridged or broken through to get anywhere here.");
     }
+    if world.tired() {
+        let _ = writeln!(text, "The party has not slept for more than a day: it is worn out (everything it tries is two harder). Say so, and let the weariness show.");
+    }
+    if !world.party.is_empty() && world.party.iter().all(|h| h.dead || h.hp <= 0) && !world.companions_here().is_empty() {
+        let lead = &world.companions[world.companions_here()[0]].creature;
+        let _ = writeln!(text, "THE HEROES ARE DOWN. The player now acts through the companion \"{}\" ({}), who carries on: tell the story from their side. A dead hero comes back only by a \"revive\" effect — a healer, a shrine, a bargain — which the companion may seek.", lead.name, lead.id);
+    }
     let with: Vec<String> = world.companions_here().into_iter().map(|n| &world.companions[n]).map(|c| format!("{} \"{}\" ({} of {} hit points) — {}", c.creature.id, c.creature.name, c.hp, c.max_hp, c.creature.description)).collect();
     if !with.is_empty() {
         let _ = writeln!(text, "COMPANIONS travelling with the party (room for {} more): {}", world.room_for_companions(), with.join("; "));
