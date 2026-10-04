@@ -209,6 +209,8 @@ pub struct Master {
     answers: Arc<Mutex<Vec<Answer>>>,
     /// Places being drawn right now, so that none is asked for twice.
     drawing: Arc<Mutex<BTreeSet<String>>>,
+    /// Which keys and models of the providers are resting, and whose turn it is.
+    pub rotation: Arc<llm::providers::Rotation>,
 }
 
 pub fn language_name(lang: Lang) -> &'static str {
@@ -219,7 +221,10 @@ pub fn language_name(lang: Lang) -> &'static str {
 }
 
 struct Call {
-    custom: Option<llm::openai::Custom>,
+    /// The masters the player switched on in place of Gemini, and whose turn it is among
+    /// their keys.
+    providers: Vec<llm::providers::Provider>,
+    rotation: Arc<llm::providers::Rotation>,
     gm: Gm,
     store: Store,
     thinking: ThinkingSetting,
@@ -237,26 +242,29 @@ impl Call {
         let mut last = String::new();
         for _ in 0..self.attempts {
             let started = Instant::now();
-            // A provider of the player's own takes the place of Gemini.
-            if let Some(custom) = &self.custom {
-                let text = match custom.complete(&system, prompt) {
-                    Ok(text) => {
-                        info!("the master answered: {} (own provider) in {:.1} s, {} characters for a prompt of {}", custom.model, started.elapsed().as_secs_f32(), text.chars().count(), prompt.chars().count());
-                        text
-                    }
-                    Err(error) => {
-                        warn!("the own provider did not answer after {:.1} s: {error}", started.elapsed().as_secs_f32());
-                        last = format!("{}: {error}", custom.model);
+            // The providers the player switched on take the place of Gemini: their models in
+            // the player's order, their keys in turn. Gemini is asked only when none of them
+            // answers and it has a key to answer with.
+            if !self.providers.is_empty() {
+                match self.rotation.complete(&self.providers, &system, prompt, &llm::providers::Network) {
+                    Ok((text, who)) => {
+                        info!("the master answered: {who} in {:.1} s, {} characters for a prompt of {}", started.elapsed().as_secs_f32(), text.chars().count(), prompt.chars().count());
+                        self.store.log_answer(&who.replace([':', '/', ' ', '@'], "-"), &text);
+                        match world::read_answer::<T>(&text) {
+                            Ok(value) => return Ok(value),
+                            Err(e) => last = format!("{who}: {e}"),
+                        }
+                        warn!("the game master's answer could not be read ({last})");
                         continue;
                     }
-                };
-                self.store.log_answer(&custom.model, &text);
-                match world::read_answer::<T>(&text) {
-                    Ok(value) => return Ok(value),
-                    Err(e) => last = format!("{}: {e}", custom.model),
+                    Err(error) => {
+                        warn!("the providers did not answer after {:.1} s: {error}", started.elapsed().as_secs_f32());
+                        last = error.chars().take(400).collect();
+                        if !self.gm.dispatcher.has_keys() {
+                            continue;
+                        }
+                    }
                 }
-                warn!("the game master's answer could not be read ({last})");
-                continue;
             }
             let (text, model) = match self.gm.dispatcher.generate_in(&request, self.lowest, self.cheap) {
                 Ok((reply, model)) => {
@@ -293,7 +301,7 @@ fn faked<T: serde::de::DeserializeOwned>(json: String) -> Result<T, Trouble> {
 
 impl Master {
     pub fn new(fake: bool) -> Self {
-        Self { fake, relay: Relay::default(), answers: Arc::default(), drawing: Arc::default() }
+        Self { fake, relay: Relay::default(), answers: Arc::default(), drawing: Arc::default(), rotation: Arc::default() }
     }
 
     /// Whether the place `id` is being drawn right now.
@@ -311,7 +319,8 @@ impl Master {
         // Small talk is asked of the cheap models, once.
         let cheap = matches!(ask, Ask::Chatter { .. });
         let call = Call {
-            custom: settings.custom(),
+            providers: settings.providers(),
+            rotation: self.rotation.clone(),
             gm: gm.clone(),
             store: store.clone(),
             thinking: settings.thinking,
@@ -353,7 +362,7 @@ impl Master {
                     let draft: Result<LocationDraft, Trouble> = if fake {
                         faked(fake::location(&id, world.place_name(&id), &from))
                     } else {
-                        call.read(prompt::system_prompt(&world.language), &prompt::new_location_sized(&world, &id, &from, ahead || call.custom.is_some()))
+                        call.read(prompt::system_prompt(&world.language), &prompt::new_location_sized(&world, &id, &from, ahead || !call.providers.is_empty()))
                     };
                     // A place a weaker master called large comes in four quarters: the other
                     // three are asked for one by one, each shown what is drawn so far. If one

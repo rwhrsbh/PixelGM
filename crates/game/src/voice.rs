@@ -91,8 +91,20 @@ fn narrate(
     voice.asked_for = reading.clone();
     voice.waiting = true;
     let (gm, ready) = (gm.clone(), voice.ready.clone());
+    let (narrators, rotation, russian) = (settings.narrators(), master.rotation.clone(), settings.lang == crate::i18n::Lang::Ru);
     std::thread::spawn(move || {
-        let result = gm.dispatcher.speak(&reading, VOICE).map(|(speech, model)| (speech.wav(), speech.seconds(), model.id));
+        // The speaking models the player chose come first, in their order, their keys in
+        // turn; Gemini's voices are the last to be asked.
+        let chosen = if narrators.is_empty() { None } else { Some(rotation.speak(&narrators, &reading, russian, &llm::providers::Network)) };
+        let result = match chosen {
+            Some(Ok((sound, who))) => Ok((sound, 0.0, who)),
+            other => {
+                if let Some(Err(why)) = other {
+                    warn!("the chosen voices did not answer: {}", why.chars().take(300).collect::<String>());
+                }
+                gm.dispatcher.speak(&reading, VOICE).map(|(speech, model)| (speech.wav(), speech.seconds(), model.id))
+            }
+        };
         ready.lock().unwrap().push((reading, result));
     });
 }

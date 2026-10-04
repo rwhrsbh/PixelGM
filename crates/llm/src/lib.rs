@@ -7,6 +7,7 @@ pub mod client;
 pub mod dispatch;
 pub mod openai;
 pub mod pool;
+pub mod providers;
 pub mod thinking;
 
 pub use catalog::{ApiVersion, ListedModel, Model, Tier, build_chain, build_voice_chain};

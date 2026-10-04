@@ -119,6 +119,11 @@ impl<T: Transport> Dispatcher<T> {
     }
 
     /// The clock the pool's rest times are measured on.
+    /// Whether there is any key that has not been found dead.
+    pub fn has_keys(&self) -> bool {
+        self.state.lock().unwrap().pool.live_keys().next().is_some()
+    }
+
     pub fn now(&self) -> Millis {
         (self.clock)()
     }

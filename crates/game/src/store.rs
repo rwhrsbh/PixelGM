@@ -52,11 +52,76 @@ pub struct Settings {
     /// Fetch music from the network as it is wanted; off, only what is on disk plays.
     pub online_music: bool,
     /// A service of one's own speaking the OpenAI protocol, used instead of Gemini when on.
+    /// The masters other than Gemini: NVIDIA NIM, OpenRouter, Cloudflare, one's own.
+    pub providers: Vec<ProviderSetting>,
     pub custom_on: bool,
     pub custom_url: String,
     pub custom_model: String,
     /// The key, sealed to this user of this machine, in hex.
     pub custom_key: String,
+}
+
+/// One provider as it is kept: its keys sealed, its models in the order they are tried.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(default)]
+pub struct ProviderSetting {
+    pub kind: llm::providers::Kind,
+    pub on: bool,
+    /// Sealed, as hex.
+    pub keys: Vec<String>,
+    pub models: Vec<String>,
+    /// Cloudflare's account id.
+    pub account: String,
+    /// The address of a service of the player's own.
+    pub url: String,
+    /// The models that speak, for the narrator, in the order they are tried.
+    pub voices: Vec<String>,
+    /// The voice asked for, where a model has several.
+    pub voice: String,
+}
+
+impl Default for ProviderSetting {
+    fn default() -> Self {
+        Self { kind: llm::providers::Kind::Custom, on: false, keys: Vec::new(), models: Vec::new(), account: String::new(), url: String::new(), voices: Vec::new(), voice: String::new() }
+    }
+}
+
+impl ProviderSetting {
+    pub fn of(kind: llm::providers::Kind) -> Self {
+        let url = if kind == llm::providers::Kind::Custom { "http://localhost:11434/v1".to_string() } else { String::new() };
+        Self { kind, url, ..Self::default() }
+    }
+
+    /// The keys in the clear; those sealed on another account are left out.
+    pub fn plain_keys(&self) -> Vec<String> {
+        self.keys.iter().filter_map(|hex| crate::secret::from_hex(hex)).filter_map(|blob| crate::secret::unprotect(&blob).ok()).filter_map(|plain| String::from_utf8(plain).ok()).collect()
+    }
+
+    /// Seals a key and keeps it, unless it is kept already.
+    pub fn add_key(&mut self, key: &str) -> bool {
+        let key = key.trim();
+        if key.is_empty() || self.plain_keys().iter().any(|k| k == key) {
+            return false;
+        }
+        match crate::secret::protect(key.as_bytes()) {
+            Ok(blob) => {
+                self.keys.push(crate::secret::to_hex(&blob));
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// As it is asked, with how hard to think.
+    pub fn provider(&self, thinking: ThinkingSetting) -> llm::providers::Provider {
+        let effort = match thinking {
+            ThinkingSetting::Off => "",
+            ThinkingSetting::Low => "low",
+            ThinkingSetting::Medium => "medium",
+            ThinkingSetting::High => "high",
+        };
+        llm::providers::Provider { kind: self.kind, keys: self.plain_keys(), models: self.models.clone(), account: self.account.clone(), url: self.url.clone(), effort: effort.to_string(), voices: self.voices.clone(), voice: self.voice.clone() }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -68,24 +133,34 @@ pub enum Initiative {
 }
 
 impl Settings {
-    /// The custom provider, when it is on and complete enough to ask.
-    pub fn custom(&self) -> Option<llm::openai::Custom> {
-        if !self.custom_on || self.custom_url.trim().is_empty() || self.custom_model.trim().is_empty() {
-            return None;
-        }
-        let key = crate::secret::from_hex(&self.custom_key).and_then(|blob| crate::secret::unprotect(&blob).ok()).and_then(|plain| String::from_utf8(plain).ok()).unwrap_or_default();
-        Some(llm::openai::Custom { url: self.custom_url.clone(), model: self.custom_model.clone(), key })
+    /// The providers that are switched on and have enough to ask with, in the order they
+    /// are tried. While any is, they are the master in place of Gemini.
+    pub fn providers(&self) -> Vec<llm::providers::Provider> {
+        self.providers.iter().filter(|p| p.on).map(|p| p.provider(self.thinking)).filter(|p| p.ready()).collect()
     }
 
-    /// Seals and keeps the custom provider's key.
-    pub fn set_custom_key(&mut self, key: &str) {
-        self.custom_key = if key.trim().is_empty() { String::new() } else { crate::secret::protect(key.trim().as_bytes()).map(|blob| crate::secret::to_hex(&blob)).unwrap_or_default() };
+    /// The providers that are switched on and have a speaking model to ask.
+    pub fn narrators(&self) -> Vec<llm::providers::Provider> {
+        self.providers.iter().filter(|p| p.on).map(|p| p.provider(self.thinking)).filter(|p| p.voice_ready()).collect()
+    }
+
+    /// The setting of one provider, made if it was not kept yet.
+    pub fn provider_mut(&mut self, kind: llm::providers::Kind) -> &mut ProviderSetting {
+        if !self.providers.iter().any(|p| p.kind == kind) {
+            self.providers.push(ProviderSetting::of(kind));
+        }
+        self.providers.iter_mut().find(|p| p.kind == kind).expect("just made")
+    }
+
+    /// The provider that is on, the first of them: the one whose keys are the master's.
+    pub fn active_provider(&self) -> Option<llm::providers::Kind> {
+        self.providers.iter().find(|p| p.on).map(|p| p.kind)
     }
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: true, fullscreen_set: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 2, zoom: 2, online_music: true, custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new() }
+        Self { lang: Lang::Ru, fullscreen: true, fullscreen_set: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 2, zoom: 2, online_music: true, providers: Vec::new(), custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new() }
     }
 }
 
@@ -164,6 +239,14 @@ impl Store {
     /// game from starting.
     pub fn load_settings(&self) -> Settings {
         let mut settings: Settings = fs::read_to_string(self.dir.join("settings.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        // A provider of one's own kept the old way becomes one of the providers.
+        if !settings.custom_model.trim().is_empty() && !settings.providers.iter().any(|p| p.kind == llm::providers::Kind::Custom) {
+            let old = ProviderSetting { kind: llm::providers::Kind::Custom, on: settings.custom_on, keys: Some(settings.custom_key.clone()).filter(|k| !k.is_empty()).into_iter().collect(), models: vec![settings.custom_model.trim().to_string()], account: String::new(), url: settings.custom_url.clone(), voices: Vec::new(), voice: String::new() };
+            settings.providers.push(old);
+            settings.custom_model.clear();
+            settings.custom_on = false;
+            let _ = self.save_settings(&settings);
+        }
         // The game starts in fullscreen. Settings saved before that was so are switched
         // once; a player who then goes back to a window is left with a window.
         if !settings.fullscreen_set {
@@ -338,7 +421,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, fullscreen_set: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, narration: 2, zoom: 1, online_music: false, custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new() };
+        let settings = Settings { lang: Lang::En, fullscreen: true, fullscreen_set: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, narration: 2, zoom: 1, online_music: false, providers: Vec::new(), custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new() };
         store.save_settings(&settings).unwrap();
         assert_eq!(store.load_settings(), settings);
     }

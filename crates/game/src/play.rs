@@ -2631,7 +2631,7 @@ fn overlay(
                 sheet.spawn((Text::new(why.clone()), fonts.body(), TextColor(color(WAX))));
                 button(sheet, &art, &fonts, T::Recheck, true, PlayAction::Retry);
                 button(sheet, &art, &fonts, T::Sketch, true, PlayAction::Sketch);
-                button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
+                button(sheet, &art, &fonts, if settings.active_provider().is_some() { T::KeysProvider } else { T::Keys }, true, PlayAction::Keys);
                 button(sheet, &art, &fonts, T::StayHere, true, PlayAction::Stay);
             }
             Sheet::Judging(view) => {
@@ -2755,7 +2755,7 @@ fn overlay(
                     SeatState::Free | SeatState::Taken => button(sheet, &art, &fonts, T::SeatTake, *seat == SeatState::Free, PlayAction::SeatTake),
                 }
                 button(sheet, &art, &fonts, T::LongRest, !game.world.party.is_empty(), PlayAction::Rest);
-                button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
+                button(sheet, &art, &fonts, if settings.active_provider().is_some() { T::KeysProvider } else { T::Keys }, true, PlayAction::Keys);
                 // At a Steam table friends are invited from here too, through Steam's overlay.
                 if crate::coop::steam_table(&session) {
                     button(sheet, &art, &fonts, T::SteamInvite, true, crate::coop::InviteButton);
@@ -2871,7 +2871,7 @@ fn overlay(
                 sheet.spawn((Text::default(), T::RefusedTitle, fonts.title(1), ink));
                 sheet.spawn((Text::new(why.clone()), fonts.body(), TextColor(color(WAX))));
                 button(sheet, &art, &fonts, T::Recheck, true, PlayAction::AskAgain);
-                button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
+                button(sheet, &art, &fonts, if settings.active_provider().is_some() { T::KeysProvider } else { T::Keys }, true, PlayAction::Keys);
                 button(sheet, &art, &fonts, T::Leave, true, PlayAction::Close);
             }
             Sheet::Journal { quests, carried, lines } => {
@@ -3187,7 +3187,8 @@ fn on_activate(
         (PlayAction::Keys, _) => {
             // The game stays in memory; the key screen's Back button comes back here.
             return_to.0 = Some(Screen::Play);
-            next.set(Screen::Keys);
+            // The keys of whoever is the master now: a provider's, or Gemini's.
+            next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
         }
         (PlayAction::MainMenu, _) => {
             autosave(&store, &game);

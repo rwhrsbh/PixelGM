@@ -104,7 +104,7 @@ const FIELD_BORDER: f32 = 4.0;
 /// Whether there is anyone to draw a world: a key of the host's, or guests whose keys can
 /// be asked.
 fn can_ask(master: &Master, book: &KeyBook, session: &Session, settings: &Settings) -> bool {
-    master.fake || settings.custom().is_some() || book.entries.iter().any(|e| e.health == Health::Working || e.health == Health::Checking) || !session.players().is_empty()
+    master.fake || !settings.providers().is_empty() || book.entries.iter().any(|e| e.health == Health::Working || e.health == Health::Checking) || !session.players().is_empty()
 }
 
 fn spawn_form(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, book: Res<KeyBook>, master: Res<Master>, making: Res<Making>, session: Res<Session>, settings: Res<Settings>) {

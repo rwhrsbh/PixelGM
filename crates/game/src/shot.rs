@@ -188,6 +188,7 @@ impl Args {
                         "newgame" => Some(Screen::NewGame),
                         "load" => Some(Screen::Load),
                         "lobby" => Some(Screen::Lobby),
+                        "provider" => Some(Screen::Provider),
                         _ => None,
                     }
                 }

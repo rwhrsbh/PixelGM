@@ -403,6 +403,17 @@ Added on the owner's word the same night:
   supplies, other), told of under the cursor.
 - The place's name stands whole at the top; a telling's buttons stay in reach.
 
+Providers besides Gemini (2026-10-04): NVIDIA NIM, OpenRouter, Cloudflare Workers AI and
+any OpenAI-shaped service of one's own, on one screen. Each has several keys that take
+turns (a refused key rests: 429 for as long as asked, 402 half an hour, 401/403 six hours;
+a model that is not there rests for every key), models for the telling in the player's
+order, and speaking models for the narrator in an order of their own. The models on offer
+are fetched and picked from. Providers switched on are asked before Gemini, which answers
+only when none of them does. The thinking setting is passed as reasoning_effort and dropped
+for a model that refuses it. From the pause menu the keys button opens the provider that is
+the master. Steam's overlay is loaded by the game itself, so it works in a game started by
+hand; friends online can also be asked from the lobby through Steam's chat.
+
 Still open:
 
 - Steam with two accounts was never tried: it needs two accounts. A lobby was opened on one
