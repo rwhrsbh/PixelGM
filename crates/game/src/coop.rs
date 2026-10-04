@@ -162,6 +162,9 @@ pub enum Up {
 pub enum Down {
     /// The name the guest goes by at this table.
     Welcome { name: String },
+    /// Everyone at the table, the host first: the name, the hero's name if they have one, and
+    /// whether the table was joined through Steam.
+    Roster { seats: Vec<(String, String)>, steam: bool },
     /// Someone in a place says something aloud: the place, who, the words.
     Bubble { place: String, who: String, text: String },
     /// The whole world, sent on joining and whenever it changes. `id` names its saves.
@@ -291,6 +294,8 @@ impl Session {
 /// last offered, tellings waiting to be read, and what the guests asked for.
 #[derive(Resource, Default)]
 pub struct Table {
+    /// Everyone at the table as the host last told it, and whether it is a Steam table.
+    pub roster: (Vec<(String, String)>, bool),
     /// Things the people of a place will say aloud, in the order they will be said, and the
     /// place they belong to: asked for once, shown one by one.
     pub chatter: (String, std::collections::VecDeque<(String, String)>),
@@ -399,6 +404,8 @@ pub struct SteamLink {
     /// Friends hosting right now, as last looked up: their names and lobbies.
     friends: Vec<(String, u64)>,
     since_look: f32,
+    /// Whether the Steam lobby being hosted was open when the screen was last drawn.
+    lobby_open: bool,
 }
 
 /// How often the list of friends hosting is looked up while the lobby screen is open.
@@ -613,6 +620,33 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
 /// Who is at the table, so the world knows whose heroes take part. The host decides; a
 /// guest is told with the world. Alone, a save from a shared table is played with one's own
 /// hero, and a save in which no hero is one's own with all of them.
+/// The host keeps everyone told who sits at the table.
+fn roster(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, game: Option<Res<Game>>, mut table: ResMut<Table>, mut since: Local<f32>) {
+    let Session::Host(hosting) = &*session else {
+        if matches!(*session, Session::Solo) && !table.roster.0.is_empty() {
+            table.roster = (Vec::new(), false);
+        }
+        return;
+    };
+    *since += time.delta_secs();
+    if *since < 1.0 {
+        return;
+    }
+    *since = 0.0;
+    let steam = hosting.lock().unwrap().net.port() == 0;
+    let hero_of = |name: &str| game.as_ref().and_then(|g| g.world.owners.iter().position(|o| o == name).and_then(|i| g.world.party.get(i)).map(|h| format!("{} {}", h.name, h.level))).unwrap_or_default();
+    let me = player_name(&settings);
+    let mut seats = vec![(me.clone(), hero_of(&me))];
+    seats.extend(session.players().into_iter().map(|name| {
+        let hero = hero_of(&name);
+        (name, hero)
+    }));
+    if table.roster != (seats.clone(), steam) {
+        table.roster = (seats.clone(), steam);
+    }
+    session.broadcast(&Down::Roster { seats, steam });
+}
+
 fn presence(session: Res<Session>, settings: Res<Settings>, mut game: Option<ResMut<Game>>, screen: Res<State<Screen>>, mut next: ResMut<NextState<Screen>>) {
     let Some(game) = &mut game else { return };
     let me = player_name(&settings);
@@ -744,6 +778,7 @@ fn client_pump(
                 play::show(turn, &mut phase, &mut table);
                 redraw.0 = true;
             }
+            ClientEvent::Message(Down::Roster { seats, steam }) => table.roster = (seats, steam),
             ClientEvent::Message(Down::Bubble { place, who, text }) => {
                 if game.as_ref().is_some_and(|g| g.world.current == place) {
                     table.bubbles.push((who, text));
@@ -829,6 +864,8 @@ enum LobbyAction {
     HostSteam,
     /// Join the Steam lobby of the friend at this place in the list.
     JoinSteam(usize),
+    /// Open Steam's overlay to invite friends to the table being hosted.
+    Invite,
 }
 
 #[derive(Component)]
@@ -887,6 +924,10 @@ fn build_lobby(commands: &mut Commands, art: &Art, fonts: &Fonts, settings: &Set
             if link.steam.is_some() {
                 sheet.spawn(Node { column_gap: px(6), row_gap: px(2), flex_wrap: FlexWrap::Wrap, align_items: AlignItems::Center, ..default() }).with_children(|line| {
                     button(line, art, fonts, T::SteamHost, alone, LobbyAction::HostSteam);
+                    let open = matches!(session, Session::Host(hosting) if matches!(hosting.lock().unwrap().net.lobby(), Some(Ok(_))));
+                    if matches!(session, Session::Host(hosting) if hosting.lock().unwrap().net.port() == 0) {
+                        button(line, art, fonts, T::SteamInvite, open, LobbyAction::Invite);
+                    }
                     if link.friends.is_empty() {
                         line.spawn((Text::default(), T::SteamNoFriends, fonts.body(), faded));
                     } else {
@@ -916,9 +957,93 @@ fn build_lobby(commands: &mut Commands, art: &Art, fonts: &Fonts, settings: &Set
     });
 }
 
+/// At a table joined by address one goes by the name typed, or by this machine's name when
+/// nothing of one's own was typed (the field still holding the Steam name counts as nothing).
+fn direct_name(settings: &mut Settings, steam: Option<&net::Steam>) {
+    let typed = settings.player_name.trim().to_string();
+    if typed.is_empty() || steam.is_some_and(|s| s.name() == typed) {
+        settings.player_name = computer_name();
+    }
+}
+
 /// Whether a friend's button may be pressed: only while not at a table already.
 #[derive(Component)]
 struct PixelButtonState(bool);
+
+/// Who sits at the table, a line each: the host first, then the guests, each with their
+/// hero when they have one, and how the table is joined.
+fn seats_text(table: &Table, lang: crate::i18n::Lang) -> String {
+    let (seats, steam) = &table.roster;
+    let via = if *steam { "Steam" } else { T::LobbyDirect.text(lang) };
+    let mut lines = vec![format!("{} ({via}, {}/5):", T::LobbyPlayers.text(lang), seats.len())];
+    for (n, (name, hero)) in seats.iter().enumerate() {
+        let role = if n == 0 { format!(" — {}", T::LobbyHostWord.text(lang)) } else { String::new() };
+        let hero = if hero.is_empty() { format!(" · {}", T::LobbyNoHero.text(lang)) } else { format!(" · {hero}") };
+        lines.push(format!("  {}. {name}{role}{hero}", n + 1));
+    }
+    lines.join("\n")
+}
+
+/// The name of this machine, for a table joined by address.
+fn computer_name() -> String {
+    std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "Player".to_string())
+}
+
+/// A button, anywhere, that opens Steam's overlay to invite friends to the table.
+#[derive(Component, Clone, Copy)]
+pub struct InviteButton;
+
+/// Whether this table is hosted in a Steam lobby that is open.
+pub fn steam_table(session: &Session) -> bool {
+    matches!(session, Session::Host(hosting) if matches!(hosting.lock().unwrap().net.lobby(), Some(Ok(_))))
+}
+
+fn on_invite(used: On<Activate>, buttons: Query<&InviteButton>, link: Res<SteamLink>, session: Res<Session>) {
+    if buttons.get(used.entity).is_err() {
+        return;
+    }
+    if let (Some(steam), Session::Host(hosting)) = (&link.steam, &*session) {
+        if let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby() {
+            steam.invite(lobby);
+        }
+    }
+}
+
+/// Steam is asked for when the game starts, so that an invitation accepted in Steam finds
+/// the game listening. A test instance with a home of its own leaves Steam alone.
+fn steam_start(mut link: ResMut<SteamLink>) {
+    if std::env::var_os("PIXELGM_HOME").is_some() {
+        return;
+    }
+    link.tried = true;
+    match net::Steam::init() {
+        Ok(steam) => {
+            info!("Steam is here: {} (overlay {})", steam.name(), if steam.overlay() { "on" } else { "off" });
+            link.steam = Some(steam);
+        }
+        Err(e) => info!("Steam is not available: {e}"),
+    }
+}
+
+/// An invitation accepted in Steam — in the overlay, the friends list, or before the game
+/// was started — brings this player to that table.
+fn steam_invites(time: Res<Time>, link: Res<SteamLink>, mut session: ResMut<Session>, mut settings: ResMut<Settings>, mut next: ResMut<NextState<Screen>>, mut since: Local<f32>) {
+    let Some(steam) = &link.steam else { return };
+    *since += time.delta_secs();
+    if *since < 0.25 {
+        return;
+    }
+    *since = 0.0;
+    // A table's own thread lets Steam speak; in the menus and alone the game does.
+    if matches!(*session, Session::Solo) {
+        steam.pump();
+    }
+    let Some(lobby) = steam.asked_into() else { return };
+    info!("invited through Steam into lobby {lobby}");
+    settings.player_name = steam.name();
+    *session = join_steam(steam, lobby, &steam.name());
+    next.set(Screen::Lobby);
+}
 
 /// The address other machines on the same network can reach this one at.
 fn local_address() -> String {
@@ -943,9 +1068,11 @@ fn lobby_status(session: Res<Session>, table: Res<Table>, settings: Res<Settings
                 (0, Some(Err(why))) => format!("{} {why}", T::SteamRefused.text(lang)),
                 _ => format!("{} {}:{port}", T::LobbyHosting.text(lang), local_address()),
             };
-            format!("{how}\n{} {}", T::LobbyPlayers.text(lang), if players.is_empty() { "—".to_string() } else { players.join(", ") })
+            let _ = players;
+            format!("{how}\n{}", seats_text(&table, lang))
         }
-        Session::Client(_) => T::LobbyJoined.text(lang).to_string(),
+        Session::Client(_) if table.roster.0.is_empty() => T::LobbyJoined.text(lang).to_string(),
+        Session::Client(_) => format!("{}\n{}", T::LobbyAtTable.text(lang), seats_text(&table, lang)),
         Session::Solo => table.status.map_or(String::new(), |t| t.text(lang).to_string()),
     };
     for mut shown in &mut line {
@@ -986,7 +1113,10 @@ fn on_activate(
     table.status = None;
     match action {
         LobbyAction::Host => match host(DEFAULT_PORT) {
-            Ok(hosting) => *session = hosting,
+            Ok(hosting) => {
+                direct_name(&mut settings, link.steam.as_ref());
+                *session = hosting
+            }
             Err(e) => {
                 error!("could not host: {e}");
                 table.status = Some(T::LobbyHostFailed);
@@ -994,6 +1124,7 @@ fn on_activate(
         },
         LobbyAction::Join => {
             let typed = address.single().map(|a| a.value().to_string()).unwrap_or_default();
+            direct_name(&mut settings, link.steam.as_ref());
             match join(typed.trim(), &player_name(&settings)) {
                 Ok(joined) => *session = joined,
                 Err(e) => {
@@ -1005,13 +1136,24 @@ fn on_activate(
         LobbyAction::Leave => *session = Session::Solo,
         LobbyAction::HostSteam => {
             if let Some(steam) = &link.steam {
+                // At a Steam table one goes by one's Steam name.
+                settings.player_name = steam.name();
                 *session = host_steam(steam);
             }
         }
         LobbyAction::JoinSteam(n) => {
             if let (Some(steam), Some((_, lobby))) = (&link.steam, link.friends.get(*n)) {
+                settings.player_name = steam.name();
                 *session = join_steam(steam, *lobby, &player_name(&settings));
             }
+        }
+        LobbyAction::Invite => {
+            if let (Some(steam), Session::Host(hosting)) = (&link.steam, &*session) {
+                if let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby() {
+                    steam.invite(lobby);
+                }
+            }
+            return;
         }
     }
     // The buttons depend on the session: draw the screen again.
@@ -1041,7 +1183,9 @@ fn refresh_lobby(
             link.friends = now;
         }
     }
-    if !(friends_changed || session.is_changed() && !session.is_added()) {
+    let open = matches!(&*session, Session::Host(hosting) if matches!(hosting.lock().unwrap().net.lobby(), Some(Ok(_))));
+    let opened = std::mem::replace(&mut link.lobby_open, open) != open;
+    if !(friends_changed || opened || session.is_changed() && !session.is_added()) {
         return;
     }
     for root in &roots {
@@ -1058,8 +1202,11 @@ impl Plugin for CoopPlugin {
             .init_resource::<Table>()
             .init_resource::<SteamLink>()
             .add_systems(OnEnter(Screen::Lobby), spawn_lobby)
-            .add_systems(PreUpdate, (host_pump, client_pump, presence).chain())
+            .add_systems(PreUpdate, (host_pump, client_pump, presence, roster).chain())
+            .add_systems(Startup, steam_start)
+            .add_systems(Update, steam_invites)
             .add_systems(Update, (lobby_status, refresh_lobby).run_if(in_state(Screen::Lobby)))
+            .add_observer(on_invite)
             .add_observer(on_activate);
     }
 }

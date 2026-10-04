@@ -51,6 +51,11 @@ pub struct Steam {
     client: steamworks::Client,
     /// Steam's callbacks must not be run from two threads at once.
     pump: Arc<Mutex<()>>,
+    /// The lobby a friend's invitation, or "Join game" in the friends list, asks this player
+    /// into: set by Steam, taken by the game.
+    asked_into: Arc<Mutex<Option<u64>>>,
+    /// Keeps Steam telling of such invitations for as long as the client lives.
+    _asked: Arc<steamworks::CallbackHandle>,
 }
 
 impl Steam {
@@ -60,7 +65,43 @@ impl Steam {
         if !library_present() {
             return Err(format!("{LIBRARY} is missing"));
         }
-        steamworks::Client::init_app(APP_ID).map(|client| Self { client, pump: Arc::default() }).map_err(|e| e.to_string())
+        let client = steamworks::Client::init_app(APP_ID).map_err(|e| e.to_string())?;
+        let asked_into: Arc<Mutex<Option<u64>>> = Arc::default();
+        let asked = {
+            let asked_into = asked_into.clone();
+            client.register_callback(move |request: steamworks::GameLobbyJoinRequested| {
+                *asked_into.lock().unwrap() = Some(request.lobby_steam_id.raw());
+            })
+        };
+        // Started by accepting an invitation while the game was not running: Steam passes
+        // the lobby on the command line.
+        let line = client.apps().launch_command_line();
+        let started_into = lobby_in(&line).or_else(|| lobby_in(&std::env::args().collect::<Vec<_>>().join(" ")));
+        if started_into.is_some() {
+            *asked_into.lock().unwrap() = started_into;
+        }
+        Ok(Self { client, pump: Arc::default(), asked_into, _asked: Arc::new(asked) })
+    }
+
+    /// Lets Steam speak: invitations arrive only while its callbacks are run. The threads of
+    /// a game being hosted or joined do this themselves; in the menus the game must.
+    pub fn pump(&self) {
+        self.run_callbacks();
+    }
+
+    /// The lobby this player was asked into since the last look, if any.
+    pub fn asked_into(&self) -> Option<u64> {
+        self.asked_into.lock().unwrap().take()
+    }
+
+    /// Opens Steam's overlay on its dialog for inviting friends into a lobby.
+    pub fn invite(&self, lobby: u64) {
+        self.client.friends().activate_invite_dialog(LobbyId::from_raw(lobby));
+    }
+
+    /// Whether Steam's overlay can be drawn over the game: only when Steam itself started it.
+    pub fn overlay(&self) -> bool {
+        self.client.utils().is_overlay_enabled()
     }
 
     /// The player's Steam name.
@@ -81,6 +122,13 @@ impl Steam {
         let _one_at_a_time = self.pump.lock().unwrap();
         self.client.run_callbacks();
     }
+}
+
+/// The lobby named in a command line by "+connect_lobby <id>".
+fn lobby_in(line: &str) -> Option<u64> {
+    let mut words = line.split_whitespace();
+    words.find(|w| *w == "+connect_lobby")?;
+    words.next()?.parse().ok()
 }
 
 const LIBRARY: &str = if cfg!(windows) { "steam_api64.dll" } else if cfg!(target_os = "macos") { "libsteam_api.dylib" } else { "libsteam_api.so" };

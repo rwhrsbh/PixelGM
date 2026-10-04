@@ -93,7 +93,12 @@ texts! {
     DirectTitle: "Напрямую, по адресу", "Directly, by address";
     LobbyLeave: "Отключиться", "Leave";
     LobbyHosting: "Игра создана. Адрес для друзей:", "Hosting. Address for friends:";
-    LobbyPlayers: "За столом:", "At the table:";
+    LobbyPlayers: "За столом", "At the table";
+    LobbyAtTable: "Подключено.", "Connected.";
+    LobbyDirect: "по адресу", "by address";
+    LobbyHostWord: "хост", "host";
+    LobbyNoHero: "без героя", "no hero yet";
+    SteamInvite: "Пригласить друзей", "Invite friends";
     LobbyJoined: "Подключено. Ждём мир от хоста…", "Connected. Waiting for the host's world…";
     LobbyWrongVersion: "У хоста другая версия игры.", "The host runs another version of the game.";
     LobbyLost: "Связь с хостом потеряна. Игра сохранена — можно продолжить одному.", "The host is gone. The game was saved; you can go on alone.";

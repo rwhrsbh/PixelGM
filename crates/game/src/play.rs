@@ -2756,6 +2756,10 @@ fn overlay(
                 }
                 button(sheet, &art, &fonts, T::LongRest, !game.world.party.is_empty(), PlayAction::Rest);
                 button(sheet, &art, &fonts, T::Keys, true, PlayAction::Keys);
+                // At a Steam table friends are invited from here too, through Steam's overlay.
+                if crate::coop::steam_table(&session) {
+                    button(sheet, &art, &fonts, T::SteamInvite, true, crate::coop::InviteButton);
+                }
                 // The host may have the place drawn afresh: when it came out wrong.
                 if !session.is_client() {
                     button(sheet, &art, &fonts, T::RedrawPlace, game.world.fight.is_none(), PlayAction::RedrawPlace);
