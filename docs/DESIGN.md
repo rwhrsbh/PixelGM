@@ -372,11 +372,25 @@ thing, moved the quest and started a threat, with no faults found):
 Also: the host can have a place drawn again; a worn thing of the master's keeps its name
 and picture; casual and hardcore change defeat, saving and what is shown of enemies.
 
-Not done, on purpose or for lack of a way to check:
+Finished after that, each seen working in a hidden instance:
 
-- A companion takes one weapon and one piece of armour from the party (two slots beside the
-  bag) but has no bag of its own; a lone player whose hero is dead
-  does not go on as the companion outside a fight.
-- A weak model is never asked for a large place, so there are no four-piece maps.
-- Tiredness on hardcore.
+- A companion has a pack of sixteen cells beside its two slots, and drinks from it in a fight.
+- With every hero down the first companion walks and fights in the hero's place.
+- A weaker master draws a large place in four quarters, which the game joins.
+- Hardcore weariness: a day without a night's rest makes blows and checks two worse.
+- A thing spawned in play may carry prepared actions (a lever, a lock that needs its key).
+- What wanders in appears three cells from the party, so the fight is on.
+- On casual, those who beat the party lose interest in it.
+
+Seen on the screen, not only in tests: a counted pack and the fight with it; an armed
+companion's blow; standings and rumours in the journal; a plate; a wandering pack; a broken
+night's rest; a lock without and with its key; defeat on casual and on hardcore; the
+master's gold, hours and night reaching a guest. With real Gemini: a threat that came due
+was told as having happened and ended, a thread was brought back in a person's words, and
+the choices came with a class-based one, a risky one with its chance, and one at a cost.
+
+Still open:
+
 - Steam with two accounts was never tried: it needs two accounts.
+- A large place has not yet been drawn by a real model, only by the rule-based one.
+- Rain is not drawn at night (by design: no sky is shown in the dark).
