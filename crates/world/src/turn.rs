@@ -24,6 +24,11 @@ pub struct TurnDraft {
     /// the game holds the effects against it.
     pub gained: Vec<String>,
     pub lost: Vec<String>,
+    /// Its own count of who the narration says dies or is struck down, by id.
+    pub slain: Vec<String>,
+    /// Whether the narration has blows beginning between the party and someone who can
+    /// fight back.
+    pub fight: bool,
 }
 
 /// Every effect in an answer, however deep: the turn's own, those of its choices, and those
@@ -70,6 +75,17 @@ impl World {
                 faults.push(format!("the narration says a hero loses \"{name}\" but no \"take\" effect removes it"));
             }
         }
+        // Who the telling strikes down must really fall; a fight told of must really begin.
+        let fallen: Vec<String> = deep.iter().filter(|e| matches!(text(e, "op").as_str(), "kill" | "remove")).map(|e| slug(&text(e, "id"))).collect();
+        for id in draft.slain.iter().map(|id| slug(id)).filter(|id| !id.is_empty()) {
+            let hero = self.party.iter().any(|h| slug(&h.name) == id);
+            if !hero && !fallen.contains(&id) {
+                faults.push(format!("the narration says \"{id}\" dies or is struck down but no \"kill\" effect makes it so: it would go on standing there"));
+            }
+        }
+        if draft.fight && !deep.iter().any(|e| text(e, "op") == "fight") {
+            faults.push("the narration has a fight beginning but there is no \"fight\" effect: add \"attitude\" hostile for the enemy and \"fight\", and tell only how it begins — the game plays the blows".to_string());
+        }
         // Everything named must be there, or be made in this same answer.
         let mut all = Vec::new();
         draft.effects.iter().for_each(|e| every_effect(e, &mut all));
@@ -86,7 +102,7 @@ impl World {
             let op = text(effect, "op");
             let id = slug(&text(effect, "id"));
             match op.as_str() {
-                "remove" | "move" | "animate" | "attitude" | "join" if !known(&id) => faults.push(format!("\"{op}\" names \"{id}\", which is not in this place: use an id from PLACE or WHAT IS WHERE, or \"spawn\" it first")),
+                "remove" | "move" | "animate" | "attitude" | "join" | "kill" if !known(&id) => faults.push(format!("\"{op}\" names \"{id}\", which is not in this place: use an id from PLACE or WHAT IS WHERE, or \"spawn\" it first")),
                 "tile" => {
                     let tile = slug(&text(effect, "tile"));
                     if !self.tiles.contains_key(&tile) && !drawn_tiles.contains(&tile) {
@@ -354,6 +370,12 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(w.faults(&good), Vec::<String>::new());
+        // A death told of with nothing to make it so, and a fight told in words.
+        let told: TurnDraft = serde_json::from_value(serde_json::json!({ "narration": "You cut the cat down and its mate leaps at you.", "slain": ["cat"], "fight": true, "effects": [] })).unwrap();
+        let faults = w.faults(&told).join(" | ");
+        assert!(faults.contains("\"cat\" dies") && faults.contains("no \"fight\" effect"), "{faults}");
+        let done: TurnDraft = serde_json::from_value(serde_json::json!({ "narration": "You cut the cat down.", "slain": ["cat"], "effects": [{ "op": "kill", "id": "cat" }] })).unwrap();
+        assert_eq!(w.faults(&done), Vec::<String>::new());
     }
 
     #[test]

@@ -537,7 +537,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             "hostile" => Attitude::Hostile,
             _ => Attitude::Neutral,
         };
-        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone(), count: c.count.clamp(0, 8) as u8, mustered: false, stock: stock_of(&c.shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(&c.faction) });
+        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone(), count: c.count.clamp(0, 8) as u8, mustered: false, stock: stock_of(&c.shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(&c.faction), hurt: 0 });
     }
 
     let id = forced_id.map(str::to_string).unwrap_or_else(|| {

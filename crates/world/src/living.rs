@@ -195,6 +195,7 @@ impl World {
             haggle: 0,
             haggled: false,
             faction: String::new(),
+            hurt: 0,
         };
         self.locations.get_mut(&here)?.creatures.push(creature);
         self.story.say(crate::story::Speaker::Master, &told);

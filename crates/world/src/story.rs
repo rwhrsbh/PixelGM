@@ -286,8 +286,13 @@ pub enum Effect {
         #[serde(default)]
         failure: Branch,
     },
-    /// The party is hurt outside a fight. `amount` is dice or a number.
+    /// A creature here dies without a fight: it lies there as a body.
+    Kill { id: String },
+    /// The party is hurt outside a fight, or with `id` a creature here is. `amount` is dice
+    /// or a number.
     Damage {
+        #[serde(default)]
+        id: String,
         #[serde(deserialize_with = "lenient_text")]
         amount: String,
     },
@@ -301,7 +306,11 @@ pub enum Effect {
         amount: i64,
     },
     /// The hostile creatures here attack.
-    Fight,
+    Fight {
+        /// Who the party fights: made hostile if they are not yet. Empty for whoever is.
+        #[serde(default)]
+        with: Vec<String>,
+    },
     /// A hero did something out of the ordinary. The game keeps count and decides whether
     /// a secret skill comes of it.
     Deed {
@@ -814,8 +823,24 @@ impl World {
                     self.pending = Some(PendingCheck { ability, skill, difficulty: (*dc).clamp(1, 40) as i32, success: success.clone(), failure: failure.clone(), me: me.map(str::to_string), rest: effects[n + 1..].to_vec() });
                     break;
                 }
-                Effect::Damage { amount } => {
-                    self.hurt_party(amount, &mut Rng::from_clock());
+                Effect::Kill { id } => {
+                    let id = resolve(id);
+                    if !self.slay(&id) {
+                        notes.push(format!("kill: nothing called '{id}' is here"));
+                    }
+                    continue;
+                }
+                Effect::Damage { id, amount } => {
+                    let who = resolve(id);
+                    let heroes = matches!(who.as_str(), "" | "party" | "hero" | "heroes" | "player" | "players" | "everyone" | "all") || names.iter().any(|n| *n == who);
+                    if heroes {
+                        self.hurt_party(amount, &mut Rng::from_clock());
+                    } else {
+                        let dealt = rules::Dice::parse(amount, 0).map_or(0, |d| d.roll(&mut Rng::from_clock()));
+                        if !self.wound(&who, dealt) {
+                            notes.push(format!("damage: nothing called '{who}' is here"));
+                        }
+                    }
                     continue;
                 }
                 Effect::Heal { amount } => {
@@ -827,7 +852,22 @@ impl World {
                     self.level_ups.extend(ups);
                     continue;
                 }
-                Effect::Fight => {
+                Effect::Fight { with } => {
+                    // Those named turn on the party; with nobody named and nobody hostile,
+                    // whoever stands nearest does: a fight the story began must be fought.
+                    let here_id = self.current.clone();
+                    let (px, py) = self.player.cell();
+                    if let Some(location) = self.locations.get_mut(&here_id) {
+                        let named: Vec<String> = with.iter().map(|id| resolve(id)).collect();
+                        for creature in location.creatures.iter_mut().filter(|c| named.contains(&c.id)) {
+                            creature.attitude = Attitude::Hostile;
+                        }
+                        if !location.creatures.iter().any(|c| c.attitude == Attitude::Hostile) {
+                            if let Some(nearest) = location.creatures.iter_mut().min_by_key(|c| (c.x as i32 - px).abs() + (c.y as i32 - py).abs()) {
+                                nearest.attitude = Attitude::Hostile;
+                            }
+                        }
+                    }
                     if !self.start_fight(Rng::from_clock()) {
                         notes.push("fight: nothing hostile is here".to_string());
                     }
@@ -974,7 +1014,7 @@ impl World {
                     if kind.trim().eq_ignore_ascii_case("creature") {
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
                         if let Some((cx, cy)) = nearest(wanted, free) {
-                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: prepared, monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(faction) });
+                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: prepared, monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(faction), hurt: 0 });
                         }
                     } else {
                         let chest = (!contents.is_empty() || *lock > 0 || !key.trim().is_empty()).then(|| crate::model::Chest { items: contents.iter().filter_map(ThingDraft::item).collect(), lock: (*lock).clamp(0, 30) as i32, key: key.trim().to_string(), open: false });
@@ -1114,7 +1154,7 @@ impl World {
                 }
                 Effect::Weather { weather } => location.weather = weather.trim().to_lowercase(),
                 Effect::Music { mood } => location.mood = mood.trim().to_lowercase(),
-                Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight | Effect::Deed { .. } | Effect::Revive { .. } => {}
+                Effect::Kill { .. } | Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight { .. } | Effect::Deed { .. } | Effect::Revive { .. } => {}
             }
         }
         self.moves.extend(moved);

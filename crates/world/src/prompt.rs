@@ -46,14 +46,19 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "fact", "text": "…"} — something that must be remembered for the rest of the campaign
   {"op": "check", "ability": "str|dex|con|int|wis|cha", "skill": "stealth", "dc": 15, "success": {"narration": "…", "effects": []}, "failure": {"narration": "…", "effects": []}} — the outcome is uncertain: the game rolls the die and takes one branch. Write both. Skills: acrobatics, animal-handling, arcana, athletics, deception, history, insight, intimidation, investigation, medicine, nature, perception, performance, persuasion, religion, sleight-of-hand, stealth, survival. Difficulty: 5 trivial, 10 easy, 15 moderate, 20 hard, 25 very hard.
   {"op": "damage", "amount": "2d6"} / {"op": "heal", "amount": "1d8"} — to the party, outside a fight
+  {"op": "damage", "id": "creature id", "amount": "1d8"} — a creature here is wounded outside a fight: it goes into the next fight that much weaker, and dies if it has no more to lose
+  {"op": "kill", "id": "creature id"} — a creature here dies or is struck down without a fight; it lies there as a body that can be searched
   {"op": "xp", "amount": 50} — for something achieved; rarely, and modestly
-  {"op": "fight"} — the hostile creatures here attack; the game runs the fight by the rules
+  {"op": "fight", "with": ["creature id"]} — a fight begins with those named (they turn hostile) and everyone already hostile here; the game runs it by the rules, blow by blow
   {"op": "deed", "hero": "name"} — that character just did something out of the ordinary, clever or brave beyond what the moment asked; the game keeps count
   {"op": "revive", "hero": "name or a body's id"} — the story brings a dead character back; only when it has truly earned it
 Never roll dice yourself and never decide an uncertain outcome: that is what "check" is for. Nothing may follow a check in the same list except what should happen whichever way it goes.
 Use only ids that exist. Inside an action that belongs to a thing, the id "self" means that thing.
 SPACE. The party is somewhere on the map and can only touch, take, open, strike or speak softly with what is beside it. To deal with something farther off that can be reached, first "move" the party to a cell beside it, in the same answer, then do the rest. What cannot be reached on foot cannot be touched: say what is in the way. Only what the party carries can be used — no torch, rope or key that is not in their hands.
-VIOLENCE. An attack on a creature is never told as a hit, a wound or a death: make it hostile with "attitude" and add "fight" — the game moves to the fight and the dice decide. The same for anything that would hurt the party.
+VIOLENCE. There are two cases, and the map must show each.
+(1) A FIGHT — the party attacks someone who can fight back, or is attacked. You NEVER tell its blows or how it ends: tell only how it begins (two or three sentences), set "fight": true, make the enemy hostile with "attitude" and add the "fight" effect. The game then plays every blow by the rules and the dice decide. A fight told in words, with no "fight" effect, is a mistake.
+(2) NO FIGHT — the victim cannot fight back: helpless, asleep, bound, taken wholly unawares, executed, crushed by a trap, or the story kills them. Then you tell it, and you MUST make it so: {"op": "kill", "id": …} for each who dies (list them in "slain"), {"op": "damage", "id": …, "amount": …} for a wound that does not kill. Whoever your narration says is dead, down or gone must not be left standing on the map: "kill" leaves a body, "remove" takes someone away alive.
+Harm to the party outside a fight is "damage" with no id.
 TRAVEL. When the party goes to another place — through a way out, down a hole, carried off — add {"op": "travel", "to": "place_id"}: an id from the exits, or a new id with "name" for a place that does not exist yet, which the game will ask you to draw. A choice that leads elsewhere carries its own "travel". The map on the players' screen IS where they are. When the story takes them out of what the map shows — out into space, into a vision or a dream, under the ground, onto a ship — or the place itself becomes another (it burns down, freezes over, collapses), "travel" to a NEW id with "name" and "description", so that the new scene is drawn; never tell of surroundings the map does not show.
 MECHANISMS work by the game's own rules, with no question to you, so build them whole when you draw a place or spawn a thing. A lever, a winch, a valve: a prop with an action whose effects change the map ("tile" opens a gate or lowers a bridge, "remove" lifts a grate, "spawn" lets something out). A locked door or chest of another kind: a blocking prop with an action that has "needs": "the key's name" (and "spends": true when the key breaks or stays in the lock) and effects that remove it or turn its cell into a door; put the key somewhere it can be found. A pressure plate, a tripwire, a rune on the floor: {"op": "secret", "kind": "plate", …} at its cell, whose effects happen when someone steps there. A hidden door or cache: a "secret" of kind "hidden". A trap: a "secret" of kind "trap". Give a place with a riddle at least one way through that needs no dice.
 A WORLD THAT ANSWERS. Nothing the party does is forgotten. When it helps or wrongs a faction or one of its people, change the "standing" in the same answer, and let those people treat the party accordingly from then on (enemies attack or refuse, allies help and sell cheap). When it does something that must come back — spares or kills someone who matters, steals, breaks an oath, leaves a job half done — note a "thread". When you are told a thread is due, bring it back in this very telling as something that happens to the party now, then "thread_done". Keep one or two "threat"s alive: enemies with plans of their own that move forward by the clock whether the party looks or not; let the players hear of them as rumours. When you are told a threat has come due, it HAS happened: tell what the party finds or hears, change the world with effects, and if it was the quest's own, end the quest "lost".
@@ -253,7 +258,8 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
         let _ = writeln!(text, "- prop {} at ({}, {}){held}: {} — {}", prop.id, prop.x, prop.y, prop.name, prop.description);
     }
     for creature in &here.creatures {
-        let _ = writeln!(text, "- creature {} at ({}, {}), {}: {} — {}", creature.id, creature.x, creature.y, attitude_word(creature.attitude), creature.name, creature.description);
+        let hurt = if creature.hurt > 0 { format!(" (wounded: {} hit points lost)", creature.hurt) } else { String::new() };
+        let _ = writeln!(text, "- creature {} at ({}, {}), {}{hurt}: {} — {}", creature.id, creature.x, creature.y, attitude_word(creature.attitude), creature.name, creature.description);
     }
     for exit in &here.exits {
         let _ = writeln!(text, "- exit at ({}, {}) to {}: {}", exit.x, exit.y, exit.to, world.place_name(&exit.to));
@@ -383,6 +389,8 @@ THE PARTY CARRIES: {}", things.join(", "));
 
 const TURN_SHAPE: &str = r##"{
   "narration": "what happens, told to the players",
+  "fight": false,
+  "slain": ["the id of every creature the narration says dies or is struck down"],
   "gained": ["the name of every thing the narration says a hero got, found, took or was handed"],
   "lost": ["the name of every thing the narration says a hero lost, spent, gave away or broke"],
   "effects": [],
@@ -503,7 +511,7 @@ YOUR ANSWER TO THIS WAS CHECKED BY THE GAME AND CANNOT BE PLAYED AS IT IS:
     for fault in faults {
         let _ = writeln!(text, "- {fault}");
     }
-    text.push_str("Answer again with the whole JSON object, the same story, every fault mended: each thing in \"gained\" has its \"give\" with \"rows\", each in \"lost\" its \"take\", every id, tile and sprite is one that exists or is made in this answer.");
+    text.push_str("Answer again with the whole JSON object, the same story, every fault mended: each thing in \"gained\" has its \"give\" with \"rows\", each in \"lost\" its \"take\", each in \"slain\" its \"kill\", a fight its \"fight\" effect, every id, tile and sprite is one that exists or is made in this answer.");
     text
 }
 

@@ -679,7 +679,14 @@ impl World {
         }
         // Whoever turned on the party a moment ago is joined by the rest of its pack.
         self.muster();
-        let enemies: Vec<Combatant> = self.hostiles().map(|c| self.combatant_for(c)).collect();
+        let enemies: Vec<Combatant> = self
+            .hostiles()
+            .map(|c| {
+                let mut fighter = self.combatant_for(c);
+                fighter.hp = (fighter.hp - c.hurt).max(1);
+                fighter
+            })
+            .collect();
         let (w, h) = self.here().size();
         let inside = |(x, y): (i32, i32)| (x.clamp(0, w as i32 - 1) as usize, y.clamp(0, h as i32 - 1) as usize);
         let leader = inside(self.player.cell());
@@ -826,19 +833,7 @@ impl World {
                         let mut dead = location.creatures.remove(at);
                         (dead.x, dead.y) = (c.x.max(0) as usize, c.y.max(0) as usize);
                         let russian = self.language.to_lowercase().starts_with("ru") || self.language.contains("усск");
-                        let name = if russian { format!("Тело: {}", dead.name) } else { format!("Body of {}", dead.name) };
-                        location.props.push(crate::model::Prop {
-                            id: format!("{}_body", dead.id),
-                            name,
-                            description: dead.description.clone(),
-                            x: dead.x,
-                            y: dead.y,
-                            blocking: false,
-                            sprite: dead.sprite.clone(),
-                            actions: Vec::new(),
-                            body: Some(Box::new(dead)),
-                            chest: None,
-                        });
+                        location.props.push(body_of(dead, russian));
                     }
                 } else if let Some(creature) = location.creatures.iter_mut().find(|creature| creature.id == c.id) {
                     (creature.x, creature.y) = (c.x.max(0) as usize, c.y.max(0) as usize);
@@ -878,6 +873,42 @@ impl World {
         for companion in &mut self.companions {
             companion.hp = companion.max_hp;
         }
+    }
+}
+
+/// What is left of a creature that died: a body lying where it fell, which can be searched
+/// — or raised.
+pub(crate) fn body_of(dead: Creature, russian: bool) -> crate::model::Prop {
+    let name = if russian { format!("Тело: {}", dead.name) } else { format!("Body of {}", dead.name) };
+    crate::model::Prop { id: format!("{}_body", dead.id), name, description: dead.description.clone(), x: dead.x, y: dead.y, blocking: false, sprite: dead.sprite.clone(), actions: Vec::new(), body: Some(Box::new(dead)), chest: None }
+}
+
+impl World {
+    /// A creature of the place the party is in dies without a fight: it lies there as a body
+    /// and the story remembers. `false` when nobody of that name is here.
+    pub fn slay(&mut self, id: &str) -> bool {
+        let here = self.current.clone();
+        let russian = self.language.to_lowercase().starts_with("ru") || self.language.contains("усск");
+        let Some(location) = self.locations.get_mut(&here) else { return false };
+        let Some(at) = location.creatures.iter().position(|c| c.id == id) else { return false };
+        let dead = location.creatures.remove(at);
+        let (name, place) = (dead.name.clone(), location.name.clone());
+        location.props.push(body_of(dead, russian));
+        self.story.remember(&format!("{name} died in {place}."));
+        true
+    }
+
+    /// A creature is wounded outside a fight. One that loses all it has dies.
+    pub fn wound(&mut self, id: &str, amount: i32) -> bool {
+        let Some(creature) = self.here().creatures.iter().find(|c| c.id == id) else { return false };
+        let most = self.combatant_for(creature).max_hp.max(1);
+        let here = self.current.clone();
+        let Some(creature) = self.locations.get_mut(&here).and_then(|l| l.creatures.iter_mut().find(|c| c.id == id)) else { return false };
+        creature.hurt = (creature.hurt + amount.max(0)).max(0);
+        if creature.hurt >= most {
+            self.slay(id);
+        }
+        true
     }
 }
 
@@ -1205,6 +1236,35 @@ mod tests {
         let text = crate::prompt::ambush(&w, &comer, cell);
         assert!(text.contains("wolf") && text.contains("\"sprites\"") && text.contains(&format!("\"x\": {}, \"y\": {}", cell.0, cell.1)), "{text}");
         w.here_mut().danger = 0;
+    }
+
+    #[test]
+    fn the_story_can_wound_and_kill_without_a_fight() {
+        let mut w = world();
+        w.here_mut().creatures[0].monster = Some("goblin".into());
+        // A wound is kept, and the creature goes into a fight that much weaker.
+        let notes = apply(&mut w, json!([{ "op": "damage", "id": "cat", "amount": "3" }]));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(w.here().creatures[0].hurt, 3);
+        apply(&mut w, json!([{ "op": "attitude", "id": "cat", "attitude": "hostile" }]));
+        assert!(w.start_fight(Rng::seeded(1)));
+        let cat = w.fight.as_ref().unwrap().combatants.iter().find(|c| c.id == "cat").unwrap();
+        assert_eq!(cat.hp, cat.max_hp - 3);
+        w.fight = None;
+        // Killed by the story, it lies there as a body and stands no more.
+        let notes = apply(&mut w, json!([{ "op": "kill", "id": "cat" }]));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!(w.here().creatures.is_empty());
+        assert!(w.here().props.iter().any(|p| p.id == "cat_body" && p.body.is_some()));
+        assert!(w.story.facts.iter().any(|f| f.contains("died")));
+        // A wound greater than all it has kills too; one aimed at nobody is noted.
+        apply(&mut w, json!([{ "op": "spawn", "kind": "creature", "id": "rat", "name": "Rat", "x": 9, "y": 9, "sprite": "cat", "attitude": "neutral", "monster": "giant-rat" }, { "op": "damage", "id": "rat", "amount": "99" }]));
+        assert!(w.here().props.iter().any(|p| p.id == "rat_body"));
+        assert_eq!(apply(&mut w, json!([{ "op": "kill", "id": "ghost" }])).len(), 1);
+        // With no id the party is hurt, as before.
+        let before = w.party[0].hp;
+        apply(&mut w, json!([{ "op": "damage", "amount": "2" }]));
+        assert_eq!(w.party[0].hp, before - 2);
     }
 
     #[test]

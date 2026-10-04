@@ -183,6 +183,9 @@ pub struct Creature {
     /// The faction it belongs to, by id; empty for none.
     #[serde(default)]
     pub faction: String,
+    /// Hit points lost outside a fight: it goes into the next one that much weaker.
+    #[serde(default)]
+    pub hurt: i32,
     /// How haggling moved the prices today, in hundredths.
     #[serde(default)]
     pub haggle: i8,
