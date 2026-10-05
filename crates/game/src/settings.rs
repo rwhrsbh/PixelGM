@@ -173,7 +173,6 @@ fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, sett
             sheet.spawn((Text::default(), T::Settings, fonts.title(1), TextColor(color(INK))));
             sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
                 button(line, &art, &fonts, T::Graphics, true, crate::menu::Nav::Go(Screen::Graphics));
-                button(line, &art, &fonts, T::ProviderOpen, true, crate::menu::Nav::Go(Screen::Provider));
             });
             // More settings than fit on the table at once: the list scrolls.
             sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(5), ..default() }, 182.0)).with_children(|sheet| {

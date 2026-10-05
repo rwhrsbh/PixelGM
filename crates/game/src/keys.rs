@@ -7,7 +7,7 @@ use crate::i18n::{Lang, T, wait_text};
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::store::Settings;
 use crate::theme::*;
-use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, scroll_list};
+use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, scroll_list, text_button};
 use bevy::input_focus::{AutoFocus, InputFocus};
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextCursorStyle};
@@ -20,6 +20,23 @@ enum KeyAction {
     Remove(KeyId),
     Recheck(KeyId),
     TestGm,
+    /// To another master's keys and models.
+    Provider(llm::providers::Kind),
+    /// Gemini runs the game again.
+    UseGemini,
+}
+
+#[derive(Component)]
+struct MasterLine;
+
+fn master_line(settings: Res<Settings>, lang: Res<Lang>, mut lines: Query<&mut Text, With<MasterLine>>) {
+    let who = settings.active_provider().map_or("Gemini", |kind| kind.name());
+    let said = format!("{} {who}", T::MasterNow.text(*lang));
+    for mut text in &mut lines {
+        if text.0 != said {
+            text.0 = said.clone();
+        }
+    }
 }
 
 #[derive(Component)]
@@ -62,7 +79,17 @@ fn spawn_keys(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
     commands.spawn(screen_root(Screen::Keys)).with_children(|root| {
         let sheet = Node { margin: UiRect::top(px(12)), width: px(452), ..column(6.0) };
         spawn_panel(root, &art, sheet, |sheet| {
-            sheet.spawn((Text::default(), T::Keys, fonts.title(1), ink));
+            sheet.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|tabs| {
+                // The tab one is on: pressing it does nothing.
+                text_button(tabs, &art, &fonts, "[Gemini]".to_string(), ());
+                for kind in llm::providers::Kind::ALL {
+                    text_button(tabs, &art, &fonts, kind.name().to_string(), KeyAction::Provider(kind));
+                }
+            });
+            sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                line.spawn((Text::default(), MasterLine, fonts.body(), TextColor(color(WAX_DARK))));
+                button(line, &art, &fonts, T::MasterUseGemini, true, KeyAction::UseGemini);
+            });
             sheet.spawn(Node { column_gap: px(12), align_items: AlignItems::FlexStart, ..default() }).with_children(|columns| {
                 columns.spawn(Node { width: px(216), flex_shrink: 0.0, ..column(5.0) }).with_children(|left| {
                     left.spawn((Text::default(), T::KeysHelp, fonts.body(), ink));
@@ -229,7 +256,7 @@ fn on_activate(
     used: On<Activate>,
     buttons: Query<&KeyAction>,
     gm: Res<Gm>,
-    settings: Res<Settings>,
+    (mut settings, store, mut desk, mut next): (ResMut<Settings>, Res<crate::store::Store>, ResMut<crate::provider::Desk>, ResMut<NextState<Screen>>),
     mut book: ResMut<KeyBook>,
     mut test: ResMut<GmTest>,
     mut input: Query<&mut EditableText, With<KeyInput>>,
@@ -244,6 +271,16 @@ fn on_activate(
         KeyAction::Remove(id) => gm.remove_key(&mut book, id),
         KeyAction::Recheck(id) => gm.recheck(&mut book, id),
         KeyAction::TestGm => gm.test(&mut test, &settings),
+        KeyAction::Provider(kind) => {
+            desk.open_on = Some(kind);
+            next.set(Screen::Provider);
+        }
+        KeyAction::UseGemini => {
+            settings.set_master(None);
+            if let Err(e) = store.save_settings(&settings) {
+                error!("could not save settings: {e}");
+            }
+        }
     }
 }
 
@@ -268,7 +305,7 @@ pub struct KeysPlugin;
 impl Plugin for KeysPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Screen::Keys), spawn_keys)
-            .add_systems(Update, (submit_on_enter, redraw_keys, redraw_models, show_test).chain().run_if(in_state(Screen::Keys)))
+            .add_systems(Update, (submit_on_enter, redraw_keys, redraw_models, show_test, master_line).chain().run_if(in_state(Screen::Keys)))
             .add_observer(on_activate);
     }
 }

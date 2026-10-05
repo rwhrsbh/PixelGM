@@ -419,7 +419,14 @@ texts! {
     SetWindow: "Окно", "Window";
     SetOnlineMusic: "Музыка из сети", "Music from the network";
     OnlineMusicHint: "Сотни треков (Kevin MacLeod, CC BY 4.0; OpenGameArt, CC0) подкачиваются по настроению и хранятся на диске; без сети играет скачанное", "Hundreds of pieces (Kevin MacLeod, CC BY 4.0; OpenGameArt, CC0) are fetched by mood and kept on disk; offline, what was fetched plays";
-    ProviderOpen: "Провайдеры и модели…", "Providers and models…";
+    MasterGemini: "Мастер: Gemini", "Master: Gemini";
+    MasterNim: "Мастер: NVIDIA NIM", "Master: NVIDIA NIM";
+    MasterOpenRouter: "Мастер: OpenRouter", "Master: OpenRouter";
+    MasterCloudflare: "Мастер: Cloudflare", "Master: Cloudflare";
+    MasterCustom: "Мастер: свой сервер", "Master: own server";
+    MasterNow: "Сейчас игру ведёт:", "The game is run by:";
+    MasterUseGemini: "Сделать Gemini мастером", "Make Gemini the master";
+    ProvOne: "мастер один: включишь этого — прежний выключится", "one master at a time: switching this on switches the other off";
     KeysProvider: "Ключи и модели провайдера", "The provider's keys and models";
     ProvAccount: "ID аккаунта", "Account ID";
     ProvKeys: "Ключей:", "Keys:";
@@ -436,7 +443,7 @@ texts! {
     ProvOffered: "Моделей в списке:", "Models on offer:";
     ProvFetchHint: "Нажми «Загрузить список», затем выбери модели; текст в поле сужает список.", "Press Fetch the list, then pick models; what is typed narrows the list.";
     ProviderUrl: "Адрес", "Address";
-    ProviderUse: "Использовать вместо Gemini", "Use instead of Gemini";
+    ProviderUse: "Ведёт игру", "Runs the game";
     ProviderWorks: "Работает:", "Works:";
     ProviderFails: "Не отвечает:", "No answer:";
     SetSize: "Размер окна", "Window size";

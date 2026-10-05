@@ -810,8 +810,9 @@ fn client_pump(
             ClientEvent::Message(Down::Ask(asked)) => {
                 // The model may take minutes: the answer comes back from a thread of its own.
                 let (gm, fake, serving) = (gm.clone(), master.fake, serving.clone());
+                let (providers, rotation) = (settings.providers(), master.rotation.clone());
                 std::thread::spawn(move || {
-                    let result = serve_for_host(&gm, &asked, fake);
+                    let result = serve_for_host(&gm, &asked, fake, &providers, &rotation);
                     serving.lock().unwrap().push((asked.id, result));
                 });
             }

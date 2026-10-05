@@ -128,7 +128,7 @@ fn breathe(time: Res<Time>, mut glows: Query<(&Glow, &mut ImageNode)>) {
     }
 }
 
-fn spawn_main(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, store: Res<Store>) {
+fn spawn_main(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, store: Res<Store>, settings: Res<crate::store::Settings>) {
     let has_saves = !store.list_saves().is_empty();
     commands.spawn(screen_root(Screen::Main)).with_children(|root| {
         root.spawn((
@@ -146,7 +146,7 @@ fn spawn_main(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, store: R
                 (T::Continue, Nav::Continue, has_saves),
                 (T::LoadGame, Nav::Go(Screen::Load), has_saves),
                 (T::Multiplayer, Nav::Go(Screen::Lobby), true),
-                (T::Keys, Nav::Go(Screen::Keys), true),
+                (settings.master_label(), Nav::Go(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys }), true),
                 (T::Settings, Nav::Go(Screen::Settings), true),
                 (T::Quit, Nav::Quit, true),
             ] {

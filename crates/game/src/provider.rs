@@ -28,6 +28,8 @@ enum Field {
 #[derive(Component, Clone, Copy)]
 enum Act {
     Tab(Kind),
+    /// To Gemini's keys: the same desk, another master.
+    Gemini,
     Toggle,
     AddKey,
     DropKey(usize),
@@ -61,6 +63,8 @@ type Fetched = Arc<Mutex<Option<Result<Vec<String>, String>>>>;
 #[derive(Resource)]
 pub struct Desk {
     pub tab: Kind,
+    /// The provider another screen asked to be shown, once.
+    pub open_on: Option<Kind>,
     voices: bool,
     /// What is typed and not yet added, kept over a redraw.
     typed_key: String,
@@ -78,7 +82,7 @@ pub struct Desk {
 
 impl Default for Desk {
     fn default() -> Self {
-        Self { tab: Kind::Nim, voices: false, typed_key: String::new(), typed_model: String::new(), offered: Vec::new(), offered_for: None, fetched: Arc::default(), note: Arc::default(), redraw: false, shown: String::new() }
+        Self { tab: Kind::Nim, open_on: None, voices: false, typed_key: String::new(), typed_model: String::new(), offered: Vec::new(), offered_for: None, fetched: Arc::default(), note: Arc::default(), redraw: false, shown: String::new() }
     }
 }
 
@@ -111,7 +115,9 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, mut settings:
     desk.note.lock().unwrap().clear();
     desk.shown.clear();
     // Opened on the provider that is the master now, if one is.
-    if let Some(active) = settings.active_provider() {
+    if let Some(asked) = desk.open_on.take() {
+        desk.tab = asked;
+    } else if let Some(active) = settings.active_provider() {
         desk.tab = active;
     }
     build(&mut commands, &art, &fonts, &mut settings, &desk, *lang);
@@ -130,6 +136,7 @@ fn build(commands: &mut Commands, art: &Art, fonts: &Fonts, settings: &mut Setti
         spawn_panel(root, art, sheet, |sheet| {
             // The providers: the one being looked at in brackets, those switched on marked.
             sheet.spawn(line()).with_children(|tabs| {
+                text_button(tabs, art, fonts, if on.is_empty() { "● Gemini".to_string() } else { "Gemini".to_string() }, Act::Gemini);
                 for kind in Kind::ALL {
                     let mark = if on.contains(&kind) { "● " } else { "" };
                     let name = if kind == desk.tab { format!("[{mark}{}]", kind.name()) } else { format!("{mark}{}", kind.name()) };
@@ -139,18 +146,23 @@ fn build(commands: &mut Commands, art: &Art, fonts: &Fonts, settings: &mut Setti
             sheet.spawn(line()).with_children(|row| {
                 row.spawn((Text::default(), T::ProviderUse, fonts.body(), ink));
                 button(row, art, fonts, if this.on { T::Yes } else { T::No }, true, Act::Toggle);
-                match desk.tab {
-                    Kind::Cloudflare => {
-                        row.spawn((Text::default(), T::ProvAccount, fonts.body(), ink));
-                        field(row, art, fonts, Field::Address, &this.account, 190.0);
-                    }
-                    Kind::Custom => {
-                        row.spawn((Text::default(), T::ProviderUrl, fonts.body(), ink));
-                        field(row, art, fonts, Field::Address, &this.url, 210.0);
-                    }
-                    _ => {}
+                if !this.on {
+                    row.spawn((Text::default(), T::ProvOne, fonts.body(), faded));
                 }
             });
+            // What only this provider needs, on a line of its own.
+            if matches!(desk.tab, Kind::Cloudflare | Kind::Custom) {
+                sheet.spawn(line()).with_children(|row| match desk.tab {
+                    Kind::Cloudflare => {
+                        row.spawn((Text::default(), T::ProvAccount, fonts.body(), ink));
+                        field(row, art, fonts, Field::Address, &this.account, 230.0);
+                    }
+                    _ => {
+                        row.spawn((Text::default(), T::ProviderUrl, fonts.body(), ink));
+                        field(row, art, fonts, Field::Address, &this.url, 250.0);
+                    }
+                });
+            }
             // The keys take turns; a press on one takes it away.
             sheet.spawn(line()).with_children(|row| {
                 row.spawn((Text::new(format!("{} {}", T::ProvKeys.text(lang), keys.len())), fonts.body(), ink));
@@ -309,7 +321,14 @@ fn on_activate(used: On<Activate>, acts: Query<&Act>, fields: Query<(&Field, &Ed
             desk.typed_model.clear();
             desk.note.lock().unwrap().clear();
         }
-        Act::Toggle => this.on = !this.on,
+        Act::Gemini => {
+            desk.redraw = false;
+            next.set(Screen::Keys);
+        }
+        Act::Toggle => {
+            let on = !this.on;
+            settings.set_master(on.then_some(tab));
+        }
         Act::AddKey => {
             // Several keys may be pasted at once, parted by spaces, commas or new lines.
             let pasted = desk.typed_key.clone();
@@ -402,7 +421,7 @@ fn on_activate(used: On<Activate>, acts: Query<&Act>, fields: Query<(&Field, &Ed
         }
         Act::Back => {
             desk.redraw = false;
-            next.set(return_to.0.take().unwrap_or(Screen::Settings));
+            next.set(return_to.0.take().unwrap_or(Screen::Main));
         }
     }
     if let Err(e) = store.save_settings(&settings) {
@@ -412,6 +431,6 @@ fn on_activate(used: On<Activate>, acts: Query<&Act>, fields: Query<(&Field, &Ed
 
 fn escape(keys: Res<ButtonInput<KeyCode>>, mut return_to: ResMut<ReturnTo>, mut next: ResMut<NextState<Screen>>) {
     if keys.just_pressed(KeyCode::Escape) {
-        next.set(return_to.0.take().unwrap_or(Screen::Settings));
+        next.set(return_to.0.take().unwrap_or(Screen::Main));
     }
 }

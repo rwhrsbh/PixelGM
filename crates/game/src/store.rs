@@ -152,6 +152,26 @@ impl Settings {
         self.providers.iter_mut().find(|p| p.kind == kind).expect("just made")
     }
 
+    /// What the main menu calls the master of the moment.
+    pub fn master_label(&self) -> crate::i18n::T {
+        use crate::i18n::T;
+        use llm::providers::Kind;
+        match self.active_provider() {
+            None => T::MasterGemini,
+            Some(Kind::Nim) => T::MasterNim,
+            Some(Kind::OpenRouter) => T::MasterOpenRouter,
+            Some(Kind::Cloudflare) => T::MasterCloudflare,
+            Some(Kind::Custom) => T::MasterCustom,
+        }
+    }
+
+    /// Makes one provider the master, or Gemini with `None`: there is one at a time.
+    pub fn set_master(&mut self, kind: Option<llm::providers::Kind>) {
+        for provider in &mut self.providers {
+            provider.on = Some(provider.kind) == kind;
+        }
+    }
+
     /// The provider that is on, the first of them: the one whose keys are the master's.
     pub fn active_provider(&self) -> Option<llm::providers::Kind> {
         self.providers.iter().find(|p| p.on).map(|p| p.kind)
@@ -245,6 +265,12 @@ impl Store {
             settings.providers.push(old);
             settings.custom_model.clear();
             settings.custom_on = false;
+            let _ = self.save_settings(&settings);
+        }
+        // One master at a time: of several switched on the old way, the first stays.
+        if settings.providers.iter().filter(|p| p.on).count() > 1 {
+            let first = settings.active_provider();
+            settings.set_master(first);
             let _ = self.save_settings(&settings);
         }
         // The game starts in fullscreen. Settings saved before that was so are switched

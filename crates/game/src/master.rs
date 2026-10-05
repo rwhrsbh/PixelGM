@@ -193,9 +193,13 @@ fn request_for(system: &str, prompt: &str, thinking: ThinkingSetting) -> GenRequ
 }
 
 /// A guest's side of a relayed request: asks with the guest's own keys.
-pub fn serve_for_host(gm: &Gm, asked: &Relayed, fake: bool) -> Served {
+pub fn serve_for_host(gm: &Gm, asked: &Relayed, fake: bool, providers: &[llm::providers::Provider], rotation: &llm::providers::Rotation) -> Served {
     if fake {
         return Err(Trouble::NoKeys);
+    }
+    // Whoever is this player's master serves: a provider, if one is, and Gemini otherwise.
+    if !providers.is_empty() {
+        return rotation.complete(providers, &asked.system, &asked.prompt, &llm::providers::Network).map(|(text, who)| (who, text)).map_err(|error| Trouble::Rejected(error.chars().take(200).collect()));
     }
     let (reply, model) = gm.dispatcher.generate(&request_for(&asked.system, &asked.prompt, asked.thinking), asked.lowest)?;
     Ok((model.id, reply.text))
@@ -242,9 +246,8 @@ impl Call {
         let mut last = String::new();
         for _ in 0..self.attempts {
             let started = Instant::now();
-            // The providers the player switched on take the place of Gemini: their models in
-            // the player's order, their keys in turn. Gemini is asked only when none of them
-            // answers and it has a key to answer with.
+            // The provider the player made the master takes the place of Gemini: its models
+            // in the player's order, its keys in turn. Gemini is not asked behind its back.
             if !self.providers.is_empty() {
                 match self.rotation.complete(&self.providers, &system, prompt, &llm::providers::Network) {
                     Ok((text, who)) => {
@@ -260,9 +263,16 @@ impl Call {
                     Err(error) => {
                         warn!("the providers did not answer after {:.1} s: {error}", started.elapsed().as_secs_f32());
                         last = error.chars().take(400).collect();
-                        if !self.gm.dispatcher.has_keys() {
-                            continue;
+                        // The host's master gave nothing: the masters of the guests are next.
+                        if let Some(Ok((model, text))) = self.relay.ask(&system, prompt, self.thinking, self.lowest) {
+                            info!("a guest's master answered: {model}, {} characters", text.chars().count());
+                            self.store.log_answer(&model.replace([':', '/', ' ', '@'], "-"), &text);
+                            match world::read_answer::<T>(&text) {
+                                Ok(value) => return Ok(value),
+                                Err(e) => last = format!("{model}: {e}"),
+                            }
                         }
+                        continue;
                     }
                 }
             }
