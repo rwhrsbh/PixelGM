@@ -841,7 +841,7 @@ fn hover(
     lang: Res<Lang>,
     fonts: Res<Fonts>,
     mut state: ResMut<BagState>,
-    mut tips: Query<(Entity, &mut Node), With<Tip>>,
+    mut tips: Query<(Entity, &mut Node, &ComputedNode), With<Tip>>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut commands: Commands,
 ) {
@@ -890,11 +890,21 @@ fn hover(
             _ => {}
         }
     }
-    let Ok((entity, mut node)) = tips.single_mut() else { return };
+    let Ok((entity, mut node, laid)) = tips.single_mut() else { return };
+    // Many words want a wider tip, so that it does not grow taller than the screen.
+    let letters: usize = lines.iter().map(|(text, _)| text.chars().count()).sum();
+    let width: f32 = if letters > 420 { 300.0 } else if letters > 180 { 230.0 } else { 170.0 };
+    if !lines.is_empty() && node.max_width != px(width) {
+        node.max_width = px(width);
+    }
     if let Some(at) = cursor(&window) {
-        // Beside the cursor, kept on the screen.
-        node.left = px((at.x + 10.0).min(crate::screen::UI.x as f32 - 172.0));
-        node.top = px((at.y + 8.0).min(crate::screen::UI.y as f32 - 60.0));
+        // Beside the cursor, and moved up or left by as much as it would leave the screen.
+        let size = laid.size() * laid.inverse_scale_factor();
+        let screen = crate::screen::UI.as_vec2();
+        let (wide, high) = (size.x.max(width.min(60.0)), size.y.max(20.0));
+        node.left = px((at.x + 10.0).min(screen.x - wide - 2.0).max(2.0));
+        // Clear of the strip along the bottom of the screen.
+        node.top = px((at.y + 8.0).min(screen.y - 20.0 - high).max(2.0));
     }
     let shown = if lines.is_empty() { Display::None } else { Display::Flex };
     if node.display != shown {

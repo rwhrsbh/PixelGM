@@ -2898,13 +2898,23 @@ fn overlay(
                 sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::RollDie, true, (PlayAction::Roll, EnterPresses)));
             }
             Sheet::Character { lines, points, offer, advancing } => {
-                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }, 150.0)).with_children(|rows| {
+                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }, 164.0)).with_children(|rows| {
                     for line in lines {
-                        rows.spawn((Text::new(line.clone()), fonts.body(), ink));
+                        // Headings stand out, notes step back.
+                        if let Some(heading) = line.strip_prefix("# ") {
+                            rows.spawn((Text::new(heading.to_string()), fonts.body(), TextColor(color(WAX_DARK)), Node { margin: UiRect::top(px(3)), ..default() }));
+                        } else if let Some(note) = line.strip_prefix("~ ") {
+                            rows.spawn((Text::new(note.to_string()), fonts.body(), faded));
+                        } else {
+                            rows.spawn((Text::new(line.clone()), fonts.body(), ink));
+                        }
                     }
                 });
                 if !advancing.is_empty() {
-                    sheet.spawn(Node::default()).with_children(|slot| text_button(slot, &art, &fonts, format!("{} {advancing}", T::NextLevels.text(*lang)), PlayAction::Advance));
+                    sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|slot| {
+                        text_button(slot, &art, &fonts, format!("{} {advancing}", T::NextLevels.text(*lang)), PlayAction::Advance);
+                        slot.spawn((Text::default(), T::NextLevelsHint, fonts.body(), faded));
+                    });
                 }
                 if !offer.is_empty() {
                     sheet.spawn((Text::default(), T::FeatChoose, fonts.body(), TextColor(color(WAX_DARK))));

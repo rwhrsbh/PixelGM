@@ -194,7 +194,7 @@ fn build_form(commands: &mut Commands, art: &Art, fonts: &Fonts, making: &Making
     });
 }
 
-fn spawn_waiting(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
+fn spawn_waiting(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
     commands.spawn(screen_root(Screen::Creating)).with_children(|root| {
         let sheet = Node { margin: UiRect::top(px(70)), width: px(300), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
         spawn_panel(root, &art, sheet, |sheet| {
@@ -203,7 +203,7 @@ fn spawn_waiting(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
             sheet.spawn((FailureButtons, Node { column_gap: px(6), display: Display::None, ..default() })).with_children(|line| {
                 button(line, &art, &fonts, T::Back, true, Nav::Go(Screen::NewGame));
                 button(line, &art, &fonts, T::Recheck, true, Action::Retry);
-                button(line, &art, &fonts, T::Keys, true, Action::Keys);
+                button(line, &art, &fonts, if settings.active_provider().is_some() { T::KeysProvider } else { T::Keys }, true, Action::Keys);
             });
         });
     });
@@ -266,7 +266,7 @@ fn on_activate(
                 making.request = input.value().to_string();
             }
             return_to.0 = Some(if *screen.get() == Screen::Creating { Screen::NewGame } else { *screen.get() });
-            next.set(Screen::Keys);
+            next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
         }
     }
 }

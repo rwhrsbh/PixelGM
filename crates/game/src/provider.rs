@@ -160,6 +160,9 @@ fn build(commands: &mut Commands, art: &Art, fonts: &Fonts, settings: &mut Setti
                 field(row, art, fonts, Field::Key, &desk.typed_key, 130.0);
                 button(row, art, fonts, T::ProvAddKey, true, Act::AddKey);
             });
+            if desk.tab == Kind::Nim {
+                sheet.spawn((Text::default(), T::ProvNimSlow, fonts.body(), TextColor(color(WAX_DARK))));
+            }
             sheet.spawn(line()).with_children(|row| {
                 for (voices, label) in [(false, T::ProvChat), (true, T::ProvVoice)] {
                     let name = if voices == desk.voices { format!("[{}]", label.text(lang)) } else { label.text(lang).to_string() };

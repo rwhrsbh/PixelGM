@@ -233,9 +233,25 @@ pub fn loosen(value: &mut serde_json::Value) {
 /// Reads the master's answer, mending what can be mended first.
 pub fn read_answer<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
     let json = extract_json(text).ok_or("no JSON in the answer")?;
-    let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let mut value: serde_json::Value = match serde_json::from_str(json) {
+        Ok(value) => value,
+        // A model that thinks aloud before it answers, or goes on talking after: the answer
+        // is the last thing in the text that reads as an object from the start of a line.
+        Err(first) => last_object(text).ok_or_else(|| first.to_string())?,
+    };
     loosen(&mut value);
     serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
+/// The last object in a text that begins a line and reads whole, whatever follows it.
+fn last_object(text: &str) -> Option<serde_json::Value> {
+    let mut starts: Vec<usize> = text.match_indices('{').map(|(at, _)| at).filter(|at| text[..*at].rsplit('\n').next().is_some_and(|before| before.trim().is_empty())).collect();
+    starts.reverse();
+    // Thoughts are long: only so many beginnings are tried.
+    starts.iter().take(40).find_map(|at| {
+        let value = serde_json::Deserializer::from_str(&text[*at..]).into_iter::<serde_json::Value>().next()?.ok()?;
+        (value.as_object().is_some_and(|o| o.len() > 1)).then_some(value)
+    })
 }
 
 /// An id safe to use as a key: lower case, letters, digits and underscores only.
@@ -1107,5 +1123,15 @@ mod tests {
         let (world, _) = build_world(&d, "save me", "English").unwrap();
         let loaded: World = serde_json::from_str(&serde_json::to_string(&world).unwrap()).unwrap();
         assert_eq!(loaded, world);
+    }
+    #[test]
+    fn an_answer_among_thoughts_is_found() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Two {
+            a: i32,
+            b: String,
+        }
+        let text = "we need {x} rows, like {\"a\": 0}.\nSo:\n{\n  \"a\": 1,\n  \"b\": \"}{\"\n}\nThat is all {really}.";
+        assert_eq!(read_answer::<Two>(text), Ok(Two { a: 1, b: "}{".into() }));
     }
 }

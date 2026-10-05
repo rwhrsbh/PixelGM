@@ -157,7 +157,7 @@ texts! {
     NewHero: "Новый герой (прежний погиб)", "A new hero (the old one died)";
     FeatOffer: "★ Новая способность: открой лист героя (C)", "★ A new ability: open the hero sheet (C)";
     FeatChoose: "Выбери одну способность:", "Choose one ability:";
-    Feats: "Особое:", "Special:";
+
     SecretSkill: "тайный навык", "a secret skill";
     StuntName: "Импровизация", "Improvised action";
     StuntHint: "Что делает герой? Мастер назначит проверку; действие потратится.", "What does the hero do? The master names the check; the action is spent.";
@@ -177,7 +177,24 @@ texts! {
     Volume4: "в полную силу", "100%";
     Edition51: "Свод правил: SRD 5.1", "Rules edition: SRD 5.1";
     Edition52: "Свод правил: SRD 5.2 (бета)", "Rules edition: SRD 5.2 (beta)";
-    NextLevels: "Следующие уровни:", "Next levels go to:";
+    NextLevels: "Новые уровни получать как:", "Take new levels as:";
+    NextLevelsHint: "нажми, чтобы сменить класс (мультикласс)", "press to change the class (multiclassing)";
+    SheetToNext: "до уровня", "to level";
+    SheetTop: "выше расти некуда", "the highest level";
+    SheetBody: "Здоровье и защита", "Health and defence";
+    SheetSpeed: "Скорость", "Speed";
+    SheetFeet: "фт", "ft";
+    SheetProficiency: "Бонус мастерства", "Proficiency bonus";
+    SheetBodyHint: "КД — что врагу надо выбросить, чтобы попасть. Кости хитов лечат на отдыхе.", "AC is what a foe must roll to hit. Hit dice heal on a short rest.";
+    SheetAbilities: "Характеристики (в скобках — прибавка к броскам)", "Abilities (in brackets: what is added to rolls)";
+    SheetSkills: "Навыки, которым обучен", "Trained skills";
+    SheetNoSkills: "нет", "none";
+    SheetWeapons: "Оружие", "Weapons";
+    SheetAttack: "атака", "attack";
+    SheetDamage: "урон", "damage";
+    SheetSpells: "Заклинания", "Spells";
+    SheetSpecial: "Особые умения", "Special abilities";
+    ProvNimSlow: "Бесплатные модели NIM стоят в очереди и могут отвечать по 10–15 минут. Игра ждёт без ограничения по времени; выключенные «мысли» в настройках ускоряют ответ.", "NIM's free models queue and may take 10–15 minutes to answer. The game waits with no time limit; thinking switched off in the settings makes answers quicker.";
     SetVoice: "Голос мастера", "The master's voice";
     VoiceHint: "Мастер читает рассказ вслух. Тратит квоту голосовых моделей, отдельную от квоты мастера.", "The master reads the telling aloud. Spends the quota of the speaking models, separate from the master's own.";
     MasterBusy: "Мастер занят другим вопросом. Подожди ответа.", "The master is busy with another question. Wait for the answer.";
@@ -319,7 +336,6 @@ texts! {
     NeedSkills: "Выбери навыки, столько:", "Choose this many skills:";
     Level: "уровень", "level";
     Experience: "Опыт", "XP";
-    Weapons: "Оружие:", "Weapons:";
     Slots: "Ячейки:", "Slots:";
     PointsToPlace: "Очков характеристик к распределению:", "Ability points to place:";
     CheckTitle: "Проверка", "Check";

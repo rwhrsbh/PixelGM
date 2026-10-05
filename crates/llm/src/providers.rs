@@ -202,17 +202,66 @@ pub fn read_sound(bytes: Vec<u8>, kind: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+/// An answer that came in pieces, put together into the shape of one that came whole. The
+/// thoughts of the model are left out; an error among the pieces is kept as the answer.
+/// How much a model may think before it says anything, in bytes.
+const THOUGHTS_ENOUGH: usize = 60_000;
+
+pub fn gather_stream(lines: impl Iterator<Item = std::io::Result<String>>) -> std::io::Result<String> {
+    let mut text = String::new();
+    let mut thought = false;
+    let mut thoughts = 0;
+    let mut whole = String::new();
+    for line in lines {
+        let line = line?;
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            // Not a stream after all: the answer as it is.
+            if !line.starts_with(':') && !line.starts_with("event:") {
+                whole.push_str(&line);
+            }
+            continue;
+        };
+        if data == "[DONE]" {
+            break;
+        }
+        let Ok(piece) = serde_json::from_str::<serde_json::Value>(data) else { continue };
+        if piece.get("error").is_some() {
+            return Ok(piece.to_string());
+        }
+        let delta = &piece["choices"][0]["delta"];
+        if let Some(part) = delta["content"].as_str() {
+            text.push_str(part);
+        }
+        let thinking = delta["reasoning_content"].as_str().or_else(|| delta["reasoning"].as_str()).map_or(0, str::len);
+        thought |= thinking > 0;
+        thoughts += thinking;
+        // Thoughts without end and not a word of the answer: a model going in circles.
+        if text.is_empty() && thoughts > THOUGHTS_ENOUGH {
+            break;
+        }
+    }
+    if text.is_empty() && !thought && !whole.trim().is_empty() {
+        return Ok(whole);
+    }
+    Ok(serde_json::json!({ "choices": [{ "message": { "role": "assistant", "content": text } }], "thought": thought }).to_string())
+}
+
 pub struct Network;
 
 impl Transport for Network {
+    /// No limit on the whole answer: a free model may take a quarter of an hour, and that is
+    /// not an error. Only silence for as long as `timeout` is.
     fn post(&self, url: &str, key: &str, body: &str, timeout: Duration) -> Result<String, Refusal> {
-        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout(timeout).build();
+        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(timeout).build();
         let mut request = agent.post(url).set("Content-Type", "application/json");
         if !key.trim().is_empty() {
             request = request.set("Authorization", &format!("Bearer {}", key.trim()));
         }
         match request.send_string(body) {
-            Ok(answer) => answer.into_string().map_err(|e| Refusal { status: 0, retry_after: None, text: e.to_string() }),
+            Ok(answer) => {
+                let lines = std::io::BufRead::lines(std::io::BufReader::new(answer.into_reader()));
+                gather_stream(lines).map_err(|e| Refusal { status: 0, retry_after: None, text: e.to_string() })
+            }
             Err(ureq::Error::Status(status, answer)) => {
                 let retry_after = answer.header("Retry-After").and_then(|v| v.trim().parse().ok());
                 Err(Refusal { status, retry_after, text: answer.into_string().unwrap_or_default().chars().take(300).collect() })
@@ -259,6 +308,8 @@ struct State {
     next: HashMap<Kind, usize>,
     /// Models that would not be told how hard to think.
     plain: std::collections::HashSet<(Kind, String)>,
+    /// Models that thought and thought and said nothing: asked not to think from then on.
+    mute: std::collections::HashSet<(Kind, String)>,
 }
 
 /// The end of a key, to tell keys apart in the log without showing them.
@@ -284,7 +335,9 @@ impl Rotation {
                 *next = (start + 1) % keys.len();
                 start
             };
-            let timeout = Duration::from_secs(if provider.kind == Kind::Custom { 600 } else { 180 });
+            // How long a model may be silent, not how long it may take: the answer comes in
+            // pieces, and while they come it is at work.
+            let timeout = Duration::from_secs(3600);
             for model in &provider.models {
                 let model = model.trim();
                 if self.model_rests(provider.kind, model) {
@@ -295,26 +348,71 @@ impl Rotation {
                     if self.rests(provider.kind, key, model) {
                         continue;
                     }
-                    let body = |effort: bool| {
+                    // Cloudflare cuts an answer short at a few hundred tokens unless told how
+                    // long it may be; its models differ in how much they can be told.
+                    let room = std::cell::Cell::new(if provider.kind == Kind::Cloudflare { 12_000 } else { 0 });
+                    let body = |effort: &str| {
                         let mut body = serde_json::json!({
                             "model": model,
                             "messages": [{ "role": "system", "content": system }, { "role": "user", "content": prompt }],
                             "temperature": 0.9,
-                            "stream": false,
+                            "stream": true,
                         });
-                        if effort {
-                            body["reasoning_effort"] = serde_json::json!(provider.effort.trim());
+                        if room.get() > 0 {
+                            body["max_tokens"] = serde_json::json!(room.get());
+                        }
+                        match (provider.kind, effort) {
+                            (_, "") => {}
+                            // NVIDIA's models take the switch through their chat template,
+                            // and a budget for the thoughts when they are on.
+                            (Kind::Nim, "none") => body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false }),
+                            (Kind::Nim, _) => {
+                                body["reasoning_effort"] = serde_json::json!(effort);
+                                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
+                                body["reasoning_budget"] = serde_json::json!(match effort {
+                                    "low" => 1024,
+                                    "medium" => 4096,
+                                    _ => 16384,
+                                });
+                            }
+                            _ => body["reasoning_effort"] = serde_json::json!(effort),
                         }
                         body.to_string()
                     };
                     let label = format!("{}: {model}", provider.kind.name());
-                    let effort = !provider.effort.trim().is_empty() && !self.state.lock().unwrap().plain.contains(&(provider.kind, model.to_string()));
+                    let name = (provider.kind, model.to_string());
+                    // Thinking switched off is said aloud to a service in the cloud: left
+                    // unsaid, its models think all the same, some without end.
+                    let effort = {
+                        let state = self.state.lock().unwrap();
+                        let cloud = provider.kind != Kind::Custom;
+                        if state.plain.contains(&name) {
+                            ""
+                        } else if cloud && (state.mute.contains(&name) || provider.effort.trim().is_empty()) {
+                            "none"
+                        } else {
+                            provider.effort.trim()
+                        }
+                    };
                     let mut answer = transport.post(&provider.endpoint(), key, &body(effort), timeout);
+                    // More room asked for than the model has: once more with less.
+                    if room.get() > 0 && answer.as_ref().is_err_and(|r| matches!(r.status, 400 | 413) && r.text.to_lowercase().contains("token")) {
+                        room.set(4_000);
+                        answer = transport.post(&provider.endpoint(), key, &body(effort), timeout);
+                    }
                     // Refused with the thinking asked for: it may be the asking. Once more, plainly.
-                    if effort && answer.as_ref().is_err_and(|r| matches!(r.status, 400 | 422)) {
-                        answer = transport.post(&provider.endpoint(), key, &body(false), timeout);
+                    if !effort.is_empty() && answer.as_ref().is_err_and(|r| matches!(r.status, 400 | 422)) {
+                        answer = transport.post(&provider.endpoint(), key, &body(""), timeout);
                         if answer.is_ok() {
-                            self.state.lock().unwrap().plain.insert((provider.kind, model.to_string()));
+                            self.state.lock().unwrap().plain.insert(name.clone());
+                        }
+                    }
+                    // Thought, and said nothing: once more without the thinking.
+                    if effort != "none" && provider.kind != Kind::Custom && answer.as_ref().is_ok_and(|a| crate::openai::read_answer(a).is_err() && a.contains("\"thought\":true")) {
+                        let again = transport.post(&provider.endpoint(), key, &body("none"), timeout);
+                        if again.as_ref().is_ok_and(|a| crate::openai::read_answer(a).is_ok()) {
+                            self.state.lock().unwrap().mute.insert(name.clone());
+                            answer = again;
                         }
                     }
                     match answer {
@@ -326,7 +424,7 @@ impl Rotation {
                             tried.push(format!("{label} ({}): {} {}", tail(key), refusal.status, refusal.text.chars().take(120).collect::<String>()));
                             self.note(provider.kind, key, model, &refusal);
                             // A model that is not there is not there for any key.
-                            if matches!(refusal.status, 400 | 404 | 422) {
+                            if matches!(refusal.status, 0 | 400 | 404 | 410 | 413 | 422) || self.model_rests(provider.kind, model) {
                                 break;
                             }
                         }
@@ -372,7 +470,7 @@ impl Rotation {
                         Err(refusal) => {
                             tried.push(format!("{label} ({}): {} {}", tail(key), refusal.status, refusal.text.chars().take(120).collect::<String>()));
                             self.note(provider.kind, key, model, &refusal);
-                            if matches!(refusal.status, 400 | 404 | 405 | 422) {
+                            if matches!(refusal.status, 0 | 400 | 404 | 405 | 410 | 422) {
                                 break;
                             }
                         }
@@ -407,12 +505,26 @@ impl Rotation {
             402 => {
                 state.resting.insert((kind, key.to_string(), String::new()), secs(1800));
             }
+            // Forbidden, and the words are about the model (Cloudflare: "not available on the
+            // Workers Free plan"): the key is good, the model is not for it.
+            403 if refusal.text.to_lowercase().contains("model") => {
+                state.models.insert((kind, model.to_string()), secs(24 * 3600));
+            }
             401 | 403 => {
                 state.resting.insert((kind, key.to_string(), String::new()), secs(6 * 3600));
             }
             // No such model, or it cannot take this request: the model rests for every key.
-            400 | 404 | 405 | 422 => {
+            400 | 404 | 405 | 413 | 422 => {
                 state.models.insert((kind, model.to_string()), secs(1800));
+            }
+            // Withdrawn for good (NVIDIA answers 410 for a model past its end of life).
+            410 => {
+                state.models.insert((kind, model.to_string()), secs(24 * 3600));
+            }
+            // Not reached, or no answer in time: some models hang for minutes. Left alone
+            // for a while, so that the next request does not wait on it again.
+            0 => {
+                state.models.insert((kind, model.to_string()), secs(300));
             }
             // The service is unwell or was not reached: a short rest, then it is tried again.
             _ => {
@@ -570,6 +682,66 @@ mod tests {
         assert!(!Provider { voices: vec!["magpie-tts".into()], ..nim(&["k"], &[]) }.voice_ready());
         // A provider with no speaking model is passed over.
         assert!(rotation.speak(&[nim(&["k"], &["chat"])], "x", false, &speaker).is_err());
+    }
+
+    #[test]
+    fn an_answer_in_pieces_is_put_together_without_the_thoughts() {
+        let lines = |text: &str| text.lines().map(|l| Ok(l.to_string())).collect::<Vec<_>>().into_iter();
+        let stream = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hm\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"{\\\"a\\\":\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"1}\"}}]}\ndata: [DONE]\n";
+        assert_eq!(crate::openai::read_answer(&gather_stream(lines(stream)).unwrap()), Ok("{\"a\":1}".to_string()));
+        let whole = "{\"choices\":[{\"message\":{\"content\":\"hi\"}}]}";
+        assert_eq!(crate::openai::read_answer(&gather_stream(lines(whole)).unwrap()), Ok("hi".to_string()));
+        let thoughts = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hm\"}}]}\ndata: [DONE]";
+        let gathered = gather_stream(lines(thoughts)).unwrap();
+        assert!(crate::openai::read_answer(&gathered).is_err() && gathered.contains("\"thought\":true"));
+        let failed = "data: {\"error\":{\"message\":\"busy\"}}";
+        assert_eq!(crate::openai::read_answer(&gather_stream(lines(failed)).unwrap()), Err("busy".to_string()));
+    }
+
+    #[test]
+    fn a_model_that_only_thinks_is_asked_not_to() {
+        let rotation = Rotation::default();
+        let efforts = RefCell::new(Vec::new());
+        struct Thinker<'a>(&'a RefCell<Vec<String>>);
+        impl Transport for Thinker<'_> {
+            fn post(&self, _: &str, _: &str, body: &str, _: Duration) -> Result<String, Refusal> {
+                let body = serde_json::from_str::<serde_json::Value>(body).unwrap();
+                let effort = if body["chat_template_kwargs"]["enable_thinking"] == false { "none".to_string() } else { body["reasoning_effort"].as_str().unwrap_or("").to_string() };
+                self.0.borrow_mut().push(effort.clone());
+                Ok(if effort == "none" { OK.to_string() } else { "{\"choices\":[{\"message\":{\"content\":\"\"}}],\"thought\":true}".to_string() })
+            }
+        }
+        let provider = Provider { effort: "low".into(), ..nim(&["k"], &["m"]) };
+        rotation.complete(&[provider.clone()], "s", "p", &Thinker(&efforts)).unwrap();
+        rotation.complete(&[provider], "s", "p", &Thinker(&efforts)).unwrap();
+        assert_eq!(*efforts.borrow(), ["low", "none", "none"]);
+    }
+
+    #[test]
+    fn cloudflare_is_told_how_long_the_answer_may_be_and_a_model_not_in_the_plan_does_not_rest_the_key() {
+        let rotation = Rotation::default();
+        let seen = RefCell::new(Vec::new());
+        struct Plan<'a>(&'a RefCell<Vec<(String, u64)>>);
+        impl Transport for Plan<'_> {
+            fn post(&self, _: &str, _: &str, body: &str, _: Duration) -> Result<String, Refusal> {
+                let body = serde_json::from_str::<serde_json::Value>(body).unwrap();
+                let model = body["model"].as_str().unwrap().to_string();
+                let room = body["max_tokens"].as_u64().unwrap_or(0);
+                self.0.borrow_mut().push((model.clone(), room));
+                match (model.as_str(), room) {
+                    ("paid", _) => Err(Refusal { status: 403, retry_after: None, text: "Model paid is not available on the Workers Free plan".into() }),
+                    ("small", 12_000) => Err(Refusal { status: 400, retry_after: None, text: "max_tokens=12000 cannot be greater than max_model_len".into() }),
+                    _ => Ok(OK.to_string()),
+                }
+            }
+        }
+        let provider = Provider { kind: Kind::Cloudflare, account: "a".into(), ..nim(&["k"], &["paid", "small"]) };
+        let (_, who) = rotation.complete(&[provider.clone()], "s", "p", &Plan(&seen)).unwrap();
+        assert!(who.ends_with("small"));
+        rotation.complete(&[provider], "s", "p", &Plan(&seen)).unwrap();
+        let seen = seen.borrow();
+        let seen: Vec<(&str, u64)> = seen.iter().map(|(m, r)| (m.as_str(), *r)).collect();
+        assert_eq!(seen, [("paid", 12_000), ("small", 12_000), ("small", 4_000), ("small", 12_000), ("small", 4_000)]);
     }
 
     #[test]

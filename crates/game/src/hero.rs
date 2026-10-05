@@ -673,38 +673,68 @@ fn on_activate(
     }
 }
 
-/// The sheet of a character, line by line, for the sheet shown during play.
+/// The sheet of a character, line by line, for the sheet shown during play. A line that
+/// begins with "# " is a heading, one with "~ " a note on what the numbers mean.
 pub fn sheet_lines(hero: &Character, lang: Lang) -> Vec<String> {
     let data = srd();
     let ru = lang == Lang::Ru;
+    let t = |key: T| key.text(lang);
     let name = |index: &str, names: &dyn Fn(&str) -> Option<&'static str>| names(index).map_or(index.to_string(), |n| tr(ru, n).to_string());
     let race = name(&hero.race, &|i| data.race(i).map(|r| r.name.as_str()));
     let class = name(&hero.class, &|i| data.class(i).map(|c| c.name.as_str()));
     // A character of several classes names each with its levels.
     let split = hero.class_levels();
     let class = if split.len() > 1 { split.iter().map(|(c, levels)| format!("{} {levels}", tr(ru, &c.name))).collect::<Vec<_>>().join(" / ") } else { class };
-    let mut lines = vec![format!("{} — {race}, {class}, {} {}", hero.name, T::Level.text(lang), hero.level)];
-    let next = hero.xp_for_next_level().map_or(String::new(), |n| format!(" / {n}"));
-    lines.push(format!("{} {}/{} · {} {} · {} {}{next}", T::HitPoints.text(lang), hero.hp.max(0), hero.max_hp, T::ArmorClass.text(lang), hero.ac(), T::Experience.text(lang), hero.xp));
-    lines.push(Ability::ALL.map(|a| format!("{} {} ({})", tr(ru, a.name()), hero.scores[a as usize], signed(hero.modifier(a)))).join(" · "));
-    let skills: Vec<&str> = hero.skills.iter().map(|s| data.skill(s).map_or(s.as_str(), |k| tr(ru, &k.name))).collect();
-    lines.push(format!("{} {}", T::HeroSkills.text(lang), skills.join(", ")));
-    let weapons: Vec<String> = hero.weapons.iter().map(|w| format!("{} {} {}", name(w, &|i| data.weapons.get(i).map(|x| x.name.as_str())), signed(hero.attack_bonus(w)), hero.damage(w))).collect();
-    lines.push(format!("{} {}", T::Weapons.text(lang), weapons.join(", ")));
-    if !hero.spells.is_empty() {
-        let spells: Vec<&str> = hero.spells.iter().filter_map(|s| data.spells.get(s)).map(|s| tr(ru, &s.name)).collect();
-        let slots: Vec<String> = (1..=9u8).filter(|l| hero.slots()[(*l - 1) as usize] > 0).map(|l| format!("{l}: {}/{}", hero.slots_left(l), hero.slots()[(l - 1) as usize])).collect();
-        lines.push(format!("{} {}", T::Spells.text(lang), spells.join(", ")));
-        if !slots.is_empty() {
-            lines.push(format!("{} {}", T::Slots.text(lang), slots.join(" · ")));
+    let mut lines = vec![format!("# {} — {race}, {class}, {} {}", hero.name, t(T::Level), hero.level)];
+    lines.push(match hero.xp_for_next_level() {
+        Some(next) => format!("{} {} / {next} · {} {}: {}", t(T::Experience), hero.xp, t(T::SheetToNext), hero.level + 1, next.saturating_sub(hero.xp)),
+        None => format!("{} {} · {}", t(T::Experience), hero.xp, t(T::SheetTop)),
+    });
+    if hero.points_to_place > 0 {
+        lines.push(format!("{} {}", t(T::PointsToPlace), hero.points_to_place));
+    }
+
+    lines.push(format!("# {}", t(T::SheetBody)));
+    lines.push(format!("{} {}/{} · {} {} · {} {} {} · {} {}", t(T::HitPoints), hero.hp.max(0), hero.max_hp, t(T::ArmorClass), hero.ac(), t(T::SheetSpeed), hero.speed(), t(T::SheetFeet), t(T::SheetProficiency), signed(hero.proficiency())));
+    lines.push(format!("{} {}/{}", t(T::HitDice), hero.hit_dice_left(), hero.level));
+    lines.push(format!("~ {}", t(T::SheetBodyHint)));
+
+    lines.push(format!("# {}", t(T::SheetAbilities)));
+    for half in Ability::ALL.chunks(3) {
+        lines.push(half.iter().map(|a| format!("{} {} ({})", tr(ru, a.name()), hero.scores[*a as usize], signed(hero.modifier(*a)))).collect::<Vec<_>>().join(" · "));
+    }
+
+    lines.push(format!("# {}", t(T::SheetSkills)));
+    let skills: Vec<String> = hero
+        .skills
+        .iter()
+        .map(|s| match data.skill(s) {
+            Some(skill) => format!("{} {}", tr(ru, &skill.name), signed(hero.check_bonus(skill.ability, Some(s)))),
+            None => s.clone(),
+        })
+        .collect();
+    lines.push(if skills.is_empty() { t(T::SheetNoSkills).to_string() } else { skills.join(" · ") });
+
+    if !hero.weapons.is_empty() {
+        lines.push(format!("# {}", t(T::SheetWeapons)));
+        for w in &hero.weapons {
+            lines.push(format!("{} — {} {}, {} {}", name(w, &|i| data.weapons.get(i).map(|x| x.name.as_str())), t(T::SheetAttack), signed(hero.attack_bonus(w)), t(T::SheetDamage), hero.damage(w)));
         }
     }
-    lines.push(format!("{} {}/{}", T::HitDice.text(lang), hero.hit_dice_left(), hero.level));
-    for feat in &hero.feats {
-        lines.push(format!("{} {}", T::Feats.text(lang), feat_line(feat, lang)));
+    if !hero.spells.is_empty() {
+        lines.push(format!("# {}", t(T::SheetSpells)));
+        let spells: Vec<&str> = hero.spells.iter().filter_map(|s| data.spells.get(s)).map(|s| tr(ru, &s.name)).collect();
+        lines.push(spells.join(", "));
+        let slots: Vec<String> = (1..=9u8).filter(|l| hero.slots()[(*l - 1) as usize] > 0).map(|l| format!("{l}: {}/{}", hero.slots_left(l), hero.slots()[(l - 1) as usize])).collect();
+        if !slots.is_empty() {
+            lines.push(format!("{} {}", t(T::Slots), slots.join(" · ")));
+        }
     }
-    if hero.points_to_place > 0 {
-        lines.push(format!("{} {}", T::PointsToPlace.text(lang), hero.points_to_place));
+    if !hero.feats.is_empty() {
+        lines.push(format!("# {}", t(T::SheetSpecial)));
+        for feat in &hero.feats {
+            lines.push(feat_line(feat, lang));
+        }
     }
     lines
 }
@@ -822,10 +852,12 @@ mod tests {
         d.toggle_skill("perception");
         let hero = d.build("Brak", "").unwrap();
         let en = sheet_lines(&hero, Lang::En);
-        assert!(en[0].starts_with("Brak — Human, Fighter, level 1"));
-        assert!(en[1].contains("12/12") && en[1].contains("18"));
-        assert!(en[4].contains("Longsword +5 1d8+3"));
+        assert!(en[0].starts_with("# Brak — Human, Fighter, level 1"));
+        assert!(en[1].contains("0 / 300") && en[1].contains("to level 2: 300"), "{en:?}");
+        assert!(en.iter().any(|l| l.contains("12/12") && l.contains("AC 18") && l.contains("+2")), "{en:?}");
+        assert!(en.iter().any(|l| l == "Longsword — attack +5, damage 1d8+3"), "{en:?}");
+        assert!(en.iter().any(|l| l.contains("Athletics +5") && l.contains("Perception")), "{en:?}");
         let ru = sheet_lines(&hero, Lang::Ru);
-        assert!(ru[0].contains("Воин") && ru[2].contains("Сила 16 (+3)"), "{ru:?}");
+        assert!(ru[0].contains("Воин") && ru.iter().any(|l| l.starts_with("Сила 16 (+3)")), "{ru:?}");
     }
 }
