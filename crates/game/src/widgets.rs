@@ -148,7 +148,105 @@ pub fn text_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, 
 pub struct Scrolls;
 
 pub fn scroll_list(node: Node, height: f32) -> impl Bundle {
-    (Node { max_height: px(height), overflow: Overflow::scroll_y(), ..node }, Scrolls, RelativeCursorPosition::default())
+    // Room is left on the right for the bar that appears when there is more than fits.
+    let padding = UiRect { right: px(SCROLL_BAR + 2.0), ..node.padding };
+    (Node { max_height: px(height), overflow: Overflow::scroll_y(), padding, ..node }, Scrolls, RelativeCursorPosition::default())
+}
+
+/// How wide the bar beside a list is, and how tall each of its arrows.
+const SCROLL_BAR: f32 = 9.0;
+/// Canvas pixels a held arrow moves a list by in a second.
+const ARROW_SPEED: f32 = 140.0;
+
+/// The bar beside a list that holds more than it shows: an arrow up, an arrow down and a
+/// mark of where in the list one is. It is for a mouse without a wheel.
+#[derive(Component)]
+struct ScrollBar(Entity);
+
+#[derive(Component)]
+struct ScrollArrow {
+    list: Entity,
+    down: bool,
+}
+
+#[derive(Component)]
+struct ScrollThumb(Entity);
+
+#[allow(clippy::type_complexity)]
+fn scroll_bars(
+    mut commands: Commands,
+    fonts: Res<Fonts>,
+    time: Res<Time>,
+    mut lists: Query<(Entity, &mut ScrollPosition, &ComputedNode, &UiGlobalTransform), With<Scrolls>>,
+    mut bars: Query<(Entity, &ScrollBar, &mut Node), (Without<Scrolls>, Without<ScrollThumb>)>,
+    arrows: Query<(&ScrollArrow, Ref<Interaction>)>,
+    mut thumbs: Query<(&ScrollThumb, &mut Node), (Without<ScrollBar>, Without<Scrolls>)>,
+) {
+    // A held arrow keeps the list moving; a click moves it a row.
+    for (arrow, interaction) in &arrows {
+        if *interaction == Interaction::Pressed
+            && let Ok((_, mut position, node, _)) = lists.get_mut(arrow.list)
+        {
+            // The press itself moves a row, so that a quick click is felt.
+            let step = (ARROW_SPEED * time.delta_secs() + if interaction.is_changed() { WHEEL_STEP } else { 0.0 }) * if arrow.down { 1.0 } else { -1.0 };
+            position.y = (position.y + step).clamp(0.0, furthest_scroll(node));
+        }
+    }
+    let place = |node: &ComputedNode, at: &UiGlobalTransform| {
+        let size = node.size() * node.inverse_scale_factor();
+        let centre = at.translation * node.inverse_scale_factor();
+        (centre.x + size.x / 2.0 - SCROLL_BAR, centre.y - size.y / 2.0, size.y)
+    };
+    let mut barred = Vec::new();
+    for (entity, bar, mut node) in &mut bars {
+        match lists.get(bar.0) {
+            Ok((_, _, list, at)) if furthest_scroll(list) > 0.5 => {
+                let (left, top, height) = place(list, at);
+                if node.left != px(left) || node.top != px(top) || node.height != px(height) {
+                    node.left = px(left);
+                    node.top = px(top);
+                    node.height = px(height);
+                }
+                barred.push(bar.0);
+            }
+            _ => commands.entity(entity).despawn(),
+        }
+    }
+    for (thumb, mut node) in &mut thumbs {
+        let Ok((_, position, list, _)) = lists.get(thumb.0) else { continue };
+        let shown = list.size().y * list.inverse_scale_factor();
+        let all = list.content_size().y * list.inverse_scale_factor();
+        let track = (shown - 2.0 * SCROLL_BAR).max(1.0);
+        let height = (track * shown / all.max(1.0)).clamp(6.0f32.min(track), track);
+        let top = SCROLL_BAR + (track - height) * (position.y / furthest_scroll(list).max(1.0)).clamp(0.0, 1.0);
+        if node.top != px(top) || node.height != px(height) {
+            node.top = px(top);
+            node.height = px(height);
+        }
+    }
+    for (list, _, node, at) in &lists {
+        if barred.contains(&list) || furthest_scroll(node) <= 0.5 {
+            continue;
+        }
+        let (left, top, height) = place(node, at);
+        let wood = Color::srgb(0.36, 0.22, 0.12);
+        commands
+            .spawn((
+                ScrollBar(list),
+                Node { position_type: PositionType::Absolute, left: px(left), top: px(top), width: px(SCROLL_BAR), height: px(height), flex_direction: FlexDirection::Column, justify_content: JustifyContent::SpaceBetween, ..default() },
+                BackgroundColor(Color::srgba(0.2, 0.13, 0.08, 0.3)),
+                GlobalZIndex(40),
+            ))
+            .with_children(|bar| {
+                for down in [false, true] {
+                    bar.spawn((ScrollArrow { list, down }, Button, Node { width: px(SCROLL_BAR), height: px(SCROLL_BAR), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(wood)))
+                        .with_children(|arrow| {
+                            arrow.spawn((Text::new(if down { "▼" } else { "▲" }), fonts.body(), TextColor(color(PARCHMENT)), Pickable::IGNORE));
+                        });
+                }
+                bar.spawn((ScrollThumb(list), Node { position_type: PositionType::Absolute, left: px(2), top: px(SCROLL_BAR), width: px(SCROLL_BAR - 4.0), height: px(6), ..default() }, BackgroundColor(wood), Pickable::IGNORE));
+            });
+    }
 }
 
 /// Canvas pixels moved by one notch of the wheel: one button row.
@@ -255,6 +353,6 @@ pub struct WidgetsPlugin;
 
 impl Plugin for WidgetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (style_buttons, style_lines, wheel_scrolls, focus_scrolls_into_view)).add_observer(press_activates);
+        app.add_systems(Update, (style_buttons, style_lines, wheel_scrolls, scroll_bars, focus_scrolls_into_view)).add_observer(press_activates);
     }
 }

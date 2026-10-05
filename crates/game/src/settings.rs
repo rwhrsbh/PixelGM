@@ -176,7 +176,7 @@ fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, sett
                 button(line, &art, &fonts, T::ProviderOpen, true, crate::menu::Nav::Go(Screen::Provider));
             });
             // More settings than fit on the table at once: the list scrolls.
-            sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(5), ..default() }, 196.0)).with_children(|sheet| {
+            sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(5), ..default() }, 182.0)).with_children(|sheet| {
             for choice in CHOICES {
                 sheet.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|block| {
                     block.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|line| {

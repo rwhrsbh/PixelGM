@@ -220,10 +220,15 @@ impl Pool {
     /// Best model that can be called now, no worse than `lowest`, with a key that still has
     /// quota for it. Models are tried in chain order and keys in the order they were added.
     pub fn pick(&self, now: Millis, lowest: Tier) -> Pick {
+        self.pick_but(now, lowest, &[])
+    }
+
+    /// As `pick`, leaving out the models named: those that would not answer this request.
+    pub fn pick_but(&self, now: Millis, lowest: Tier, skip: &[String]) -> Pick {
         let mut soonest: Option<Millis> = None;
         let mut note = |t: Millis| soonest = Some(soonest.map_or(t, |s: Millis| s.min(t)));
         let mut any_key = false;
-        for model in self.chain.iter().filter(|m| m.tier <= lowest) {
+        for model in self.chain.iter().filter(|m| m.tier <= lowest && !skip.contains(&m.id)) {
             let model_rest = self.model_rest.get(&model.id).copied().unwrap_or(0);
             for key in self.keys.iter().filter(|k| !k.dead) {
                 any_key = true;

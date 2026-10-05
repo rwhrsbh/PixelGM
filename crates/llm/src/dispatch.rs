@@ -236,6 +236,10 @@ impl<T: Transport> Dispatcher<T> {
 
     /// As `generate`; with `cheap`, the lite and open models are tried before the best one.
     pub fn generate_in(&self, request: &GenRequest, lowest: Tier, cheap: bool) -> Result<(Reply, Model), GenError> {
+        // Models that refused this request for what it says. What one will not answer
+        // another may: the refusal is given only when every model has refused.
+        let mut refused: Vec<String> = Vec::new();
+        let mut why = String::new();
         for _ in 0..MAX_STEPS {
             if self.state.lock().unwrap().pool.needs_relist() {
                 // With an old chain still in hand a failed relist is not fatal.
@@ -248,7 +252,15 @@ impl<T: Transport> Dispatcher<T> {
             let now = (self.clock)();
             let (model, key, secret, mode) = {
                 let state = self.state.lock().unwrap();
-                match if cheap { state.pool.pick_cheap(now) } else { state.pool.pick(now, lowest) } {
+                let picked = if !refused.is_empty() {
+                    state.pool.pick_but(now, Tier::Gemma, &refused)
+                } else if cheap {
+                    state.pool.pick_cheap(now)
+                } else {
+                    state.pool.pick(now, lowest)
+                };
+                match picked {
+                    Pick::Wait { .. } | Pick::Nothing if !refused.is_empty() => return Err(GenError::Blocked(why)),
                     Pick::Ready { model, key, secret } => {
                         let mode = state.thinking.get(&model.id).copied().unwrap_or_default();
                         (model, key, secret, mode)
@@ -275,7 +287,11 @@ impl<T: Transport> Dispatcher<T> {
                     }
                     None => return Err(GenError::BadRequest("thinking config rejected with none sent".into())),
                 },
-                Err(Failure::Blocked(reason)) => return Err(GenError::Blocked(reason)),
+                Err(Failure::Blocked(reason)) => {
+                    refused.push(model.id.clone());
+                    why = reason;
+                    continue;
+                }
                 Err(Failure::BadRequest(message)) => return Err(GenError::BadRequest(message)),
                 Err(Failure::RateLimited { retry_after, limit }) => Outcome::RateLimited { retry_after, limit },
                 Err(Failure::Overloaded) => Outcome::Overloaded,
@@ -511,10 +527,20 @@ mod tests {
     }
 
     #[test]
-    fn blocked_and_malformed_requests_stop_without_burning_other_models() {
-        let blocked = rig(&["a", "b"], |_| Ok(HttpResponse { status: 200, body: json!({ "promptFeedback": { "blockReason": "PROHIBITED_CONTENT" } }).to_string() }));
-        assert_eq!(blocked.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma), Err(GenError::Blocked("PROHIBITED_CONTENT".into())));
-        assert_eq!(blocked.trail().len(), 1);
+    fn a_request_one_model_refuses_is_put_to_the_others_and_malformed_ones_stop_at_once() {
+        let no = || Ok(HttpResponse { status: 200, body: json!({ "promptFeedback": { "blockReason": "PROHIBITED_CONTENT" } }).to_string() });
+        // Every model refuses: each is asked once, and only then is the refusal given.
+        let blocked = rig(&["a", "b"], move |_| no());
+        assert_eq!(blocked.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Flash), Err(GenError::Blocked("PROHIBITED_CONTENT".into())));
+        let mut asked: Vec<String> = blocked.trail().into_iter().map(|(model, _)| model).collect();
+        let times = asked.len();
+        asked.dedup();
+        assert!(times > 1 && asked.len() == times, "{asked:?}");
+        // The first refuses, the next answers.
+        let mixed = rig(&["a"], move |call| if call.model == "gemini-3.0-flash" { no() } else { ok("fine") });
+        let (reply, model) = mixed.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Flash).unwrap();
+        assert_eq!(reply.text, "fine");
+        assert_ne!(model.id, "gemini-3.0-flash");
         let bad = rig(&["a", "b"], |_| status(400, "Request contains an invalid argument."));
         assert!(matches!(bad.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma), Err(GenError::BadRequest(_))));
         assert_eq!(bad.trail().len(), 1);

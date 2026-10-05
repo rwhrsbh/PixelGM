@@ -338,6 +338,28 @@ impl Dolls {
 #[derive(Component)]
 struct Frames(Vec<Handle<Image>>);
 
+/// A hero who put on other armour, took up another weapon or a torch looks it at once in
+/// the world too, not only in the bag.
+fn redress(game: Res<Game>, settings: Res<Settings>, session: Res<Session>, mut dolls: ResMut<Dolls>, mut images: ResMut<Assets<Image>>, mut shown: Query<(&mut Frames, Option<&Fellow>), Or<(With<Hero>, With<Fellow>)>>) {
+    let world = &game.world;
+    let me = player_name(&settings);
+    for (mut frames, fellow) in &mut shown {
+        // The one led in a hero's place keeps its own picture.
+        if !dolls.0.values().any(|known| *known == frames.0) {
+            continue;
+        }
+        let index = match fellow {
+            Some(other) => world.owners.iter().position(|o| *o == other.0),
+            None => my_hero(world, &me, matches!(*session, Session::Solo)),
+        };
+        let Some((i, hero)) = index.and_then(|i| world.party.get(i).map(|hero| (i, hero))) else { continue };
+        let now = dolls.of(hero, world.held_light(i).is_some(), &mut images);
+        if now != frames.0 {
+            frames.0 = now;
+        }
+    }
+}
+
 /// How another player's hero is walking: which way, which step, and where it was.
 #[derive(Component, Default)]
 struct Gait {
@@ -644,7 +666,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
         fonts.body(),
         TextColor(color(PARCHMENT)),
     ));
-    commands.spawn((DespawnOnExit(Screen::Play), Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..full })).with_children(|root| {
+    commands.spawn((DespawnOnExit(Screen::Play), GlobalZIndex(10), Pickable::IGNORE, Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..full })).with_children(|root| {
         root.spawn((ArrivalSheet, Node { margin: UiRect::top(px(8)), ..default() })).with_children(|slot| {
             spawn_panel(slot, &art, Node { width: px(380), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }, |sheet| {
                 sheet.spawn((Text::default(), PlaceName, fonts.title(1), TextColor(color(INK))));
@@ -856,6 +878,10 @@ fn draw(
             continue;
         }
         named.push(exit.to.clone());
+        // A dark plate under the words, so that they read over any ground and over each other.
+        let plate = Vec2::new(name.chars().count() as f32 * 17.6 + 12.0, 30.0);
+        let pad = Vec2::new(if anchor.as_vec().x < 0.0 { -6.0 } else if anchor.as_vec().x > 0.0 { 6.0 } else { 0.0 }, if anchor.as_vec().y < 0.0 { -4.0 } else if anchor.as_vec().y > 0.0 { 4.0 } else { 0.0 });
+        commands.spawn((InLocation, ExitAt(exit.x, exit.y), Sprite::from_color(Color::srgba(0.06, 0.04, 0.03, 0.8), plate), anchor, Transform::from_translation((home.truncate() + offset + pad).extend(1.805))));
         for (shift, tint, z) in [(Vec2::new(2.0, -2.0), Color::srgba(0.05, 0.03, 0.02, 0.85), 1.81), (Vec2::ZERO, Color::srgb(1.0, 0.92, 0.7), 1.82)] {
             commands.spawn((InLocation, ExitAt(exit.x, exit.y), Text2d::new(name.clone()), fonts.body(), TextColor(tint), anchor, Transform::from_translation((home.truncate() + offset + shift).extend(z)).with_scale(Vec3::splat(2.0))));
         }
@@ -3465,7 +3491,7 @@ fn goal_line(mut commands: Commands, game: Res<Game>, lang: Res<Lang>, fonts: Re
         GoalLine,
         DespawnOnExit(Screen::Play),
         Node { position_type: PositionType::Absolute, left: px(3), top: px(16), max_width: px(300), padding: UiRect::axes(px(4), px(1)), ..default() },
-        BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.72)),
+        BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.92)),
         Text::new(text),
         fonts.body(),
         TextColor(color(BRASS_LIGHT)),
@@ -4207,7 +4233,7 @@ impl Plugin for PlayPlugin {
                 Update,
                 (submit, keys, walk, approach_work, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
-            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on, notice, relocate).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on, notice, relocate, redress).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
             .add_observer(on_master_activate);
     }
