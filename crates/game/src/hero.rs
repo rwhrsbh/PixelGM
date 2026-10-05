@@ -666,7 +666,11 @@ fn on_activate(
                     next.set(Screen::Play);
                 }
                 (Err(_), _) if name.trim().is_empty() => draft.problem = Some(T::NeedName.text(*lang).to_string()),
-                (Err(_), _) => draft.problem = Some(format!("{} {}", T::NeedSkills.text(*lang), data.classes[draft.class].skill_picks)),
+                (Err(_), _) => {
+                    // The skills are on the other tab: shown, so that what is missing is seen.
+                    draft.tab = Tab::Stats;
+                    draft.problem = Some(format!("{} {}", T::NeedSkills.text(*lang), data.classes[draft.class].skill_picks));
+                }
                 (Ok(_), None) => {}
             }
         }
