@@ -346,7 +346,15 @@ fn spawn_screen(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: 
     commands.spawn(screen_root(Screen::Hero)).with_children(|root| {
         let sheet = Node { margin: UiRect::top(px(6)), width: px(464), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
         spawn_panel(root, &art, sheet, |sheet| {
-            sheet.spawn((Text::default(), T::HeroTitle, fonts.title(1), ink));
+            sheet.spawn(Node { align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                line.spawn((Text::default(), T::HeroTitle, fonts.title(1), ink));
+                line.spawn(Node { flex_grow: 1.0, ..default() });
+                // At a shared table somebody may run the game instead of playing in it.
+                let seat_free = game.world.gm.as_deref().is_none_or(|gm| !game.world.present.iter().any(|p| p == gm));
+                if !matches!(*session, Session::Solo) && seat_free {
+                    button(line, &art, &fonts, T::SeatNoHero, true, Action::Lead);
+                }
+            });
             // At a shared table the heroes of players who are away can be taken over.
             let free: Vec<usize> = if matches!(*session, Session::Solo) { Vec::new() } else { (0..game.world.party.len()).filter(|i| game.world.is_away(*i) && !game.world.party[*i].dead).collect() };
             if !free.is_empty() {
@@ -488,11 +496,7 @@ fn finish(parent: &mut ChildSpawnerCommands, draft: &Draft, art: &Art, fonts: &F
         button(line, art, fonts, T::Back, true, Nav::Go(Screen::Main));
         button(line, art, fonts, T::CreateHero, true, Action::Create);
     });
-    // At a shared table somebody may run the game instead of playing in it.
-    let seat_free = game.is_some_and(|g| g.world.gm.as_deref().is_none_or(|gm| !g.world.present.iter().any(|p| p == gm)));
-    if !matches!(*session, Session::Solo) && seat_free {
-        parent.spawn(Node::default()).with_children(|slot| button(slot, art, fonts, T::SeatNoHero, true, Action::Lead));
-    }
+    let _ = (session, game);
 }
 
 /// The looks of the hero: a large figure that walks on the spot, and a row for each feature.

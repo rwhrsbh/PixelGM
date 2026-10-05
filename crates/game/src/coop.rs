@@ -205,6 +205,8 @@ pub enum Down {
     KeysOut { waiting: Vec<String> },
     /// Everyone has decided.
     KeysOver,
+    /// The table waits for the quota: seconds until the master asks again, none when it has.
+    KeysWait(Option<u64>),
 }
 
 pub struct Hosting {
@@ -317,6 +319,8 @@ pub struct Table {
     pub going_on: Option<String>,
     /// The keys are spent and the table is deciding what to do.
     pub keys_vote: Option<KeysVote>,
+    /// The table chose to wait: seconds until the master asks again.
+    pub keys_wait: Option<u64>,
     /// What the master was last asked on a guest's behalf and has not answered yet.
     pub busy: Option<String>,
     /// The guest that question was asked for: the answer happens where that guest is.
@@ -470,6 +474,32 @@ pub struct KeysVote {
 
 #[derive(Component)]
 struct VoteSheet;
+
+#[derive(Component)]
+struct WaitLine;
+
+/// While the table waits for the quota, a line at the top says how long is left.
+fn keys_wait_line(mut commands: Commands, fonts: Res<crate::theme::Fonts>, lang: Res<Lang>, session: Res<Session>, mut table: ResMut<Table>, mut lines: Query<(Entity, &mut Text), With<WaitLine>>) {
+    if matches!(*session, Session::Solo) && table.keys_wait.is_some() {
+        table.keys_wait = None;
+    }
+    match (table.keys_wait, lines.single_mut()) {
+        (Some(left), Ok((_, mut text))) => {
+            let said = format!("{} {left} {}", T::KeysOutAgain.text(*lang), T::KeysOutSeconds.text(*lang));
+            if text.0 != said {
+                text.0 = said;
+            }
+        }
+        (Some(_), Err(_)) => {
+            commands.spawn((WaitLine, GlobalZIndex(29), Node { position_type: PositionType::Absolute, left: percent(12), width: percent(76), top: px(40), padding: UiRect::axes(px(5), px(2)), ..default() }, BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.9)), Text::default(), TextLayout::justify(Justify::Center), fonts.body(), TextColor(color(BRASS_LIGHT)), Pickable::IGNORE));
+        }
+        (None, _) => {
+            for (line, _) in &lines {
+                commands.entity(line).despawn();
+            }
+        }
+    }
+}
 
 #[derive(Component, Clone, Copy)]
 enum VoteAct {
@@ -677,6 +707,11 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
         }
     } else if table.keys_vote.take().is_some() {
         hosting.net.broadcast(&Down::KeysOver);
+    }
+    let left = master.relay.asks_again_in();
+    if left != table.keys_wait {
+        table.keys_wait = left;
+        hosting.net.broadcast(&Down::KeysWait(left));
     }
     for asked in master.relay.take_asked() {
         let id = asked.id;
@@ -927,6 +962,7 @@ fn client_pump(
             ClientEvent::Message(Down::FightNote(line)) => view.note(line),
             ClientEvent::Message(Down::KeysOut { waiting }) => table.keys_vote.get_or_insert_with(KeysVote::default).waiting = waiting,
             ClientEvent::Message(Down::KeysOver) => table.keys_vote = None,
+            ClientEvent::Message(Down::KeysWait(left)) => table.keys_wait = left,
             ClientEvent::Message(Down::Ask(asked)) => {
                 // The model may take minutes: the answer comes back from a thread of its own.
                 let (gm, fake, serving) = (gm.clone(), master.fake, serving.clone());
@@ -1356,7 +1392,7 @@ impl Plugin for CoopPlugin {
             .add_systems(PreUpdate, (host_pump, client_pump, presence, roster).chain())
             .add_systems(Startup, steam_start)
             .add_systems(Update, steam_invites)
-            .add_systems(Update, keys_vote_sheet)
+            .add_systems(Update, (keys_vote_sheet, keys_wait_line))
             .add_observer(keys_vote_act)
             .add_systems(Update, (lobby_status, refresh_lobby).run_if(in_state(Screen::Lobby)))
             .add_observer(on_invite)

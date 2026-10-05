@@ -140,6 +140,8 @@ struct RelayState {
     vote: bool,
     /// What the table decided: whether anyone entered a key.
     verdict: Option<bool>,
+    /// The whole table chose to wait: when the master asks again.
+    again_at: Option<Instant>,
 }
 
 /// How long the master waits before asking again when the whole table chose to wait.
@@ -166,6 +168,11 @@ impl Relay {
     /// True while the table is deciding what to do about keys that are spent.
     pub fn voting(&self) -> bool {
         self.0.lock().unwrap().vote
+    }
+
+    /// Seconds until the master asks again, while the table waits for the quota.
+    pub fn asks_again_in(&self) -> Option<u64> {
+        self.0.lock().unwrap().again_at.map(|at| at.saturating_duration_since(Instant::now()).as_secs() + 1)
     }
 
     /// Everyone has decided; `entered` when somebody entered a key.
@@ -199,9 +206,11 @@ impl Relay {
         };
         if !entered {
             let started = Instant::now();
+            self.0.lock().unwrap().again_at = Some(started + QUOTA_WAIT);
             while started.elapsed() < QUOTA_WAIT && self.0.lock().unwrap().helpers > 0 {
                 std::thread::sleep(Duration::from_millis(200));
             }
+            self.0.lock().unwrap().again_at = None;
         }
         true
     }
