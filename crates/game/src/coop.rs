@@ -156,6 +156,8 @@ pub enum Up {
     Answer { id: u64, result: Served },
     /// Table talk: for the players, not for the game master.
     Chat(String),
+    /// What this guest chose when the keys were spent: to enter a key, or to wait.
+    KeysVote { entered: bool },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -198,6 +200,11 @@ pub enum Down {
     Card(Result<CreatureCard, String>),
     /// The host runs another version of the game.
     WrongVersion,
+    /// No key at the table answers: everyone is asked to wait or to enter one. With who has
+    /// not decided yet.
+    KeysOut { waiting: Vec<String> },
+    /// Everyone has decided.
+    KeysOver,
 }
 
 pub struct Hosting {
@@ -308,6 +315,8 @@ pub struct Table {
     pub notices: Vec<String>,
     /// The outcome of a choice, shown while the master works out what follows it.
     pub going_on: Option<String>,
+    /// The keys are spent and the table is deciding what to do.
+    pub keys_vote: Option<KeysVote>,
     /// What the master was last asked on a guest's behalf and has not answered yet.
     pub busy: Option<String>,
     /// The guest that question was asked for: the answer happens where that guest is.
@@ -446,6 +455,88 @@ fn snapshot(world: &World) -> World {
     copy
 }
 
+/// The table deciding what to do when no key answers.
+#[derive(Default, Clone, PartialEq)]
+pub struct KeysVote {
+    /// What this player chose: a key entered, or to wait.
+    pub chosen: Option<bool>,
+    /// This player went to enter a key and has not come back yet.
+    pub entering: bool,
+    /// Who has not decided yet.
+    pub waiting: Vec<String>,
+    /// On the host: what each player chose.
+    votes: HashMap<String, bool>,
+}
+
+#[derive(Component)]
+struct VoteSheet;
+
+#[derive(Component, Clone, Copy)]
+enum VoteAct {
+    Wait,
+    Enter,
+}
+
+/// The sheet everyone sees while the table decides, and the way back from entering a key.
+#[allow(clippy::too_many_arguments)]
+fn keys_vote_sheet(mut commands: Commands, art: Res<Art>, fonts: Res<crate::theme::Fonts>, lang: Res<Lang>, screen: Res<State<Screen>>, session: Res<Session>, mut table: ResMut<Table>, sheets: Query<Entity, With<VoteSheet>>, mut shown: Local<Option<KeysVote>>, mut at_the_keys: Local<bool>) {
+    // The sheet is for wherever the player is, a guest still making a hero too; only the
+    // keys themselves are not covered by it.
+    let keys = matches!(screen.get(), Screen::Keys | Screen::Provider);
+    let entering = table.keys_vote.as_ref().is_some_and(|v| v.entering);
+    *at_the_keys = entering && (*at_the_keys || keys);
+    // Back from the keys: that was this player's choice.
+    if let Some(vote) = table.keys_vote.as_mut().filter(|_| entering && *at_the_keys && !keys) {
+        vote.entering = false;
+        vote.chosen = Some(true);
+        session.send(Up::KeysVote { entered: true });
+    }
+    let wanted = table.keys_vote.clone().filter(|v| !keys && !v.entering);
+    if wanted == *shown {
+        return;
+    }
+    for sheet in &sheets {
+        commands.entity(sheet).despawn();
+    }
+    *shown = wanted.clone();
+    let Some(vote) = wanted else { return };
+    let ink = TextColor(color(INK));
+    commands
+        .spawn((VoteSheet, GlobalZIndex(30), Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }))
+        .with_children(|root| {
+            spawn_panel(root, &art, Node { width: px(300), flex_direction: FlexDirection::Column, row_gap: px(5), ..default() }, |sheet| {
+                sheet.spawn((Text::default(), T::KeysOutTitle, fonts.title(1), ink));
+                sheet.spawn((Text::default(), T::KeysOutText, fonts.body(), ink));
+                if vote.chosen.is_none() {
+                    sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
+                        button(line, &art, &fonts, T::KeysOutWait, true, VoteAct::Wait);
+                        button(line, &art, &fonts, T::KeysOutEnter, true, VoteAct::Enter);
+                    });
+                } else {
+                    sheet.spawn((Text::default(), T::KeysOutChosen, fonts.body(), TextColor(color(WAX_DARK))));
+                }
+                if !vote.waiting.is_empty() {
+                    sheet.spawn((Text::new(format!("{} {}", T::KeysOutWaiting.text(*lang), vote.waiting.join(", "))), fonts.body(), TextColor(color(FADED))));
+                }
+            });
+        });
+}
+
+fn keys_vote_act(used: On<Activate>, acts: Query<&VoteAct>, session: Res<Session>, settings: Res<Settings>, screen: Res<State<Screen>>, mut table: ResMut<Table>, mut return_to: ResMut<crate::menu::ReturnTo>, mut next: ResMut<NextState<Screen>>) {
+    let (Ok(act), Some(vote)) = (acts.get(used.entity), table.keys_vote.as_mut()) else { return };
+    match act {
+        VoteAct::Wait => {
+            vote.chosen = Some(false);
+            session.send(Up::KeysVote { entered: false });
+        }
+        VoteAct::Enter => {
+            vote.entering = true;
+            return_to.0 = Some(*screen.get());
+            next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
+        }
+    }
+}
+
 /// Hands a request the host's keys could not serve to the next guest not yet tried. With
 /// nobody left to try the request fails.
 fn pass_on(hosting: &mut Hosting, relay: &Relay, id: u64, last: Trouble) {
@@ -550,6 +641,11 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                     }
                 }
             }
+            HostEvent::Message(peer, Up::KeysVote { entered }) => {
+                if let (Some(name), Some(vote)) = (hosting.names.get(&peer).cloned(), table.keys_vote.as_mut()) {
+                    vote.votes.insert(name, entered);
+                }
+            }
             HostEvent::Message(peer, Up::Chat(text)) => {
                 if let Some(name) = hosting.names.get(&peer).cloned() {
                     fx.cues.push(crate::audio::Sfx::Chat);
@@ -560,6 +656,28 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
         }
     }
     master.relay.set_helpers(hosting.names.len());
+    // No key at the table answers: everyone decides, the host among them, and the master
+    // asks again when all have.
+    if master.relay.voting() {
+        let me = player_name(&settings);
+        let vote = table.keys_vote.get_or_insert_with(KeysVote::default);
+        if let Some(mine) = vote.chosen {
+            vote.votes.insert(me.clone(), mine);
+        }
+        let mut waiting: Vec<String> = hosting.names.values().cloned().chain([me]).filter(|name| !vote.votes.contains_key(name)).collect();
+        waiting.sort();
+        if waiting != vote.waiting {
+            hosting.net.broadcast(&Down::KeysOut { waiting: waiting.clone() });
+            vote.waiting = waiting.clone();
+        }
+        if waiting.is_empty() {
+            master.relay.resolve(vote.votes.values().any(|entered| *entered));
+            hosting.net.broadcast(&Down::KeysOver);
+            table.keys_vote = None;
+        }
+    } else if table.keys_vote.take().is_some() {
+        hosting.net.broadcast(&Down::KeysOver);
+    }
     for asked in master.relay.take_asked() {
         let id = asked.id;
         hosting.relayed.insert(id, (asked, Vec::new()));
@@ -807,6 +925,8 @@ fn client_pump(
             ClientEvent::Message(Down::FightEvents(events)) => view.extend(events),
             ClientEvent::Message(Down::FightOver(summary)) => view.finish(summary),
             ClientEvent::Message(Down::FightNote(line)) => view.note(line),
+            ClientEvent::Message(Down::KeysOut { waiting }) => table.keys_vote.get_or_insert_with(KeysVote::default).waiting = waiting,
+            ClientEvent::Message(Down::KeysOver) => table.keys_vote = None,
             ClientEvent::Message(Down::Ask(asked)) => {
                 // The model may take minutes: the answer comes back from a thread of its own.
                 let (gm, fake, serving) = (gm.clone(), master.fake, serving.clone());
@@ -1236,6 +1356,8 @@ impl Plugin for CoopPlugin {
             .add_systems(PreUpdate, (host_pump, client_pump, presence, roster).chain())
             .add_systems(Startup, steam_start)
             .add_systems(Update, steam_invites)
+            .add_systems(Update, keys_vote_sheet)
+            .add_observer(keys_vote_act)
             .add_systems(Update, (lobby_status, refresh_lobby).run_if(in_state(Screen::Lobby)))
             .add_observer(on_invite)
             .add_observer(on_activate);

@@ -419,6 +419,12 @@ texts! {
     SetWindow: "Окно", "Window";
     SetOnlineMusic: "Музыка из сети", "Music from the network";
     OnlineMusicHint: "Сотни треков (Kevin MacLeod, CC BY 4.0; OpenGameArt, CC0) подкачиваются по настроению и хранятся на диске; без сети играет скачанное", "Hundreds of pieces (Kevin MacLeod, CC BY 4.0; OpenGameArt, CC0) are fetched by mood and kept on disk; offline, what was fetched plays";
+    KeysOutTitle: "Ключи мастера исчерпаны", "The master's keys are spent";
+    KeysOutText: "Ни у кого за столом нет ключа, которым мастер мог бы ответить. Можно подождать, пока квота вернётся, или ввести новый ключ. Игра продолжится, когда решат все.", "Nobody at the table has a key the master could answer with. Wait for the quota to come back, or enter a new key. The game goes on once everyone has decided.";
+    KeysOutWait: "Подождать", "Wait";
+    KeysOutEnter: "Ввести ключ", "Enter a key";
+    KeysOutChosen: "Твой выбор принят.", "Your choice is taken.";
+    KeysOutWaiting: "Ждём:", "Waiting for:";
     MasterGemini: "Мастер: Gemini", "Master: Gemini";
     MasterNim: "Мастер: NVIDIA NIM", "Master: NVIDIA NIM";
     MasterOpenRouter: "Мастер: OpenRouter", "Master: OpenRouter";

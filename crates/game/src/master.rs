@@ -136,7 +136,14 @@ struct RelayState {
     helpers: usize,
     asked: Vec<Relayed>,
     served: HashMap<u64, Served>,
+    /// Nobody's keys answered: the table is deciding whether to wait or to enter a key.
+    vote: bool,
+    /// What the table decided: whether anyone entered a key.
+    verdict: Option<bool>,
 }
+
+/// How long the master waits before asking again when the whole table chose to wait.
+const QUOTA_WAIT: Duration = Duration::from_secs(60);
 
 /// The way from the threads that ask the master to the guests' keys and back.
 #[derive(Clone, Default)]
@@ -154,6 +161,49 @@ impl Relay {
 
     pub fn serve(&self, id: u64, result: Served) {
         self.0.lock().unwrap().served.insert(id, result);
+    }
+
+    /// True while the table is deciding what to do about keys that are spent.
+    pub fn voting(&self) -> bool {
+        self.0.lock().unwrap().vote
+    }
+
+    /// Everyone has decided; `entered` when somebody entered a key.
+    pub fn resolve(&self, entered: bool) {
+        self.0.lock().unwrap().verdict = Some(entered);
+    }
+
+    /// With guests at the table and no key that answers, asks everyone to wait or to enter
+    /// a key, and waits until all have decided: at once on with a new key, after a while
+    /// when all chose to wait. `false` when there is nobody to ask and the request fails.
+    fn vote(&self) -> bool {
+        {
+            let mut state = self.0.lock().unwrap();
+            if state.helpers == 0 {
+                return false;
+            }
+            state.vote = true;
+            state.verdict = None;
+        }
+        let entered = loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let mut state = self.0.lock().unwrap();
+            if let Some(entered) = state.verdict.take() {
+                state.vote = false;
+                break entered;
+            }
+            if state.helpers == 0 {
+                state.vote = false;
+                return false;
+            }
+        };
+        if !entered {
+            let started = Instant::now();
+            while started.elapsed() < QUOTA_WAIT && self.0.lock().unwrap().helpers > 0 {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+        true
     }
 
     /// Waits for a guest to answer. `None` when there is no guest to ask, or none answered
@@ -244,7 +294,10 @@ impl Call {
     fn read<T: serde::de::DeserializeOwned>(&self, system: String, prompt: &str) -> Result<T, Trouble> {
         let request = request_for(&system, prompt, self.thinking);
         let mut last = String::new();
-        for _ in 0..self.attempts {
+        // A round in which the table decided about spent keys is not an attempt of the master's.
+        let mut left = self.attempts;
+        while left > 0 {
+            left -= 1;
             let started = Instant::now();
             // The provider the player made the master takes the place of Gemini: its models
             // in the player's order, its keys in turn. Gemini is not asked behind its back.
@@ -271,6 +324,8 @@ impl Call {
                                 Ok(value) => return Ok(value),
                                 Err(e) => last = format!("{model}: {e}"),
                             }
+                        } else if self.relay.vote() {
+                            left += 1;
                         }
                         continue;
                     }
@@ -284,6 +339,11 @@ impl Call {
                 // The host's own keys are missing or spent: the guests' keys are next.
                 Err(error @ (GenError::NoKeys | GenError::Exhausted { .. })) => match self.relay.ask(&system, prompt, self.thinking, self.lowest) {
                     Some(Ok((model, text))) => (text, model),
+                    // Nobody's keys answered: the table decides, and the master asks again.
+                    _ if self.relay.vote() => {
+                        left += 1;
+                        continue;
+                    }
                     // What the guests' keys ran into says more than "the host has none".
                     Some(Err(trouble)) => return Err(trouble),
                     None => return Err(error.into()),
