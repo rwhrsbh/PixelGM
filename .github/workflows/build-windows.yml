@@ -1,7 +1,8 @@
 name: Windows build
 
-# Builds the game for Windows on GitHub's runners. Artifacts are produced for every
-# run; tagging a commit `v*` also publishes a GitHub Release with the same zip.
+# Builds the game for Windows on GitHub's runners and publishes the zip as a Release.
+# Pushes to main refresh a rolling "latest" release; a v* tag makes its own release.
+# Nothing is uploaded as a workflow artifact, so Actions storage is never used.
 
 on:
   push:
@@ -51,19 +52,18 @@ jobs:
           Copy-Item NOTICE.md dist\NOTICE.md
           Compress-Archive -Path dist\* -DestinationPath PixelGM-windows-x64.zip -Force
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: PixelGM-windows-x64
-          path: PixelGM-windows-x64.zip
-          if-no-files-found: error
-          retention-days: 30
-
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name != 'pull_request'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create $env:GITHUB_REF_NAME PixelGM-windows-x64.zip `
-            --title $env:GITHUB_REF_NAME --generate-notes
+          $tag = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME } else { 'latest' }
+          $zip = 'PixelGM-windows-x64.zip'
+
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag $zip --clobber
+          } else {
+            $notes = "Automated Windows build of $env:GITHUB_SHA on $env:GITHUB_REF_NAME."
+            gh release create $tag $zip --title "PixelGM $tag" --notes $notes --latest
+          }
