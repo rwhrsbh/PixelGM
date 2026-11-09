@@ -1,0 +1,69 @@
+name: Windows build
+
+# Builds the game for Windows on GitHub's runners. Artifacts are produced for every
+# run; tagging a commit `v*` also publishes a GitHub Release with the same zip.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-release
+
+      - name: Build release binary
+        run: cargo build --release --locked -p pixelgm
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\pixelgm.exe dist\PixelGM.exe
+          Copy-Item NOTICE.md dist\NOTICE.md
+          Compress-Archive -Path dist\* -DestinationPath PixelGM-windows-x64.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PixelGM-windows-x64
+          path: PixelGM-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME PixelGM-windows-x64.zip `
+            --title $env:GITHUB_REF_NAME --generate-notes
