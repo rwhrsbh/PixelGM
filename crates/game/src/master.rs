@@ -359,7 +359,13 @@ impl Call {
                 },
                 Err(error) => {
                     warn!("the master did not answer after {:.1} s: {error:?}", started.elapsed().as_secs_f32());
-                    return Err(error.into());
+                    // Nothing came back from the host's own keys. The guests' masters sit on
+                    // other machines and other links: they may still be able to ask.
+                    match self.relay.ask(&system, prompt, self.thinking, self.lowest) {
+                        Some(Ok((model, text))) => (text, model),
+                        Some(Err(trouble)) => return Err(trouble),
+                        None => return Err(error.into()),
+                    }
                 }
             };
             self.store.log_answer(&model, &text);

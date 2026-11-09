@@ -26,6 +26,9 @@ pub enum Outcome {
     RateLimited { retry_after: Option<Millis>, limit: Option<u32> },
     /// The model itself is overloaded or failing; another key would meet the same answer.
     Overloaded,
+    /// The model took the connection and then said nothing at all. Not the key's fault, and
+    /// asking again soon would cost the same silence, so it rests longer than an overload.
+    Silent,
     /// This key cannot see the model: it was removed, or this key's project never had it.
     ModelGone,
     /// The key is invalid or revoked.
@@ -80,6 +83,7 @@ pub fn fingerprint(secret: &str) -> String {
 
 const PAIR_BACKOFF: (Millis, Millis) = (30_000, 3_600_000);
 const MODEL_BACKOFF: (Millis, Millis) = (20_000, 300_000);
+const SILENT_BACKOFF: (Millis, Millis) = (5 * 60_000, 3_600_000);
 const GONE_REST: Millis = 24 * 3_600_000;
 
 #[derive(Debug, Default)]
@@ -289,6 +293,11 @@ impl Pool {
                 *strikes += 1;
                 self.model_rest.insert(model.to_string(), now + backoff(MODEL_BACKOFF, *strikes));
             }
+            Outcome::Silent => {
+                let strikes = self.model_strikes.entry(model.to_string()).or_insert(0);
+                *strikes += 1;
+                self.model_rest.insert(model.to_string(), now + backoff(SILENT_BACKOFF, *strikes));
+            }
             Outcome::ModelGone => {
                 // Model lists differ between keys, so a 404 speaks for this key only. The pair
                 // rests for long: a relist may keep naming the model, and without the rest the
@@ -371,6 +380,15 @@ mod tests {
         p.report(60_000, "big", a, Outcome::Ok);
         p.report(60_001, "big", a, Outcome::Overloaded);
         assert_eq!(picked(&p, 80_001, Tier::Gemma).0, "big");
+    }
+
+    #[test]
+    fn a_model_that_goes_quiet_rests_longer_than_an_overloaded_one() {
+        let (mut p, a, _) = pool();
+        p.report(0, "big", a, Outcome::Silent);
+        // An overload is admitted to and cleared in twenty seconds; silence is not.
+        assert_eq!(picked(&p, 20_000, Tier::Gemma), ("small".into(), a));
+        assert_eq!(picked(&p, 300_000, Tier::Gemma), ("big".into(), a));
     }
 
     #[test]

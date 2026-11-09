@@ -240,6 +240,12 @@ impl<T: Transport> Dispatcher<T> {
         // another may: the refusal is given only when every model has refused.
         let mut refused: Vec<String> = Vec::new();
         let mut why = String::new();
+        // The last model that accepted the connection and then said nothing. One silent model
+        // is not the whole network, so it is not reported as one until nothing has answered.
+        let mut silent: Option<String> = None;
+        // How many models have gone quiet in this round. Two in a row is the link failing,
+        // not the models, and a long chain of them must not be walked one silence at a time.
+        let mut silences = 0;
         for _ in 0..MAX_STEPS {
             if self.state.lock().unwrap().pool.needs_relist() {
                 // With an old chain still in hand a failed relist is not fatal.
@@ -265,14 +271,29 @@ impl<T: Transport> Dispatcher<T> {
                         let mode = state.thinking.get(&model.id).copied().unwrap_or_default();
                         (model, key, secret, mode)
                     }
-                    Pick::Wait { until } => return Err(GenError::Exhausted { retry_at: until }),
+                    Pick::Wait { until } => return Err(silent.map_or(GenError::Exhausted { retry_at: until }, GenError::Network)),
                     Pick::Nothing if state.pool.live_keys().next().is_none() => return Err(GenError::NoKeys),
-                    Pick::Nothing => return Err(GenError::Exhausted { retry_at: now + 60_000 }),
+                    Pick::Nothing => return Err(silent.map_or(GenError::Exhausted { retry_at: now + 60_000 }, GenError::Network)),
                 }
             };
             let body = request.body(mode.config(request.thinking)).to_string();
             let url = format!("{}/{}/models/{}:generateContent", self.base, model.api.path(), model.id);
-            let response = self.transport.post(&url, &secret, &body).map_err(GenError::Network)?;
+            let response = match self.transport.post(&url, &secret, &body) {
+                Ok(response) => response,
+                Err(error) => {
+                    // No answer came back at all. A model that accepts the connection and then
+                    // goes quiet is the usual cause, so it rests like an overloaded one and the
+                    // next model is asked: the turn is not lost to one model's silence. Two in
+                    // a row, though, say the link itself is gone.
+                    silences += 1;
+                    if silences >= 2 {
+                        return Err(GenError::Network(error));
+                    }
+                    silent = Some(error);
+                    self.state.lock().unwrap().pool.report(now, &model.id, key, Outcome::Silent);
+                    continue;
+                }
+            };
             let now = (self.clock)();
             let mut state = self.state.lock().unwrap();
             let outcome = match parse_generate(&response) {
@@ -300,7 +321,7 @@ impl<T: Transport> Dispatcher<T> {
             };
             state.pool.report(now, &model.id, key, outcome);
         }
-        Err(GenError::Exhausted { retry_at: (self.clock)() + 60_000 })
+        Err(silent.map_or(GenError::Exhausted { retry_at: (self.clock)() + 60_000 }, GenError::Network))
     }
 }
 
@@ -409,6 +430,26 @@ mod tests {
         let r = rig(&["a", "b"], |c| if c.model == "gemini-3.0-flash" { status(503, "high demand") } else { ok("x") });
         r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
         assert_eq!(r.trail(), pairs(&[("gemini-3.0-flash", "a"), ("gemini-2.0-flash", "a")]));
+    }
+
+    #[test]
+    fn a_model_that_never_answers_is_rested_and_another_is_asked() {
+        let r = rig(&["a"], |c| if c.model == "gemini-3.0-flash" { Err("the connection was closed".to_string()) } else { ok("from another model") });
+        let (reply, model) = r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        assert_eq!(reply.text, "from another model");
+        assert_ne!(model.id, "gemini-3.0-flash");
+        // The silent model is resting, so the next turn goes straight to the one that answered.
+        let asked = r.trail().len();
+        r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        assert_eq!(r.trail().len(), asked + 1);
+        assert!(r.trail()[asked..].iter().all(|(m, _)| m != "gemini-3.0-flash"));
+    }
+
+    #[test]
+    fn a_dead_link_stops_after_two_silent_models_instead_of_walking_the_chain() {
+        let r = rig(&["a", "b"], |_| Err("the connection was closed".to_string()));
+        assert!(matches!(r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma), Err(GenError::Network(_))));
+        assert_eq!(r.trail().len(), 2);
     }
 
     #[test]

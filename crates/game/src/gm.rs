@@ -104,7 +104,10 @@ pub struct Gm {
 
 impl Default for Gm {
     fn default() -> Self {
-        Self { dispatcher: Arc::new(Dispatcher::new(UreqTransport::new(Duration::from_secs(300)))), reports: Arc::default() }
+        // A model that takes the connection and then says nothing is only found out by
+        // waiting: this is how long one may go quiet before the rotation asks another. A
+        // working flash model answers a whole turn well inside it.
+        Self { dispatcher: Arc::new(Dispatcher::new(UreqTransport::new(Duration::from_secs(120)))), reports: Arc::default() }
     }
 }
 
