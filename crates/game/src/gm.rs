@@ -104,14 +104,19 @@ pub struct Gm {
 
 impl Default for Gm {
     fn default() -> Self {
-        // A model that takes the connection and then says nothing is only found out by
-        // waiting: this is how long one may go quiet before the rotation asks another. A
-        // working flash model answers a whole turn well inside it.
+        // How long a silent model is given is the player's setting for waiting on a first
+        // token; this is only what the game starts with, before the settings are read.
         Self { dispatcher: Arc::new(Dispatcher::new(UreqTransport::new(Duration::from_secs(120)))), reports: Arc::default() }
     }
 }
 
 impl Gm {
+    /// How long a model may be silent before the rotation asks the next one: the player's
+    /// setting, in seconds, held to the range the settings screen offers.
+    pub fn set_patience(&self, patience: Duration) {
+        self.dispatcher.transport().set_patience(patience);
+    }
+
     /// Checks the key in the background and relists models, so a fresh key is usable at once.
     fn probe(&self, id: KeyId) {
         let gm = self.clone();

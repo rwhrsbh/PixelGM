@@ -1,11 +1,13 @@
 //! The settings screen, and the systems that make a changed setting take effect.
 
 use crate::art::Art;
+use crate::gm::Gm;
 use crate::i18n::{Lang, T};
+use crate::master::Master;
 use crate::menu::{Nav, Screen, screen_root, spawn_panel};
 use crate::store::{Initiative, Settings, Store};
 use crate::theme::*;
-use crate::widgets::{Activate, button, scroll_list};
+use crate::widgets::{Activate, button, scroll_list, value_button};
 use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use llm::{ThinkingSetting, Tier};
@@ -19,6 +21,7 @@ enum Choice {
     Fill,
     OnlineMusic,
     Thinking,
+    FirstToken,
     Fallback,
     Predraw,
     Initiative,
@@ -36,6 +39,7 @@ impl Choice {
             Choice::Fill => T::SetFill,
             Choice::OnlineMusic => T::SetOnlineMusic,
             Choice::Thinking => T::SetThinking,
+            Choice::FirstToken => T::SetFirstToken,
             Choice::Fallback => T::SetFallback,
             Choice::Predraw => T::SetPredraw,
             Choice::Initiative => T::SetInitiative,
@@ -48,6 +52,7 @@ impl Choice {
     fn hint(self) -> Option<T> {
         match self {
             Choice::Thinking => Some(T::ThinkingHint),
+            Choice::FirstToken => Some(T::FirstTokenHint),
             Choice::Fallback => Some(T::FallbackHint),
             Choice::Predraw => Some(T::PredrawHint),
             Choice::Initiative => Some(T::InitiativeHint),
@@ -58,8 +63,11 @@ impl Choice {
         }
     }
 
-    fn value(self, s: &Settings) -> T {
-        match self {
+    /// The word the button shows, when the setting is a word rather than a number.
+    fn value(self, s: &Settings) -> Option<T> {
+        Some(match self {
+            // Seconds, shown by the button's own text instead.
+            Choice::FirstToken => return None,
             Choice::Language => T::LanguageName,
             Choice::Window => {
                 if s.fullscreen {
@@ -115,7 +123,7 @@ impl Choice {
                     T::No
                 }
             }
-        }
+        })
     }
 
     fn advance(self, s: &mut Settings) {
@@ -145,6 +153,7 @@ impl Choice {
                     Tier::Gemma => Tier::Flash,
                 }
             }
+            Choice::FirstToken => s.first_token = next_first_token(s.first_token),
             Choice::Predraw => s.predraw = !s.predraw,
             Choice::Initiative => {
                 s.initiative = match s.initiative {
@@ -164,7 +173,27 @@ fn volume_name(level: u8) -> T {
     [T::Volume0, T::Volume1, T::Volume2, T::Volume3, T::Volume4][level.min(4) as usize]
 }
 
-const CHOICES: [Choice; 12] = [Choice::Language, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::Fallback, Choice::Predraw, Choice::Initiative];
+/// The waits offered for a first word, in seconds: the setting never drops below ten and never
+/// rises above five minutes, and a click takes the next offer.
+const FIRST_TOKEN_SECONDS: [u16; 10] = [10, 20, 30, 45, 60, 90, 120, 180, 240, 300];
+
+fn next_first_token(current: u16) -> u16 {
+    // A wait below the least the setting offers is brought up to it rather than skipped over.
+    if current < FIRST_TOKEN_SECONDS[0] {
+        return FIRST_TOKEN_SECONDS[0];
+    }
+    match FIRST_TOKEN_SECONDS.iter().position(|seconds| *seconds == current) {
+        Some(at) => FIRST_TOKEN_SECONDS[(at + 1) % FIRST_TOKEN_SECONDS.len()],
+        // A wait from a settings file that sits between two offers: the next one up.
+        None => FIRST_TOKEN_SECONDS.iter().copied().find(|seconds| *seconds > current).unwrap_or(FIRST_TOKEN_SECONDS[0]),
+    }
+}
+
+fn first_token_text(settings: &Settings) -> String {
+    format!("{} {}", settings.first_token.clamp(10, 300), T::Seconds.text(settings.lang))
+}
+
+const CHOICES: [Choice; 13] = [Choice::Language, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw, Choice::Initiative];
 
 fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
     commands.spawn(screen_root(Screen::Settings)).with_children(|root| {
@@ -181,7 +210,11 @@ fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, sett
                     block.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|line| {
                         line.spawn((Text::default(), choice.label(), fonts.body(), TextColor(color(INK))));
                         line.spawn(Node { width: px(150), flex_direction: FlexDirection::Column, ..default() })
-                            .with_children(|slot| button(slot, &art, &fonts, choice.value(&settings), true, choice));
+                            .with_children(|slot| match choice.value(&settings) {
+                                Some(value) => button(slot, &art, &fonts, value, true, choice),
+                                // Seconds: a number the button says itself.
+                                None => value_button(slot, &art, &fonts, first_token_text(&settings), true, choice),
+                            });
                     });
                     if let Some(hint) = choice.hint() {
                         block.spawn((Text::default(), hint, fonts.body(), TextColor(color(FADED))));
@@ -203,20 +236,42 @@ fn on_activate(used: On<Activate>, buttons: Query<&Choice>, mut settings: ResMut
 }
 
 /// Each value button shows its setting's current value: the label is a child of the button.
-fn show_values(settings: Res<Settings>, buttons: Query<(&Choice, &Children)>, mut labels: Query<&mut T>) {
+fn show_values(settings: Res<Settings>, buttons: Query<(&Choice, &Children)>, mut labels: Query<&mut T>, mut texts: Query<&mut Text>) {
     if !settings.is_changed() {
         return;
     }
     for (choice, children) in &buttons {
         for child in children {
-            if let Ok(mut label) = labels.get_mut(*child) {
-                let wanted = choice.value(&settings);
-                if *label != wanted {
-                    *label = wanted;
+            match choice.value(&settings) {
+                Some(wanted) => {
+                    if let Ok(mut label) = labels.get_mut(*child) {
+                        if *label != wanted {
+                            *label = wanted;
+                        }
+                    }
+                }
+                // A number rather than a word: the text is not translated, only the unit in it.
+                None => {
+                    if let Ok(mut text) = texts.get_mut(*child) {
+                        let wanted = first_token_text(&settings);
+                        if text.0 != wanted {
+                            text.0 = wanted;
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+/// How long a silent model is given is the player's to say, and both masters listen: Gemini
+/// through its transport, the other providers through their rotation.
+fn apply_patience(settings: Res<Settings>, gm: Res<Gm>, master: Res<Master>) {
+    if !settings.is_changed() {
+        return;
+    }
+    gm.set_patience(settings.patience());
+    master.rotation.set_patience(settings.patience());
 }
 
 fn apply_language(settings: Res<Settings>, mut lang: ResMut<Lang>) {
@@ -288,7 +343,7 @@ impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Screen::Settings), spawn_settings)
             .add_systems(PreUpdate, unstick_keys)
-            .add_systems(Update, (fullscreen_shortcut, apply_language, apply_window_mode, show_values).chain())
+            .add_systems(Update, (fullscreen_shortcut, apply_patience, apply_language, apply_window_mode, show_values).chain())
             .add_observer(on_activate);
     }
 }
@@ -309,7 +364,7 @@ mod tests {
                 if s == start {
                     break;
                 }
-                assert!(steps < 10, "{choice:?} never returns");
+                assert!(steps <= 10, "{choice:?} never returns");
             }
             assert!(steps >= 2, "{choice:?} has only one value");
         }
@@ -321,8 +376,21 @@ mod tests {
             let mut s = Settings::default();
             let before = s.clone();
             choice.advance(&mut s);
-            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade, before.window_size != s.window_size, before.fill != s.fill, before.online_music != s.online_music];
+            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.first_token != s.first_token, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade, before.window_size != s.window_size, before.fill != s.fill, before.online_music != s.online_music];
             assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{choice:?}");
         }
+    }
+
+    #[test]
+    fn the_wait_for_a_first_token_stays_between_ten_seconds_and_five_minutes() {
+        let mut s = Settings::default();
+        for _ in 0..40 {
+            Choice::FirstToken.advance(&mut s);
+            assert!((10..=300).contains(&s.first_token), "{} s", s.first_token);
+        }
+        // A settings file may hold a wait that is not one of the offers: it is rounded up.
+        assert_eq!(next_first_token(15), 20);
+        assert_eq!(next_first_token(300), 10);
+        assert_eq!(next_first_token(7), 10);
     }
 }

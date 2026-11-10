@@ -474,6 +474,8 @@ texts! {
     ThinkingMedium: "Средние", "Medium";
     ThinkingHigh: "Долгие", "Long";
     ThinkingHint: "Дольше думает — умнее ответ и дольше ожидание.", "Longer thinking: smarter answers, longer waits.";
+    SetFirstToken: "Ждать первый токен", "Wait for the first token";
+    FirstTokenHint: "Сколько секунд терпеть молчание модели, прежде чем спросить следующую. От 10 до 300.", "How many seconds of a model's silence to bear before asking the next one. From 10 to 300.";
     SetFallback: "Запасные модели", "Fallback models";
     FallbackFlash: "Только flash", "Flash only";
     FallbackLite: "До flash-lite", "Down to flash-lite";

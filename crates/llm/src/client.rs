@@ -16,16 +16,123 @@ pub struct HttpResponse {
 pub trait Transport: Send + Sync {
     fn get(&self, url: &str, key: &str) -> Result<HttpResponse, String>;
     fn post(&self, url: &str, key: &str, body: &str) -> Result<HttpResponse, String>;
+
+    /// As `post`, for an answer worth reading while it is still being written: the wait for a
+    /// first word is the player's setting, and the pieces are put together as they come. A
+    /// transport that cannot stream answers whole, which reads the same.
+    fn post_stream(&self, url: &str, key: &str, body: &str) -> Result<HttpResponse, String> {
+        self.post(url, key, body)
+    }
 }
 
 pub struct UreqTransport {
-    agent: ureq::Agent,
+    /// How long the connection may be silent, in milliseconds: before the first word of an
+    /// answer as well as between the pieces of one. The player sets it, so it can change
+    /// while the game runs.
+    patience: std::sync::atomic::AtomicU64,
 }
 
 impl UreqTransport {
-    pub fn new(timeout: Duration) -> Self {
-        Self { agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout(timeout).build() }
+    pub fn new(patience: Duration) -> Self {
+        Self { patience: std::sync::atomic::AtomicU64::new(patience.as_millis() as u64) }
     }
+
+    /// Changes how long a silent model is given.
+    pub fn set_patience(&self, patience: Duration) {
+        self.patience.store(patience.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn patience(&self) -> Duration {
+        Duration::from_millis(self.patience.load(std::sync::atomic::Ordering::Relaxed).max(1_000))
+    }
+
+    /// A connection for one request. No ceiling on the answer itself: a free model may think
+    /// for a quarter of an hour, and that is not an error. Only silence is timed.
+    fn agent(&self) -> ureq::Agent {
+        ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(self.patience()).build()
+    }
+
+    /// A connection for the list of models and for checking a key: not a wait for a model's
+    /// word, so the player's shortest patience is still given a little room here.
+    fn listing_agent(&self) -> ureq::Agent {
+        ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(self.patience().max(Duration::from_secs(30))).build()
+    }
+}
+
+/// Where an answer comes in pieces: the API streams only when asked in the address.
+fn stream_url(url: &str) -> String {
+    match url.strip_suffix(":generateContent") {
+        Some(base) => format!("{base}:streamGenerateContent?alt=sse"),
+        None => url.to_string(),
+    }
+}
+
+/// Puts a streamed answer together into the shape of one that came whole, so that everything
+/// above reads it the same way. The thoughts of the model are left out; a stream that broke
+/// before its first word is kept as the error, and one that said nothing at all is an overload.
+pub fn gather_answer(lines: impl Iterator<Item = std::io::Result<String>>) -> std::io::Result<HttpResponse> {
+    let mut text = String::new();
+    let mut finish: Option<String> = None;
+    let mut usage = Value::Null;
+    let mut feedback = Value::Null;
+    let mut error: Option<(u16, String)> = None;
+    // An answer that came whole although the address asked for pieces.
+    let mut whole = String::new();
+    for line in lines {
+        let line = line?;
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            if !line.trim().is_empty() && !line.starts_with(':') && !line.starts_with("event:") {
+                whole.push_str(&line);
+            }
+            continue;
+        };
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let Ok(piece) = serde_json::from_str::<Value>(data) else { continue };
+        if let Some(failed) = piece.get("error") {
+            if text.is_empty() {
+                let status = failed["code"].as_u64().unwrap_or(500).clamp(400, 599) as u16;
+                error = Some((status, piece.to_string()));
+            }
+            continue;
+        }
+        if piece.get("promptFeedback").is_some() {
+            feedback = piece["promptFeedback"].clone();
+        }
+        let candidate = &piece["candidates"][0];
+        if let Some(reason) = candidate["finishReason"].as_str() {
+            finish = Some(reason.to_string());
+        }
+        if let Some(parts) = candidate["content"]["parts"].as_array() {
+            for part in parts.iter().filter(|p| p["thought"].as_bool() != Some(true)) {
+                if let Some(word) = part["text"].as_str() {
+                    text.push_str(word);
+                }
+            }
+        }
+        if piece.get("usageMetadata").is_some() {
+            usage = piece["usageMetadata"].clone();
+        }
+    }
+    if let Some((status, body)) = error {
+        return Ok(HttpResponse { status, body });
+    }
+    if !whole.trim().is_empty() {
+        return Ok(HttpResponse { status: 200, body: whole });
+    }
+    if text.is_empty() && finish.is_none() && feedback.is_null() {
+        return Ok(HttpResponse { status: 503, body: json!({ "error": { "message": "the stream said nothing" } }).to_string() });
+    }
+    let mut candidate = json!({ "content": { "parts": [{ "text": text }] } });
+    if let Some(reason) = finish {
+        candidate["finishReason"] = json!(reason);
+    }
+    let mut body = json!({ "candidates": [candidate], "usageMetadata": usage });
+    if !feedback.is_null() {
+        body["promptFeedback"] = feedback;
+    }
+    Ok(HttpResponse { status: 200, body: body.to_string() })
 }
 
 fn finish(result: Result<ureq::Response, ureq::Error>) -> Result<HttpResponse, String> {
@@ -41,11 +148,48 @@ fn finish(result: Result<ureq::Response, ureq::Error>) -> Result<HttpResponse, S
 
 impl Transport for UreqTransport {
     fn get(&self, url: &str, key: &str) -> Result<HttpResponse, String> {
-        finish(self.agent.get(url).set("x-goog-api-key", key).call())
+        finish(self.listing_agent().get(url).set("x-goog-api-key", key).call())
     }
 
     fn post(&self, url: &str, key: &str, body: &str) -> Result<HttpResponse, String> {
-        finish(self.agent.post(url).set("x-goog-api-key", key).set("content-type", "application/json").send_string(body))
+        finish(self.agent().post(url).set("x-goog-api-key", key).set("content-type", "application/json").send_string(body))
+    }
+
+    fn post_stream(&self, url: &str, key: &str, body: &str) -> Result<HttpResponse, String> {
+        // The wait for a first byte is the player's setting, and a socket to an address that
+        // never answers can hang far longer than that on its own (Windows gives up after a
+        // minute and a half or so). So the request is sent from a thread of its own: if the
+        // first byte is overdue, the request is abandoned and the next model is asked, while
+        // the thread is left to finish and die on its own.
+        let (ready, wait) = std::sync::mpsc::channel::<Result<(), String>>();
+        let agent = self.agent();
+        let patience = self.patience();
+        let (url, key, body) = (stream_url(url), key.to_string(), body.to_string());
+        let worker = std::thread::spawn(move || {
+            let answer = agent.post(&url).set("x-goog-api-key", &key).set("content-type", "application/json").send_string(&body);
+            match answer {
+                Ok(answer) => {
+                    let _ = ready.send(Ok(()));
+                    gather_answer(std::io::BufRead::lines(std::io::BufReader::new(answer.into_reader()))).map_err(|e| e.to_string())
+                }
+                Err(ureq::Error::Status(status, answer)) => {
+                    let _ = ready.send(Ok(()));
+                    Ok(HttpResponse { status, body: answer.into_string().unwrap_or_default() })
+                }
+                Err(error) => {
+                    let _ = ready.send(Err(error.to_string()));
+                    Err(error.to_string())
+                }
+            }
+        });
+        match wait.recv_timeout(patience) {
+            Ok(Ok(())) => worker.join().unwrap_or_else(|_| Err("the request was cut short".to_string())),
+            Ok(Err(error)) => {
+                let _ = worker.join();
+                Err(error)
+            }
+            Err(_) => Err(format!("no first byte of the answer after {} s", patience.as_secs())),
+        }
     }
 }
 
@@ -448,4 +592,53 @@ mod tests {
         assert_eq!(body["contents"][0]["parts"][0]["text"], "Hello.");
     }
 
+    fn lines(raw: &[&str]) -> Vec<std::io::Result<String>> {
+        raw.iter().map(|line| Ok(line.to_string())).collect()
+    }
+
+    #[test]
+    fn an_answer_comes_in_pieces_and_its_thoughts_are_left_out() {
+        let stream = lines(&[
+            r#"data: {"candidates":[{"content":{"parts":[{"text":"The door","thought":true}]},"index":0}]}"#,
+            r#"data: {"candidates":[{"content":{"parts":[{"text":"The door"}]},"index":0}]}"#,
+            r#"data: {"candidates":[{"content":{"parts":[{"text":" creaks open."}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":9}}"#,
+        ]);
+        let answer = gather_answer(stream.into_iter()).unwrap();
+        assert_eq!(answer.status, 200);
+        let reply = parse_generate(&answer).unwrap();
+        assert_eq!(reply.text, "The door creaks open.");
+        assert_eq!(reply.finish.as_deref(), Some("STOP"));
+        assert_eq!(reply.usage.prompt_tokens, 5);
+        assert_eq!(reply.usage.output_tokens, 9);
+    }
+
+    #[test]
+    fn a_stream_that_fails_before_its_first_word_is_read_as_that_error() {
+        let stream = lines(&[r#"data: {"error":{"code":429,"message":"quota"}}"#]);
+        let answer = gather_answer(stream.into_iter()).unwrap();
+        assert_eq!(answer.status, 429);
+        assert!(matches!(parse_generate(&answer), Err(Failure::RateLimited { .. })));
+    }
+
+    #[test]
+    fn a_stream_that_says_nothing_at_all_is_an_overload() {
+        let answer = gather_answer(lines(&[": keep-alive"]).into_iter()).unwrap();
+        assert_eq!(answer.status, 503);
+        assert_eq!(parse_generate(&answer), Err(Failure::Overloaded));
+    }
+
+    #[test]
+    fn an_answer_that_came_whole_is_read_as_it_is() {
+        let body = json!({ "candidates": [{ "finishReason": "STOP", "content": { "parts": [{ "text": "hi" }] } }] }).to_string();
+        let answer = gather_answer(lines(&[&body]).into_iter()).unwrap();
+        assert_eq!(parse_generate(&answer).unwrap().text, "hi");
+    }
+
+    #[test]
+    fn an_answer_is_asked_for_in_pieces() {
+        assert_eq!(
+            stream_url("https://example.test/v1beta/models/gemini-3.0-flash:generateContent"),
+            "https://example.test/v1beta/models/gemini-3.0-flash:streamGenerateContent?alt=sse"
+        );
+    }
 }

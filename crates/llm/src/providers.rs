@@ -310,6 +310,18 @@ struct State {
     plain: std::collections::HashSet<(Kind, String)>,
     /// Models that thought and thought and said nothing: asked not to think from then on.
     mute: std::collections::HashSet<(Kind, String)>,
+    /// How long a model may be silent before the next one is asked.
+    patience: Patience,
+}
+
+/// The wait for a first word, as the player set it. A model may think for a long time before
+/// saying anything, so this is a setting and not a constant.
+struct Patience(Duration);
+
+impl Default for Patience {
+    fn default() -> Self {
+        Self(Duration::from_secs(120))
+    }
 }
 
 /// The end of a key, to tell keys apart in the log without showing them.
@@ -320,6 +332,15 @@ fn tail(key: &str) -> String {
 }
 
 impl Rotation {
+    /// Changes how long a model may be silent before the next one is asked.
+    pub fn set_patience(&self, patience: Duration) {
+        self.state.lock().unwrap().patience = Patience(patience);
+    }
+
+    pub fn patience(&self) -> Duration {
+        self.state.lock().unwrap().patience.0
+    }
+
     /// Asks the providers in order: each one's models in the player's order, each model with
     /// every key that is not resting, starting from the key whose turn it is. Gives the text
     /// and what answered ("provider: model"). The error tells what every attempt came to.
@@ -336,8 +357,8 @@ impl Rotation {
                 start
             };
             // How long a model may be silent, not how long it may take: the answer comes in
-            // pieces, and while they come it is at work.
-            let timeout = Duration::from_secs(3600);
+            // pieces, and while they come it is at work. The player sets the wait.
+            let timeout = self.patience();
             for model in &provider.models {
                 let model = model.trim();
                 if self.model_rests(provider.kind, model) {

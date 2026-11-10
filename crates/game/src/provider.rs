@@ -401,9 +401,12 @@ fn on_activate(used: On<Activate>, acts: Query<&Act>, fields: Query<(&Field, &Ed
             let note = desk.note.clone();
             *note.lock().unwrap() = T::TestRunning.text(*lang).to_string();
             let lang = *lang;
+            // The test waits as long as the master would: the player's setting.
+            let patience = settings.patience();
             std::thread::spawn(move || {
                 // Asked afresh, with nothing resting, so that the word is about now.
                 let rotation = Rotation::default();
+                rotation.set_patience(patience);
                 let said = if voices {
                     match rotation.speak(std::slice::from_ref(&provider), "The road goes ever on.", false, &llm::providers::Network) {
                         Ok((sound, who)) => format!("{} {who}, {} KB", T::ProviderWorks.text(lang), sound.len() / 1024),

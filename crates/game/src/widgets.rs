@@ -76,6 +76,25 @@ pub fn button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label
     }
 }
 
+/// Spawns a button whose label is data rather than a translated string, on one line and
+/// centred like a setting's value: for a value that is a number, such as a count of seconds.
+pub fn value_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: String, enabled: bool, extra: impl Bundle) {
+    let look = if enabled { ButtonLook::Idle } else { ButtonLook::Disabled };
+    let mut entity = parent.spawn((
+        Button,
+        PixelButton { enabled, look },
+        extra,
+        button_node(JustifyContent::Center),
+        children![
+            (backing(art.button(look), BUTTON_BORDER), ButtonFace),
+            (Text::new(label), fonts.body(), TextColor(label_color(look)), ButtonLabel),
+        ],
+    ));
+    if enabled {
+        entity.insert(AutoDirectionalNavigation::default());
+    }
+}
+
 /// Spawns a button whose label is data rather than a translated string, such as a row in a
 /// list. The text starts at the left and is cut off rather than wrapped.
 /// Marks the one button of a sheet that Enter presses even while the mouse is steering:

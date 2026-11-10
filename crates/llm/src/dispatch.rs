@@ -77,6 +77,12 @@ impl<T: Transport> Dispatcher<T> {
         Self { transport, base: DEFAULT_BASE.to_string(), clock, state: Mutex::new(State { pool: Pool::new(), ..State::default() }) }
     }
 
+    /// The transport itself, so that how long a silent model is given can be changed while
+    /// the game runs.
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
     pub fn add_key(&self, secret: &str) -> KeyId {
         self.state.lock().unwrap().pool.add_key(secret)
     }
@@ -278,7 +284,7 @@ impl<T: Transport> Dispatcher<T> {
             };
             let body = request.body(mode.config(request.thinking)).to_string();
             let url = format!("{}/{}/models/{}:generateContent", self.base, model.api.path(), model.id);
-            let response = match self.transport.post(&url, &secret, &body) {
+            let response = match self.transport.post_stream(&url, &secret, &body) {
                 Ok(response) => response,
                 Err(error) => {
                     // No answer came back at all. A model that accepts the connection and then
@@ -449,7 +455,10 @@ mod tests {
     fn a_dead_link_stops_after_two_silent_models_instead_of_walking_the_chain() {
         let r = rig(&["a", "b"], |_| Err("the connection was closed".to_string()));
         assert!(matches!(r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma), Err(GenError::Network(_))));
-        assert_eq!(r.trail().len(), 2);
+        let trail = r.trail();
+        assert_eq!(trail.len(), 2);
+        // Two different models, not the same one twice: a silent model rests.
+        assert_ne!(trail[0].0, trail[1].0);
     }
 
     #[test]

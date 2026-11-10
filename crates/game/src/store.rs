@@ -18,6 +18,9 @@ pub struct Settings {
     pub fullscreen: bool,
     /// How much the game master's model thinks before answering.
     pub thinking: ThinkingSetting,
+    /// How long a model may be silent, in seconds, before the next one is asked: the wait for
+    /// its first word. Never below ten, never above five minutes.
+    pub first_token: u16,
     /// The weakest tier the game master may fall back to when better models are spent.
     pub lowest_tier: Tier,
     /// Draw neighbouring places before the party walks into them.
@@ -133,6 +136,11 @@ pub enum Initiative {
 }
 
 impl Settings {
+    /// The wait for a model's first word, held to the range the setting offers.
+    pub fn patience(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.first_token.clamp(10, 300) as u64)
+    }
+
     /// The providers that are switched on and have enough to ask with, in the order they
     /// are tried. While any is, they are the master in place of Gemini.
     pub fn providers(&self) -> Vec<llm::providers::Provider> {
@@ -180,7 +188,7 @@ impl Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: true, fullscreen_set: false, thinking: ThinkingSetting::Medium, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 2, zoom: 2, online_music: true, providers: Vec::new(), custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new() }
+        Self { lang: Lang::Ru, fullscreen: true, fullscreen_set: false, thinking: ThinkingSetting::Medium, first_token: 120, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 2, zoom: 2, online_music: true, providers: Vec::new(), custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new() }
     }
 }
 
@@ -447,7 +455,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, fullscreen_set: true, thinking: ThinkingSetting::Off, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, narration: 2, zoom: 1, online_music: false, providers: Vec::new(), custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new() };
+        let settings = Settings { lang: Lang::En, fullscreen: true, fullscreen_set: true, thinking: ThinkingSetting::Off, first_token: 90, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, narration: 2, zoom: 1, online_music: false, providers: Vec::new(), custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new() };
         store.save_settings(&settings).unwrap();
         // A provider of one's own kept the old way comes back as one of the providers,
         // with its address, its model and its key; the rest is as it was saved.
