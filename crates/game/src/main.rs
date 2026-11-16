@@ -1,3 +1,6 @@
+// A build given to players opens no console window beside the game; what it has to say
+// goes to the log file. A build made for working on the game keeps the console.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 // Interaction is what every control here is styled by; the engine marks it for removal
 // and the interface's own controls (docs/REWORK.md, section 11) take its place.
 #![allow(deprecated)]
