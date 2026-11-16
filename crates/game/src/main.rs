@@ -41,6 +41,7 @@ mod theme;
 mod translate;
 mod voice;
 mod shop_ui;
+mod ui;
 mod view;
 mod widgets;
 
@@ -89,6 +90,7 @@ fn main() -> AppExit {
         hero::HeroPlugin,
         fight::FightPlugin,
     ))
+    .add_plugins(ui::UiPlugin)
     .add_plugins((view::ViewPlugin, shop_ui::ShopPlugin, translate::TranslatePlugin, bag_ui::BagPlugin, post::PostPlugin, motion::MotionPlugin, music::MusicPlugin, provider::ProviderPlugin, party_hud::PartyHudPlugin, graphics::GraphicsPlugin, weather::WeatherPlugin, audio::AudioPlugin, fx::FxPlugin, voice::VoicePlugin, shot::ShotPlugin(args)));
     // How bringing the overlay in went is said once there is a log to say it in.
     if let Some(overlay) = overlay {

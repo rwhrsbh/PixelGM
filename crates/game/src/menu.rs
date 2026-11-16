@@ -2,10 +2,8 @@
 //! their own modules and hang off this one.
 
 use crate::art::{Art, CANDLE_SIZE};
-use crate::i18n::T;
 use crate::store::Store;
-use crate::theme::*;
-use crate::widgets::{Activate, button, panel_backing, panel_node};
+use crate::widgets::{Activate, panel_backing, panel_node};
 use bevy::prelude::*;
 
 #[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -37,9 +35,6 @@ pub enum Nav {
     /// Back to where this screen was opened from; the main menu unless something else is
     /// recorded in `ReturnTo`.
     Back,
-    /// Load the newest save.
-    Continue,
-    Quit,
 }
 
 /// Set by a screen that opens another one and wants to be returned to: the key screen opened
@@ -128,44 +123,33 @@ fn breathe(time: Res<Time>, mut glows: Query<(&Glow, &mut ImageNode)>) {
     }
 }
 
-fn spawn_main(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, store: Res<Store>, settings: Res<crate::store::Settings>) {
-    let has_saves = !store.list_saves().is_empty();
-    commands.spawn(screen_root(Screen::Main)).with_children(|root| {
-        root.spawn((
-            Node { margin: UiRect::top(px(22)), ..default() },
-            Text::new("PIXEL GM"),
-            fonts.title(2),
-            TextColor(color(BRASS_LIGHT)),
-            TextShadow { offset: Vec2::new(2.0, 2.0), color: color(INK) },
-        ));
-        root.spawn((Node { margin: UiRect::top(px(6)), ..default() }, Text::default(), T::Tagline, fonts.body(), TextColor(color(PARCHMENT_SHADE))));
-        let sheet = Node { margin: UiRect::top(px(14)), width: px(156), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
-        spawn_panel(root, &art, sheet, |sheet| {
-            for (label, nav, enabled) in [
-                (T::NewGame, Nav::Go(Screen::NewGame), true),
-                (T::Continue, Nav::Continue, has_saves),
-                (T::LoadGame, Nav::Go(Screen::Load), has_saves),
-                (T::Multiplayer, Nav::Go(Screen::Lobby), true),
-                (settings.master_label(), Nav::Go(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys }), true),
-                (T::Settings, Nav::Go(Screen::Settings), true),
-                (T::Quit, Nav::Quit, true),
-            ] {
-                button(sheet, &art, &fonts, label, enabled, nav);
-            }
-        });
-    });
+/// The main menu, drawn with egui. Continue is the saves module's to carry out.
+#[allow(clippy::too_many_arguments)]
+fn main_menu(mut egui: bevy_egui::EguiContexts, store: Res<Store>, settings: Res<crate::store::Settings>, mut next: ResMut<NextState<Screen>>, mut exit: MessageWriter<AppExit>, mut commands: Commands) {
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let view = crate::ui::screens::main_menu::MainView {
+        lang: settings.lang,
+        has_saves: !store.list_saves().is_empty(),
+        master: settings.master_label(),
+        master_screen: if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys },
+    };
+    let Some(mut ui) = crate::ui::kit::screen_ui(ctx, "main_menu") else { return };
+    use crate::ui::screens::main_menu::MainAct;
+    match crate::ui::screens::main_menu::main_menu(&mut ui, &view) {
+        Some(MainAct::Go(screen)) => next.set(screen),
+        Some(MainAct::Continue) => crate::saves::continue_newest(&store, &mut commands, &mut next),
+        Some(MainAct::Quit) => {
+            exit.write(AppExit::Success);
+        }
+        None => {}
+    }
 }
 
-fn on_activate(used: On<Activate>, buttons: Query<&Nav>, mut return_to: ResMut<ReturnTo>, mut next: ResMut<NextState<Screen>>, mut exit: MessageWriter<AppExit>) {
+fn on_activate(used: On<Activate>, buttons: Query<&Nav>, mut return_to: ResMut<ReturnTo>, mut next: ResMut<NextState<Screen>>) {
     let Ok(nav) = buttons.get(used.entity) else { return };
     match nav {
         Nav::Go(screen) => next.set(*screen),
         Nav::Back => next.set(return_to.0.take().unwrap_or(Screen::Main)),
-        Nav::Quit => {
-            exit.write(AppExit::Success);
-        }
-        // Loading the newest save is the save module's business.
-        Nav::Continue => {}
     }
 }
 
@@ -191,7 +175,7 @@ impl Plugin for MenuPlugin {
         app.init_state::<Screen>()
             .init_resource::<ReturnTo>()
             .add_systems(Startup, spawn_backdrop)
-            .add_systems(OnEnter(Screen::Main), spawn_main)
+            .add_systems(bevy_egui::EguiPrimaryContextPass, main_menu.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Main)))
             .add_systems(Update, (flicker, breathe, escape_goes_back))
             .add_observer(on_activate);
     }
