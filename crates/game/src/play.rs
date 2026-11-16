@@ -1893,7 +1893,7 @@ fn approach_work(
     let Some(Walking { option, index, turn, .. }) = approach.0.take() else { return };
     pose.moving = false;
     if session.is_client() {
-        session.intend(Intent::Choose(index));
+        session.intend(Intent::Choose { index, label: option.label.clone() });
         *phase = Phase::Asking { said: option.label.clone(), near: None };
         return;
     }
@@ -1901,6 +1901,9 @@ fn approach_work(
     let outcome = game.world.choose(&option);
     redraw.0 = true;
     autosave(&store, &game);
+    if let Some(offered) = table.options.get_mut(&game.world.current) {
+        offered.retain(|o| o.label != option.label);
+    }
     table.going_on = Some(outcome.clone());
     *phase = follow(&option.label, &outcome, &game, &settings, &session, &table);
 }
@@ -1953,7 +1956,11 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     if table.elsewhere && !gist.is_empty() {
         table.heard(&where_, &gist);
     }
-    table.options.insert(place, turn.options.clone());
+    // The outcome of a chest opened or a die rolled offers nothing, and takes nothing
+    // away: the choices of the telling before it stand.
+    if !turn.options.is_empty() {
+        table.options.insert(place, turn.options.clone());
+    }
     Phase::Reading { turn }
 }
 
@@ -3297,7 +3304,7 @@ fn on_activate(
         let asked = match (*action, phase.clone()) {
             (PlayAction::Do(index), Phase::Looking { thing }) => Some(Intent::Do { thing, index }),
             (PlayAction::Chest(how), Phase::Looking { thing }) => Some(Intent::OpenChest { prop: thing, how }),
-            (PlayAction::Choose(index), Phase::Reading { .. }) => Some(Intent::Choose(index)),
+            (PlayAction::Choose(index), Phase::Reading { turn }) => turn.options.get(index).map(|option| Intent::Choose { index, label: option.label.clone() }),
             (PlayAction::Roll, Phase::Rolling) => Some(Intent::Roll),
             (PlayAction::Improve(ability), _) => Some(Intent::Improve(ability)),
             (PlayAction::Feat(choice), _) => Some(Intent::Feat(choice)),
@@ -3527,6 +3534,9 @@ fn on_activate(
                 let outcome = game.world.choose(option);
                 redraw.0 = true;
                 autosave(&store, &game);
+                if let Some(offered) = table.options.get_mut(&game.world.current) {
+                    offered.retain(|o| o.label != option.label);
+                }
                 table.going_on = Some(outcome.clone());
                 *phase = follow(&option.label, &outcome, &game, &settings, &session, &table);
             }
@@ -3715,6 +3725,14 @@ fn action_label(world: &World, thing: &str, index: usize) -> Option<String> {
     actions.get(index).map(|a| format!("{} ({name})", a.label))
 }
 
+/// Takes a choice out of those offered in a place: the one with the words the player read.
+/// The list may have changed since they read it, so the place in it is only trusted when no
+/// words came with it. Taken, a choice is no longer offered: nobody takes it twice.
+fn take_offer(offered: &mut Vec<world::Action>, index: usize, label: &str) -> Option<world::Action> {
+    let at = if label.is_empty() { Some(index).filter(|i| *i < offered.len()) } else { offered.iter().position(|o| o.label == label) }?;
+    Some(offered.remove(at))
+}
+
 /// Tells everyone at the table what a player has set about.
 fn announce(session: &Session, table: &mut Table, world: &World, player: &str, what: &str, own: bool) {
     let said = format!("{}: {what}", hero_of(world, player).unwrap_or(player));
@@ -3743,7 +3761,7 @@ fn guests(
     let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
     for (player, intent) in std::mem::take(&mut table.inbox) {
         // What a guest does to the world happens where that guest stands.
-        let home = matches!(intent, Intent::Do { .. } | Intent::Choose(_) | Intent::Roll | Intent::Say { .. } | Intent::Gm(_) | Intent::OpenChest { .. }).then(|| enter_scene(&mut game, &mut table, &player));
+        let home = matches!(intent, Intent::Do { .. } | Intent::Choose { .. } | Intent::Roll | Intent::Say { .. } | Intent::Gm(_) | Intent::OpenChest { .. }).then(|| enter_scene(&mut game, &mut table, &player));
         let shown = match intent {
             Intent::Do { thing, index } => {
                 if let Some(label) = action_label(&game.world, &thing, index) {
@@ -3751,12 +3769,22 @@ fn guests(
                 }
                 game.world.perform(&thing, index).map(outcome_of)
             }
-            Intent::Choose(index) => table.options.get(&game.world.current).and_then(|options| options.get(index)).cloned().map(|option| {
-                let outcome = game.world.choose(&option);
-                // And what follows it is asked of the master: always, in its turn.
-                table.wants.lock().unwrap().push(Want { player: player.clone(), said: option.label.clone(), near: None, follows: true });
-                outcome_of(outcome)
-            }),
+            Intent::Choose { index, label } => {
+                let place = game.world.current.clone();
+                match table.options.get_mut(&place).and_then(|offered| take_offer(offered, index, &label)) {
+                    Some(option) => {
+                        let outcome = game.world.choose(&option);
+                        // And what follows it is asked of the master: always, in its turn.
+                        table.wants.lock().unwrap().push(Want { player: player.clone(), said: option.label.clone(), near: None, follows: true });
+                        Some(outcome_of(outcome))
+                    }
+                    // Told in words: a press that does nothing looks like a game that hangs.
+                    None => {
+                        session.send_to(&player, &Down::Trouble(T::ChoiceGone.text(settings.lang).to_string()));
+                        None
+                    }
+                }
+            }
             Intent::Roll if !game.world.pending_here() => None,
             Intent::Roll => game.world.roll_check(&mut Rng::from_clock()).map(|done| {
                 if !table.elsewhere {
@@ -4546,5 +4574,26 @@ mod tests {
         assert_eq!(glide.step(far, 1.0 / 60.0), far);
         // A figure that has only just appeared starts where it is, not at the corner of the map.
         assert_eq!(Glide::default().step(Vec2::new(300.0, 200.0), 1.0 / 60.0), Vec2::new(300.0, 200.0));
+    }
+
+    fn offer(label: &str) -> world::Action {
+        serde_json::from_value(serde_json::json!({ "label": label, "outcome": format!("{label}, done"), "effects": [] })).expect("a choice as it is kept")
+    }
+
+    #[test]
+    fn a_choice_is_found_by_its_words_and_taken_only_once() {
+        // The guest read "Wait" second in the list; since then the list has changed.
+        let mut offered = vec![offer("Run"), offer("Hide"), offer("Wait")];
+        assert_eq!(take_offer(&mut offered, 1, "Wait").map(|o| o.label), Some("Wait".to_string()));
+        assert_eq!(offered.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Run", "Hide"]);
+        // Somebody else pressing the same choice finds it gone, and nothing else is taken
+        // in its stead — not even what now stands in its old place.
+        assert!(take_offer(&mut offered, 1, "Wait").is_none());
+        assert_eq!(offered.len(), 2);
+        // A choice that was never offered here is not one.
+        assert!(take_offer(&mut offered, 0, "Fly").is_none());
+        // Without words the place in the list is all there is to go by.
+        assert_eq!(take_offer(&mut offered, 0, "").map(|o| o.label), Some("Run".to_string()));
+        assert!(take_offer(&mut offered, 5, "").is_none());
     }
 }
