@@ -202,8 +202,33 @@ fn forget_going_on(phase: Res<Phase>, mut table: ResMut<Table>) {
 #[derive(Component)]
 struct FeedLine(f32);
 
-fn feed(frame: Res<crate::view::View>, mut table: ResMut<Table>, mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut seen: Local<Option<std::collections::BTreeMap<String, i64>>>, mut lines: Query<(Entity, &mut FeedLine, &mut TextColor, &mut Node)>) {
+/// The one column the lines of the corner stand in, the newest lowest. They are laid out
+/// one under another by the interface itself, so a line that wraps onto two rows pushes
+/// the others up instead of lying over them.
+#[derive(Component)]
+struct FeedColumn;
+
+fn feed(frame: Res<crate::view::View>, mut table: ResMut<Table>, mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut seen: Local<Option<std::collections::BTreeMap<String, i64>>>, mut lines: Query<(Entity, &mut FeedLine, &mut TextColor)>, mut columns: Query<(Entity, &mut Node), With<FeedColumn>>) {
     let me = player_name(&settings);
+    let column = match columns.single_mut() {
+        Ok((column, mut node)) => {
+            // Just above whatever sheet lies under the map.
+            let bottom = px(frame.bottom + 4.0);
+            if node.bottom != bottom {
+                node.bottom = bottom;
+            }
+            column
+        }
+        Err(_) => commands
+            .spawn((
+                FeedColumn,
+                DespawnOnExit(Screen::Play),
+                Node { position_type: PositionType::Absolute, left: px(6), bottom: px(frame.bottom + 4.0), max_width: px(300), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexStart, row_gap: px(2), ..default() },
+                GlobalZIndex(9),
+                Pickable::IGNORE,
+            ))
+            .id(),
+    };
     let hero = my_hero(&game.world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
     let now: std::collections::BTreeMap<String, i64> = game.world.story.bags.get(hero).map(|b| {
         let mut counts = std::collections::BTreeMap::new();
@@ -228,15 +253,14 @@ fn feed(frame: Res<crate::view::View>, mut table: ResMut<Table>, mut commands: C
         for (n, (name, delta)) in changes.into_iter().enumerate() {
             let (sign, tint) = if delta > 0 { ("+", Color::srgb(0.55, 0.9, 0.5)) } else { ("−", Color::srgb(0.95, 0.5, 0.4)) };
             let count = if delta.abs() > 1 { format!(" ×{}", delta.abs()) } else { String::new() };
-            commands.spawn((
-                DespawnOnExit(Screen::Play),
+            commands.entity(column).with_child((
                 FeedLine(-(n as f32) * 0.15),
-                Node { position_type: PositionType::Absolute, left: px(6), bottom: px(HUD_HEIGHT + 6.0), padding: UiRect::axes(px(4), px(1)), ..default() },
+                Node { padding: UiRect::axes(px(4), px(1)), ..default() },
                 BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.8)),
                 Text::new(format!("{sign} {name}{count}")),
                 fonts.body(),
                 TextColor(tint),
-                GlobalZIndex(9),
+                Pickable::IGNORE,
             ));
         }
     }
@@ -245,28 +269,23 @@ fn feed(frame: Res<crate::view::View>, mut table: ResMut<Table>, mut commands: C
     for (n, said) in std::mem::take(&mut table.notices).into_iter().enumerate() {
         let said = said.replace(world::prompt::GO_ON, "");
         let short: String = said.trim().chars().take(90).collect();
-        commands.spawn((
-            DespawnOnExit(Screen::Play),
+        commands.entity(column).with_child((
             FeedLine(-2.5 - n as f32 * 0.15),
-            Node { position_type: PositionType::Absolute, left: px(6), bottom: px(HUD_HEIGHT + 6.0), padding: UiRect::axes(px(4), px(1)), max_width: px(300), ..default() },
+            Node { padding: UiRect::axes(px(4), px(1)), ..default() },
             BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.8)),
             Text::new(format!("» {short}")),
             fonts.body(),
             TextColor(color(BRASS_LIGHT)),
-            GlobalZIndex(9),
+            Pickable::IGNORE,
         ));
     }
-    // The newest at the bottom; each rises and fades.
-    let mut all: Vec<_> = lines.iter_mut().collect();
-    all.sort_by(|a, b| a.1.0.total_cmp(&b.1.0));
-    let count = all.len();
-    for (rank, (entity, mut line, mut tint, mut node)) in all.into_iter().enumerate() {
+    // Each line fades and goes; the column closes up behind it.
+    for (entity, mut line, mut tint) in &mut lines {
         line.0 += time.delta_secs();
         if line.0 > 4.0 {
             commands.entity(entity).despawn();
             continue;
         }
-        node.bottom = px(frame.bottom + 4.0 + (count - 1 - rank) as f32 * 12.0);
         let fade = (4.0 - line.0).clamp(0.0, 1.0);
         tint.0 = tint.0.with_alpha(fade);
     }
