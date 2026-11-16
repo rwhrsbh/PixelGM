@@ -14,6 +14,10 @@ table = { path = "../table" }
 serde.workspace = true
 serde_json.workspace = true
 ureq = "2"
+bevy_egui = { version = "0.43", default-features = false, features = ["render", "bevy_ui", "default_fonts", "manage_clipboard", "picking"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_UI_Input_KeyboardAndMouse"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", default-features = false }

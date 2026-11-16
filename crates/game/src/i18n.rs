@@ -32,6 +32,7 @@ macro_rules! texts {
 
 texts! {
     Tagline: "настольная игра, которую ведёт нейросеть", "a tabletop game run by a neural network";
+    NoSavesYet: "Сохранений пока нет: начни новую игру.", "No saves yet: start a new game.";
     NewGame: "Новая игра", "New game";
     Continue: "Продолжить", "Continue";
     Multiplayer: "Сетевая игра", "Multiplayer";

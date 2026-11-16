@@ -53,13 +53,16 @@ fn load(path: &PathBuf, store: &Store, commands: &mut Commands, next: &mut NextS
     }
 }
 
-fn on_activate(used: On<Activate>, saves: Query<&LoadSave>, navs: Query<&Nav>, store: Res<Store>, mut commands: Commands, mut next: ResMut<NextState<Screen>>) {
+/// Loads the newest save, if there is one.
+pub fn continue_newest(store: &Store, commands: &mut Commands, next: &mut NextState<Screen>) {
+    if let Some(newest) = store.list_saves().first() {
+        load(&newest.path, store, commands, next);
+    }
+}
+
+fn on_activate(used: On<Activate>, saves: Query<&LoadSave>, store: Res<Store>, mut commands: Commands, mut next: ResMut<NextState<Screen>>) {
     if let Ok(LoadSave(path)) = saves.get(used.entity) {
         load(path, &store, &mut commands, &mut next);
-    } else if let Ok(Nav::Continue) = navs.get(used.entity)
-        && let Some(newest) = store.list_saves().first()
-    {
-        load(&newest.path, &store, &mut commands, &mut next);
     }
 }
 
