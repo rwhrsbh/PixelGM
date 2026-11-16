@@ -367,6 +367,57 @@ struct Gait {
     clock: f32,
     last: Vec2,
     still: f32,
+    /// Where the figure is drawn, between the places its player was last heard to be.
+    glide: Glide,
+}
+
+/// Another player's place comes a few times a second, and never evenly. Drawn where it was
+/// last heard to be, the figure jumps; so it is walked from where it is drawn to where it
+/// was heard, over as long as the news took to come.
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
+struct Glide {
+    from: Vec2,
+    to: Vec2,
+    /// Seconds since the last news, and how long the walk to it is given.
+    since: f32,
+    span: f32,
+    /// Seconds between the last two pieces of news.
+    gap: f32,
+    shown: Vec2,
+    started: bool,
+}
+
+/// News comes about this often; a walk is never given less than half of it nor more than
+/// a quarter of a second, so that late news is caught up with and a pause is not a crawl.
+const GLIDE_USUAL: f32 = 0.1;
+/// Farther than this in one piece of news is not a walk: the story set the hero down there.
+const GLIDE_JUMP: f32 = 3.0 * TILE as f32;
+
+impl Glide {
+    fn at(place: Vec2) -> Self {
+        Self { from: place, to: place, shown: place, span: GLIDE_USUAL, gap: GLIDE_USUAL, since: 0.0, started: true }
+    }
+
+    /// One frame: `heard` is where the player was last heard to be. Gives where to draw.
+    fn step(&mut self, heard: Vec2, dt: f32) -> Vec2 {
+        if !self.started || heard.distance(self.shown) > GLIDE_JUMP {
+            *self = Self::at(heard);
+            return heard;
+        }
+        self.since += dt;
+        self.gap += dt;
+        if heard != self.to {
+            // The walk to the new place takes as long as the news took to come: the figure
+            // arrives as the next news is due, and so never stops between two of them.
+            self.span = self.gap.clamp(GLIDE_USUAL * 0.5, 0.25);
+            self.gap = 0.0;
+            self.from = self.shown;
+            self.to = heard;
+            self.since = dt;
+        }
+        self.shown = self.from.lerp(self.to, (self.since / self.span).min(1.0));
+        self.shown
+    }
 }
 
 #[derive(Component)]
@@ -967,7 +1018,7 @@ fn draw(
                 let frames = frames_of(owner, &mut dolls, &mut images).unwrap_or_default();
                 let Some(first) = frames.first().cloned() else { continue };
                 commands
-                    .spawn((InLocation, Fellow(other.name.clone()), Frames(frames), Gait { last: Vec2::new(other.x, other.y), ..default() }, Sprite::from_image(first), Anchor::BOTTOM_CENTER, Transform::default()))
+                    .spawn((InLocation, Fellow(other.name.clone()), Frames(frames), Gait { last: Vec2::new(other.x, other.y), glide: Glide::at(Vec2::new(other.x, other.y)), ..default() }, Sprite::from_image(first), Anchor::BOTTOM_CENTER, Transform::default()))
                     .with_children(|me| shadow_under(me, &cache.shadow));
             }
             let led = lead.and_then(|n| ally_images[n].clone()).map(|image| vec![image; 4 * crate::doll::STEPS]);
@@ -1209,7 +1260,8 @@ fn place_fellows(time: Res<Time>, game: Res<Game>, mut redraw: ResMut<Redraw>, m
     }
     for (fellow, frames, mut gait, mut transform, mut sprite) in &mut fellows {
         let Some(token) = others.iter().find(|t| t.name == fellow.0) else { continue };
-        let now = Vec2::new(token.x, token.y);
+        // Drawn on the way to where the player was last heard to be, not set down there.
+        let now = gait.glide.step(Vec2::new(token.x, token.y), time.delta_secs());
         let moved = now - gait.last;
         if moved.length() > 0.05 {
             if let Some(facing) = crate::doll::Facing::of(moved.x, moved.y) {
@@ -1218,13 +1270,12 @@ fn place_fellows(time: Res<Time>, game: Res<Game>, mut redraw: ResMut<Redraw>, m
             gait.clock += time.delta_secs();
             gait.still = 0.0;
         } else {
-            // Positions come ten times a second: a short pause between them is still walking.
             gait.still += time.delta_secs();
         }
         gait.last = now;
         let step = if gait.still < 0.15 { (gait.clock * STEPS_PER_SECOND) as usize % crate::doll::STEPS } else { 0 };
-        let feet_y = token.y + FEET.1;
-        let at = on_screen(token.x, feet_y).round();
+        let feet_y = now.y + FEET.1;
+        let at = on_screen(now.x, feet_y).round();
         transform.translation = Vec3::new(at.x, at.y, depth(feet_y));
         if let Some(image) = frames.0.get(crate::doll::frame_index(gait.facing, step))
             && sprite.image != *image
@@ -4441,5 +4492,59 @@ mod tests {
     fn the_master_speaks_unprompted_only_when_the_host_allows_it() {
         assert_eq!(event_after(Initiative::Off), None);
         assert!(event_after(Initiative::Often) < event_after(Initiative::Rare));
+    }
+
+    /// Feeds a figure news of a walk at `speed` pixels a second, the news coming at the
+    /// given moments, and draws it sixty times a second. Gives the largest step drawn in
+    /// one frame and where the figure ended.
+    fn walked(news_at: &[f32], speed: f32, until: f32) -> (f32, Vec2) {
+        let mut glide = Glide::at(Vec2::ZERO);
+        let (mut heard, mut next, mut t, mut largest) = (Vec2::ZERO, 0, 0.0f32, 0.0f32);
+        let dt = 1.0 / 60.0;
+        while t < until {
+            t += dt;
+            while next < news_at.len() && news_at[next] <= t {
+                heard = Vec2::new(news_at[next] * speed, 0.0);
+                next += 1;
+            }
+            let before = glide.shown;
+            let shown = glide.step(heard, dt);
+            largest = largest.max(shown.distance(before));
+        }
+        (largest, glide.shown)
+    }
+
+    #[test]
+    fn another_players_walk_is_drawn_in_even_steps_not_in_jumps() {
+        // News ten times a second of a walk at the heroes' own pace: set down where it
+        // was heard, the figure would jump over seven pixels at a time.
+        let even: Vec<f32> = (1..=20).map(|n| n as f32 * 0.1).collect();
+        let (largest, ended) = walked(&even, SPEED, 2.4);
+        let a_frame = SPEED / 60.0;
+        assert!(largest <= a_frame * 1.6, "a step of {largest} where {a_frame} is a frame's walk");
+        // And it comes to rest exactly where the player stopped.
+        assert_eq!(ended, Vec2::new(2.0 * SPEED, 0.0));
+    }
+
+    #[test]
+    fn news_that_comes_unevenly_still_makes_no_jump() {
+        // The same walk, the news now early, now late by a good part of its interval.
+        let uneven: Vec<f32> = (1..=20).map(|n| n as f32 * 0.1 + if n % 3 == 0 { 0.06 } else if n % 3 == 1 { -0.03 } else { 0.0 }).collect();
+        let (largest, ended) = walked(&uneven, SPEED, 2.6);
+        // Set down where it was heard, the figure would jump by the walk of the longest gap
+        // between two pieces of news, 0.16 s here: over eleven pixels. Gliding, it catches
+        // up after late news in steps of about three frames' walk at most.
+        let set_down = 0.16 * SPEED;
+        assert!(largest <= SPEED / 60.0 * 3.2 && largest < set_down / 3.0, "a step of {largest}, where set down it would be {set_down}");
+        assert!((ended.x - uneven[19] * SPEED).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_hero_the_story_sets_down_elsewhere_is_there_at_once() {
+        let mut glide = Glide::at(Vec2::ZERO);
+        let far = Vec2::new(GLIDE_JUMP + 20.0, 0.0);
+        assert_eq!(glide.step(far, 1.0 / 60.0), far);
+        // A figure that has only just appeared starts where it is, not at the corner of the map.
+        assert_eq!(Glide::default().step(Vec2::new(300.0, 200.0), 1.0 / 60.0), Vec2::new(300.0, 200.0));
     }
 }
