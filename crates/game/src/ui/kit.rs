@@ -137,6 +137,8 @@ impl<'a> Button<'a> {
 /// How far the words stand from the plate's edges, and the least height of a control.
 const PAD: Vec2 = vec2(6.0, 3.0);
 pub const ROW: f32 = 16.0;
+/// How wide the value of a setting is at least, so the arrows of a sheet stand in one column.
+const VALUE_COLUMN: f32 = 130.0;
 /// A label written on a control is at most this many rows; longer is cut with "…" and
 /// shown whole under the cursor.
 const MOST_ROWS: usize = 3;
@@ -149,7 +151,8 @@ impl egui::Widget for Button<'_> {
         job.wrap.max_width = wrap_width;
         job.wrap.max_rows = if wide { MOST_ROWS } else { 1 };
         job.wrap.break_anywhere = false;
-        job.halign = if wide { Align::LEFT } else { Align::Center };
+        // Laid out from its left edge; centred, where it is, by where it is drawn.
+        job.halign = Align::LEFT;
         let galley = ui.fonts_mut(|f| f.layout_job(job));
         let cut = galley.elided;
         let hint = key.map(|k| ui.fonts_mut(|f| f.layout_no_wrap(k.to_string(), egui::FontId::proportional(BODY), c(FADED))));
@@ -208,7 +211,8 @@ pub fn choice(ui: &mut Ui, name: &str, values: &[&str], index: &mut usize) -> Re
     let count = values.len().max(1);
     let widest = values.iter().map(|v| ui.fonts_mut(|f| f.layout_no_wrap(v.to_string(), egui::FontId::proportional(BODY), Color32::WHITE).size().x)).fold(0.0f32, f32::max);
     let arrow = ROW;
-    let value_w = widest + PAD.x * 2.0;
+    // One column for every setting on a sheet, unless a value is longer.
+    let value_w = (widest + PAD.x * 2.0).max(VALUE_COLUMN);
     let width = ui.available_width();
     let (rect, mut response) = ui.allocate_exact_size(vec2(width, ROW), Sense::click());
     let row = rect;
@@ -319,6 +323,9 @@ pub struct Sheet<'a> {
     pub max: Vec2,
     /// Room left from the top of the screen, for a title of the game above the sheet.
     pub top: f32,
+    /// Always as tall as its most, not as its contents: for a sheet in steps, whose buttons
+    /// must stand in one place from step to step.
+    pub fixed: bool,
 }
 
 /// The margin round a sheet, and inside it.
@@ -345,14 +352,14 @@ fn sheet_with<R>(ui: &mut Ui, sheet: Sheet, body: impl FnOnce(&mut Ui) -> R, foo
     let width = sheet.max.x.min(room.x).max(1.0);
     // The height the contents asked for the last time they were laid out.
     let wanted: Option<f32> = ui.data(|d| d.get_temp(id));
-    let height = wanted.unwrap_or(sheet.max.y).min(sheet.max.y).min(room.y).max(1.0);
+    let height = if sheet.fixed { sheet.max.y } else { wanted.unwrap_or(sheet.max.y) }.min(sheet.max.y).min(room.y).max(1.0);
     let rect = Rect::from_min_size(Pos2::new(screen.center().x - width / 2.0, screen.top() + SHEET_GAP + sheet.top), vec2(width, height));
     plate(ui.painter(), rect, Look::Parchment, true);
     let inner = rect.shrink(SHEET_PAD);
     let mut child = ui.new_child(UiBuilder::new().id_salt(sheet.id).max_rect(inner).layout(Layout::top_down(Align::Min)));
     let mut used = 0.0;
     if !sheet.title.is_empty() {
-        let r = title(&mut child, sheet.title, super::theme::SMALL_TITLE * 2.0);
+        let r = title(&mut child, sheet.title, super::theme::SMALL_TITLE);
         used += r.rect.height() + child.spacing().item_spacing.y + 2.0;
         child.add_space(2.0);
     }
@@ -382,7 +389,7 @@ fn sheet_with<R>(ui: &mut Ui, sheet: Sheet, body: impl FnOnce(&mut Ui) -> R, foo
         })
         .inner;
     let needed = SHEET_PAD * 2.0 + used + content_h + gap + footer_h;
-    if wanted.is_none_or(|w| (w - needed).abs() > 0.5) {
+    if !sheet.fixed && wanted.is_none_or(|w| (w - needed).abs() > 0.5) {
         ui.data_mut(|d| d.insert_temp(id, needed));
         ui.ctx().request_discard("a sheet measured its contents");
     }
