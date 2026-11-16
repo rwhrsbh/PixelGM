@@ -10,6 +10,12 @@ use bevy::prelude::*;
 use bevy::ui::{RelativeCursorPosition, UiGlobalTransform};
 use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 
+/// Marks a control that is pressed: it stops the pointer and knows whether the cursor is
+/// over it. What the engine's own marker of that name used to bring along.
+#[derive(Component, Default, Clone, Copy)]
+#[require(Node, bevy::ui::FocusPolicy::Block, Interaction)]
+pub struct Plate;
+
 #[derive(Component)]
 pub struct PixelButton {
     pub enabled: bool,
@@ -62,7 +68,7 @@ fn button_node(justify: JustifyContent) -> Node {
 pub fn button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: T, enabled: bool, extra: impl Bundle) {
     let look = if enabled { ButtonLook::Idle } else { ButtonLook::Disabled };
     let mut entity = parent.spawn((
-        Button,
+        Plate,
         PixelButton { enabled, look },
         extra,
         button_node(JustifyContent::Center),
@@ -81,7 +87,7 @@ pub fn button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label
 pub fn value_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: String, enabled: bool, extra: impl Bundle) {
     let look = if enabled { ButtonLook::Idle } else { ButtonLook::Disabled };
     let mut entity = parent.spawn((
-        Button,
+        Plate,
         PixelButton { enabled, look },
         extra,
         button_node(JustifyContent::Center),
@@ -107,7 +113,7 @@ pub struct EnterPresses;
 pub fn wrap_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: String, extra: impl Bundle) {
     let look = ButtonLook::Idle;
     parent.spawn((
-        Button,
+        Plate,
         PixelButton { enabled: true, look },
         extra,
         AutoDirectionalNavigation::default(),
@@ -126,7 +132,7 @@ pub struct ReplyLine;
 
 pub fn line_button(parent: &mut ChildSpawnerCommands, fonts: &Fonts, label: String, extra: impl Bundle) {
     parent.spawn((
-        Button,
+        Plate,
         PixelButton { enabled: true, look: ButtonLook::Idle },
         ReplyLine,
         extra,
@@ -150,7 +156,7 @@ fn style_lines(focus: Res<InputFocus>, nav: Res<NavMode>, mut lines: Query<(Enti
 pub fn text_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, label: String, extra: impl Bundle) {
     let look = ButtonLook::Idle;
     parent.spawn((
-        Button,
+        Plate,
         PixelButton { enabled: true, look },
         extra,
         AutoDirectionalNavigation::default(),
@@ -258,7 +264,7 @@ fn scroll_bars(
             ))
             .with_children(|bar| {
                 for down in [false, true] {
-                    bar.spawn((ScrollArrow { list, down }, Button, Node { width: px(SCROLL_BAR), height: px(SCROLL_BAR), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(wood)))
+                    bar.spawn((ScrollArrow { list, down }, Plate, Node { width: px(SCROLL_BAR), height: px(SCROLL_BAR), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(wood)))
                         .with_children(|arrow| {
                             arrow.spawn((Text::new(if down { "▼" } else { "▲" }), fonts.body(), TextColor(color(PARCHMENT)), Pickable::IGNORE));
                         });
@@ -362,7 +368,7 @@ fn style_buttons(
 /// A button acts when pressed. Bevy's click checks the release against what was under the
 /// pointer the frame before, so a mouse moved onto a button and clicked within one slow frame
 /// lost the click; the press is checked against what is under the pointer now.
-fn press_activates(press: On<Pointer<Press>>, buttons: Query<&PixelButton>, mut commands: Commands) {
+fn press_activates(press: On<PointerPress>, buttons: Query<&PixelButton>, mut commands: Commands) {
     if press.button == PointerButton::Primary && buttons.get(press.entity).is_ok_and(|b| b.enabled) {
         commands.trigger(Activate { entity: press.entity });
     }
@@ -375,7 +381,7 @@ pub struct TraceInput(pub bool);
 /// A press of the mouse as the game saw it, for finding one that went nowhere: where it
 /// fell, what it fell on, whether a button took it, and what the window and the focus were
 /// doing. A press that reaches no entity at all is told of by `trace_misses`.
-fn trace_presses(press: On<Pointer<Press>>, trace: Res<TraceInput>, buttons: Query<&PixelButton>, parents: Query<&ChildOf>, names: Query<&T>, focus: Res<InputFocus>, typing: Query<(), With<bevy::text::EditableText>>, windows: Query<&Window>) {
+fn trace_presses(press: On<PointerPress>, trace: Res<TraceInput>, buttons: Query<&PixelButton>, parents: Query<&ChildOf>, names: Query<&T>, focus: Res<InputFocus>, typing: Query<(), With<bevy::text::EditableText>>, windows: Query<&Window>) {
     // Said once for a press, where it first fell, not at every step of its way up.
     if !trace.0 || press.button != PointerButton::Primary || press.entity != press.original_event_target() {
         return;
@@ -394,7 +400,7 @@ fn trace_presses(press: On<Pointer<Press>>, trace: Res<TraceInput>, buttons: Que
         None => "nothing",
     };
     let window = windows.iter().next().map_or("no window".to_string(), |w| format!("window {} {:?}", if w.focused { "focused" } else { "NOT focused" }, w.mode));
-    info!("press at {:?} fell on {first:?}{label}: {took}; focus on {focused}; {window}", press.pointer_location.position);
+    info!("press at {:?} fell on {first:?}{label}: {took}; focus on {focused}; {window}", press.pointer.position);
 }
 
 /// A press that fell on nothing the interface knows of: the pointer events above are only
@@ -408,10 +414,16 @@ fn trace_misses(trace: Res<TraceInput>, mouse: Res<ButtonInput<MouseButton>>, wi
     info!("mouse pressed with the cursor at {at:?}; controls under it by the interface's own count: {under}");
 }
 
+/// Every field that can be typed into is one the engine feeds the keyboard to. The engine
+/// asks for its own mark on such a field; put on here, no screen can forget it.
+fn fields_take_typing(added: On<Add<bevy::text::EditableText>>, mut commands: Commands) {
+    commands.entity(added.entity).insert(bevy::ui_widgets::TextInput);
+}
+
 pub struct WidgetsPlugin;
 
 impl Plugin for WidgetsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TraceInput>().add_systems(Update, (style_buttons, style_lines, wheel_scrolls, scroll_bars, focus_scrolls_into_view, trace_misses)).add_observer(press_activates).add_observer(trace_presses);
+        app.init_resource::<TraceInput>().add_systems(Update, (style_buttons, style_lines, wheel_scrolls, scroll_bars, focus_scrolls_into_view, trace_misses)).add_observer(press_activates).add_observer(trace_presses).add_observer(fields_take_typing);
     }
 }

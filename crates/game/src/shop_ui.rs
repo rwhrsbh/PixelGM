@@ -173,7 +173,7 @@ fn build(
                 let picture = images.add(crate::bag_ui::picture(ware, world).into_image());
                 let afford = gold >= price;
                 grid.spawn((
-                    Button,
+                    crate::widgets::Plate,
                     PixelButton::plain(),
                     crate::widgets::ReplyLine,
                     ShopAct::Buy(n),

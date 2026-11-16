@@ -356,7 +356,7 @@ fn build(
                     panel.spawn((Text::new(short), fonts.body(), TextColor(color(WAX_DARK)), TextLayout::no_wrap()));
                     panel.spawn(Node { column_gap: px(3), ..default() }).with_children(|line| {
                         for (hand, icon) in [(true, weapon), (false, armor)] {
-                            line.spawn((Node { width: px(20), height: px(20), border: UiRect::all(px(1)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, Button, Target::Ally(*n, hand), BackgroundColor(color(WOOD_DARK)), BorderColor::all(color(BRASS_DARK))))
+                            line.spawn((Node { width: px(20), height: px(20), border: UiRect::all(px(1)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, crate::widgets::Plate, Target::Ally(*n, hand), BackgroundColor(color(WOOD_DARK)), BorderColor::all(color(BRASS_DARK))))
                                 .with_children(|slot| {
                                     if let Some(icon) = icon {
                                         slot.spawn((Node { width: px(16), height: px(16), ..default() }, ImageNode::new(icon.clone()), FocusPolicy::Pass, Pickable::IGNORE));
@@ -367,10 +367,10 @@ fn build(
                     // The pack: what it holds, and how much of its sixteen cells is taken.
                     panel.spawn((Text::new(format!("{} {used}/{}", T::PackWord.text(*lang), world::model::PACK_CELLS)), fonts.body(), TextColor(color(FADED)), TextLayout::no_wrap()));
                     panel
-                        .spawn((Node { width: px(80), height: px(44), flex_wrap: FlexWrap::Wrap, align_content: AlignContent::FlexStart, column_gap: px(1), row_gap: px(1), padding: UiRect::all(px(1)), ..default() }, Button, Target::AllyPack(*n), BackgroundColor(color(WOOD_DARK))))
+                        .spawn((Node { width: px(80), height: px(44), flex_wrap: FlexWrap::Wrap, align_content: AlignContent::FlexStart, column_gap: px(1), row_gap: px(1), padding: UiRect::all(px(1)), ..default() }, crate::widgets::Plate, Target::AllyPack(*n), BackgroundColor(color(WOOD_DARK))))
                         .with_children(|grid| {
                             for (k, (icon, count)) in pack.iter().enumerate() {
-                                grid.spawn((Node { width: px(18), height: px(18), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, Button, Target::AllyItem(*n, k), BackgroundColor(color(WOOD_DEEP)))).with_children(|cell| {
+                                grid.spawn((Node { width: px(18), height: px(18), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, crate::widgets::Plate, Target::AllyItem(*n, k), BackgroundColor(color(WOOD_DEEP)))).with_children(|cell| {
                                     cell.spawn((Node { width: px(16), height: px(16), ..default() }, ImageNode::new(icon.clone()), FocusPolicy::Pass, Pickable::IGNORE));
                                     if *count > 1 {
                                         cell.spawn((Node { position_type: PositionType::Absolute, right: px(0), bottom: px(-2), ..default() }, Text::new(count.to_string()), fonts.body(), TextColor(color(PARCHMENT)), Pickable::IGNORE));
@@ -387,12 +387,12 @@ fn build(
                 let name = format!("{} · {} {} · {} {}/{}", hero.name, T::ArmorClass.text(*lang), hero.ac(), T::HitPoints.text(*lang), hero.hp, hero.max_hp);
                 panel.spawn((abs(10.0, 6.0, 200.0, 10.0), Text::new(name), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
                 let gold = world.story.bags.get(state.hero).map_or(0, |b| b.gold);
-                panel.spawn((Node { padding: UiRect::horizontal(px(3)), align_items: AlignItems::Center, ..abs(124.0, 96.0, 100.0, 12.0) }, Button, Target::Gold, BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
+                panel.spawn((Node { padding: UiRect::horizontal(px(3)), align_items: AlignItems::Center, ..abs(124.0, 96.0, 100.0, 12.0) }, crate::widgets::Plate, Target::Gold, BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
                     b.spawn((Text::new(format!("{} {gold}", T::GoldCount.text(*lang))), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
                 });
                 if mine.len() > 1 {
                     for (left, target, mark) in [(198.0, Target::PrevHero, "<"), (214.0, Target::NextHero, ">")] {
-                        panel.spawn((abs(left, 4.0, 14.0, 12.0), Button, target, BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
+                        panel.spawn((abs(left, 4.0, 14.0, 12.0), crate::widgets::Plate, target, BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
                             b.spawn((Text::new(mark), fonts.body(), TextColor(color(INK))));
                         });
                     }
@@ -406,7 +406,7 @@ fn build(
                 let (left, top, w, hh) = slot_box(slot);
                 let holds = worn_icons.iter().find(|(s, _)| *s == slot).map(|(_, image)| image.clone());
                 panel
-                    .spawn((Node { border: UiRect::all(px(1)), ..abs(left, top, w as f32 * cell, hh as f32 * cell) }, Button, Target::Slot(slot), BackgroundColor(color(WOOD_DARK)), BorderColor::all(color(BRASS_DARK))))
+                    .spawn((Node { border: UiRect::all(px(1)), ..abs(left, top, w as f32 * cell, hh as f32 * cell) }, crate::widgets::Plate, Target::Slot(slot), BackgroundColor(color(WOOD_DARK)), BorderColor::all(color(BRASS_DARK))))
                     .with_children(|slot_node| {
                         if let Some(image) = holds {
                             let tint = if held_slot == Some(slot) { Color::srgba(1.0, 1.0, 1.0, 0.35) } else { Color::WHITE };
@@ -422,7 +422,7 @@ fn build(
             for y in 0..BAG_H {
                 for x in 0..BAG_W {
                     let shade = if (x + y) % 2 == 0 { WOOD_DARK } else { [0x3c, 0x24, 0x17, 0xff] };
-                    panel.spawn((Node { border: UiRect::all(px(1)), ..abs(GRID.0 + x as f32 * cell, GRID.1 + y as f32 * cell, cell, cell) }, Button, Target::Cell(x, y), BackgroundColor(color(shade)), BorderColor::all(color(WOOD_DEEP))));
+                    panel.spawn((Node { border: UiRect::all(px(1)), ..abs(GRID.0 + x as f32 * cell, GRID.1 + y as f32 * cell, cell, cell) }, crate::widgets::Plate, Target::Cell(x, y), BackgroundColor(color(shade)), BorderColor::all(color(WOOD_DEEP))));
                 }
             }
             for (i, (x, y), (w, hh), image) in placed {
@@ -437,7 +437,7 @@ fn build(
                 panel.spawn(Node { position_type: PositionType::Absolute, left: px(118.0), top: px(76.0), width: px(110.0), flex_wrap: FlexWrap::Wrap, column_gap: px(2), row_gap: px(2), ..default() }).with_children(|line| {
                     line.spawn((Text::new(T::BagNoRoom.text(*lang)), fonts.body(), TextColor(color(WAX))));
                     for (i, name) in loose.iter().take(3) {
-                        line.spawn((Node { padding: UiRect::axes(px(3), px(1)), ..default() }, Button, Target::Loose(*i), BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
+                        line.spawn((Node { padding: UiRect::axes(px(3), px(1)), ..default() }, crate::widgets::Plate, Target::Loose(*i), BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
                             b.spawn((Text::new(name.chars().take(14).collect::<String>()), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
                         });
                     }
