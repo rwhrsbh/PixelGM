@@ -1,8 +1,13 @@
 name: Windows build
 
-# Builds the game for Windows on GitHub's runners and publishes the zip as a Release.
+# Builds the game for Windows on GitHub's runners and publishes it as a Release: an
+# installer, and a zip of the same files for running without installing. Both carry Steam's
+# library, without which playing together through Steam is not there.
 # Pushes to main refresh a rolling "latest" release; a v* tag makes its own release.
 # Nothing is uploaded as a workflow artifact, so Actions storage is never used.
+#
+# Builds are kept quick by a cache of everything compiled. Only main writes the cache; a
+# pull request or a tag reads main's, so one branch's cache never pushes another's out.
 
 on:
   push:
@@ -20,6 +25,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # A runner builds from a cache, never twice in one folder: incremental data would only
+  # make the cache larger and slower to fetch.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   # The tests of every crate. A build is published only when they pass.
@@ -41,10 +49,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: ubuntu-test
+          shared-key: ubuntu-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Test
         run: cargo test --workspace --locked
+        env:
+          # Tests need no debugger: without its data the build and its cache are a tenth the size.
+          CARGO_PROFILE_DEV_DEBUG: 0
 
   build:
     name: Build (x86_64-pc-windows-msvc)
@@ -64,18 +77,42 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: windows-release
+          shared-key: windows-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Build release binary
         run: cargo build --release --locked -p pixelgm
 
-      - name: Package
+      - name: Gather the game's files
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\pixelgm.exe dist\PixelGM.exe
           Copy-Item NOTICE.md dist\NOTICE.md
-          Compress-Archive -Path dist\* -DestinationPath PixelGM-windows-x64.zip -Force
+          # Steam's library is loaded when Steam is first used; it has to lie beside the game.
+          $steam = Get-ChildItem -Path target\release\build -Recurse -Filter steam_api64.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $steam) {
+            $steam = Get-ChildItem -Path "$env:USERPROFILE\.cargo\registry\src" -Recurse -Filter steam_api64.dll | Select-Object -First 1
+          }
+          if (-not $steam) { throw "steam_api64.dll was not found: the build would have no Steam" }
+          Copy-Item $steam.FullName dist\steam_api64.dll
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\* -DestinationPath PixelGM-windows-x64.zip -Force
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y | Out-Null }
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF -like 'refs/tags/v*') { $version = $env:GITHUB_REF_NAME.TrimStart('v') }
+          & $iscc "/DAppVersion=$version" "/DSourceDir=$PWD\dist" installer\pixelgm.iss
+          if ($LASTEXITCODE -ne 0) { throw "the installer was not made" }
+          Get-Item PixelGM-setup-x64.exe | Format-Table Name, Length
 
       - name: Publish release
         if: github.event_name != 'pull_request'
@@ -84,11 +121,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME } else { 'latest' }
-          $zip = 'PixelGM-windows-x64.zip'
+          $files = 'PixelGM-setup-x64.exe', 'PixelGM-windows-x64.zip'
 
           if (gh release view $tag 2>$null) {
-            gh release upload $tag $zip --clobber
+            gh release upload $tag $files --clobber
           } else {
-            $notes = "Automated Windows build of $env:GITHUB_SHA on $env:GITHUB_REF_NAME."
-            gh release create $tag $zip --title "PixelGM $tag" --notes $notes --latest
+            $notes = "Automated Windows build of $env:GITHUB_SHA on $env:GITHUB_REF_NAME. PixelGM-setup-x64.exe installs the game; the zip is the same files to run without installing."
+            gh release create $tag $files --title "PixelGM $tag" --notes $notes --latest
           }

@@ -17,3 +17,9 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# What is given to players: no debugger's data in it, and nothing left in the file that is
+# only for reading a crash by hand.
+[profile.release]
+debug = false
+strip = "symbols"
