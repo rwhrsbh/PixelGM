@@ -487,11 +487,15 @@ fn redraw(
     });
 }
 
+/// Room for one line of body text.
+const PROBLEM_LINE: f32 = 10.0;
+
 /// What ends either tab: a problem with the hero, if any, and the ways out of the screen.
 fn finish(parent: &mut ChildSpawnerCommands, draft: &Draft, art: &Art, fonts: &Fonts, session: &Session, game: Option<&Game>) {
-    if let Some(problem) = &draft.problem {
-        parent.spawn((Text::new(problem.clone()), fonts.body(), TextColor(color(WAX))));
-    }
+    // The line for what is wrong with the hero is always there, empty when nothing is: the
+    // buttons under it must not move when it comes or goes, or a press meant for one of them
+    // falls beside it.
+    parent.spawn((Node { min_height: px(PROBLEM_LINE), flex_shrink: 0.0, ..default() }, Text::new(draft.problem.clone().unwrap_or_default()), fonts.body(), TextColor(color(WAX))));
     parent.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
         button(line, art, fonts, T::Back, true, Nav::Go(Screen::Main));
         button(line, art, fonts, T::CreateHero, true, Action::Create);
