@@ -797,9 +797,15 @@ impl World {
         // The heroes in this scene: those the word "party" means here.
         let present: Vec<usize> = (0..self.party.len()).filter(|i| !self.party[*i].dead && self.takes_part(*i) && self.hero_place(*i) == here).collect();
         let present = if present.is_empty() { (0..self.party.len().min(1)).collect() } else { present };
+        let doers: Vec<usize> = self.actors.iter().copied().filter(|h| present.contains(h)).collect();
+        let doers = if doers.is_empty() { present.clone() } else { doers };
         let heroes_named = |id: &str| -> Vec<usize> {
             match id {
-                "party" | "hero" | "heroes" | "player" | "players" | "everyone" | "all" => present.clone(),
+                // Said of everyone, it is everyone here.
+                "everyone" | "all" => present.clone(),
+                // "The party", in an answer to what some of the heroes did, is those who
+                // did it: the others stay where their players left them.
+                "party" | "hero" | "heroes" | "player" | "players" => doers.clone(),
                 _ => names.iter().position(|n| *n == id).into_iter().collect(),
             }
         };
@@ -1351,6 +1357,17 @@ mod tests {
         w.moves.clear();
         w.apply(&effects(json!([{ "op": "move", "id": "party", "x": 4, "y": 4 }])), None);
         assert_eq!(w.moves.iter().map(|m| m.0).collect::<Vec<_>>(), [0, 1]);
+        // At a shared table the master answers what Ann did: "the party" is Ann, and Bob
+        // stays where his player left him. Said of everyone, it is still everyone.
+        w.moves.clear();
+        w.actors = vec![0];
+        w.apply(&effects(json!([{ "op": "move", "id": "party", "x": 5, "y": 5 }, { "op": "move", "id": "", "x": 5, "y": 6 }])), None);
+        assert!(w.moves.iter().all(|m| m.0 == 0), "{:?}", w.moves);
+        w.moves.clear();
+        w.apply(&effects(json!([{ "op": "move", "id": "everyone", "x": 6, "y": 6 }])), None);
+        assert_eq!(w.moves.iter().map(|m| m.0).collect::<Vec<_>>(), [0, 1]);
+        w.actors.clear();
+        w.moves.clear();
         w.apply(&effects(json!([{ "op": "travel", "to": "far_hills", "name": "Far Hills", "who": ["Ann"] }])), None);
         assert_eq!(w.travel, Some(("far_hills".to_string(), vec![0])));
         assert!(w.stubs.contains_key("far_hills"));

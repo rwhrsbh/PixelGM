@@ -406,6 +406,11 @@ pub struct World {
     /// The hero whose player the master is answering, for whose bag a thing goes into.
     #[serde(skip)]
     pub acting: Option<usize>,
+    /// The heroes whose deeds the master is answering, at a table where several play: the
+    /// word "party" in its answer means them, not everyone who stands in the place. Empty
+    /// when the answer is to nobody in particular, and then it means all who are there.
+    #[serde(skip)]
+    pub actors: Vec<usize>,
     /// The main quest and the side tasks.
     #[serde(default)]
     pub quest: Quest,

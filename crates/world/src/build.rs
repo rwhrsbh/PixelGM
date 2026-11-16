@@ -749,6 +749,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         travel: None,
         moves: Vec::new(),
         acting: None,
+        actors: Vec::new(),
         quest: draft.quest.quest(),
         clock: crate::model::morning(),
         rested: crate::model::morning(),

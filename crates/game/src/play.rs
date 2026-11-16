@@ -2114,7 +2114,10 @@ fn receive(
                         }
                         let lead = here[0].player.clone();
                         desk.game.world.acting = desk.game.world.owners.iter().position(|o| *o == lead).or_else(|| my_hero(&desk.game.world, &lead, solo));
+                        // "The party" in the answer is those it answers, not the table.
+                        desk.game.world.actors = if solo { Vec::new() } else { here.iter().filter_map(|a| desk.game.world.owners.iter().position(|o| *o == a.player)).collect() };
                         finish(&mut desk, &said, &draft);
+                        desk.game.world.actors.clear();
                         leave_scene(desk.game, desk.table, home);
                     }
                 }
