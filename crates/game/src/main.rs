@@ -1,3 +1,7 @@
+// Interaction is what every control here is styled by; the engine marks it for removal
+// and the interface's own controls (docs/REWORK.md, section 11) take its place.
+#![allow(deprecated)]
+
 mod art;
 mod audio;
 mod bag_ui;

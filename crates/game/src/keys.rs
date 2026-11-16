@@ -295,7 +295,7 @@ fn redraw_models(
                 let name = if line.place.is_some() && line.tier <= settings.lowest_tier { INK } else { FADED };
                 let label = line.place.map_or_else(|| format!(" · {}", line.id), |n| format!("{n:>2} {}", line.id));
                 rows.spawn((
-                    Button,
+                    crate::widgets::Plate,
                     crate::widgets::PixelButton::plain(),
                     ModelRow(line.id.clone()),
                     AutoDirectionalNavigation::default(),
