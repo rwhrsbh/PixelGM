@@ -5,6 +5,7 @@
 // Parts of the kit wait for the screens that will use them.
 #[allow(dead_code)]
 pub mod kit;
+pub mod pad;
 pub mod screens;
 pub mod theme;
 
@@ -33,8 +34,18 @@ impl Plugin for UiPlugin {
 }
 
 /// Puts the game's type and colours on egui once, and keeps its size to the screen.
-fn dress(mut egui: EguiContexts, settings: Res<Settings>, window: Single<&Window, With<PrimaryWindow>>, mut dressed: Local<bool>) {
+fn dress(mut egui: EguiContexts, settings: Res<Settings>, window: Single<&Window, With<PrimaryWindow>>, time: Res<Time>, pads: Query<&Gamepad>, mut held: Local<pad::Held>, mut dressed: Local<bool>) {
     let Ok(ctx) = egui.ctx_mut() else { return };
+    // A pad's presses become the keys they stand for, before anything reads the keys.
+    let pads: Vec<&Gamepad> = pads.iter().collect();
+    let (events, focus) = pad::keys(&pads, &mut held, time.delta_secs());
+    if !events.is_empty() {
+        ctx.input_mut(|i| i.events.extend(events));
+    }
+    if let Some(direction) = focus {
+        ctx.memory_mut(|m| m.move_focus(direction));
+        kit::set_steering(ctx, true);
+    }
     if !*dressed {
         theme::install(ctx);
         *dressed = true;
