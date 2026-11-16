@@ -186,7 +186,9 @@ impl Gm {
 #[derive(Resource, Default)]
 struct KeysOnDisk(Vec<String>);
 
-fn load_keys(gm: Res<Gm>, store: Res<Store>, mut book: ResMut<KeyBook>, mut on_disk: ResMut<KeysOnDisk>) {
+fn load_keys(gm: Res<Gm>, store: Res<Store>, settings: Res<Settings>, mut book: ResMut<KeyBook>, mut on_disk: ResMut<KeysOnDisk>) {
+    // Before any key lists its models: the first chain is already in the player's order.
+    gm.dispatcher.set_choice(settings.gemini.clone());
     on_disk.0 = store.load_keys();
     for secret in &on_disk.0 {
         gm.add_key(&mut book, secret);

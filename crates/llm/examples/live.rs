@@ -13,6 +13,10 @@ fn main() {
         dispatcher.add_key(key);
     }
     dispatcher.refresh().expect("model list");
+    // What the names were read as: this is what to hold the catalogue's tests against.
+    for surveyed in dispatcher.survey() {
+        println!("{:<10} {}", format!("{:?}", surveyed.class), surveyed.model.id);
+    }
     dispatcher.with_pool(|p| println!("chain: {}", p.chain().iter().map(|m| m.id.as_str()).collect::<Vec<_>>().join(" > ")));
 
     let mut request = GenRequest::prompt("A rogue picks a DC 15 lock with +5 and rolls 9. Reply as JSON {\"success\": bool, \"line\": string}.");

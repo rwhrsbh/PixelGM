@@ -10,7 +10,7 @@ pub mod pool;
 pub mod providers;
 pub mod thinking;
 
-pub use catalog::{ApiVersion, ListedModel, Model, Tier, build_chain, build_voice_chain};
+pub use catalog::{ApiVersion, Choice, Class, ListedModel, Model, Surveyed, Tier, arrange, build_chain, build_voice_chain, survey};
 pub use client::{Failure, GenRequest, HttpResponse, Reply, Speech, Transport, Turn, UreqTransport, Usage};
 pub use dispatch::{Dispatcher, GenError, KeyHealth, SavedState};
 pub use pool::{Availability, KeyId, Millis, Outcome, PairUsage, Pick, Pool, SavedRest, fingerprint};

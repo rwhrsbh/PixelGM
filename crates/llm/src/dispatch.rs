@@ -1,7 +1,7 @@
 //! Sends one request through the pool: tries the best free key and model, and on a failure
 //! that rotation can fix moves on until something answers or nothing is left.
 
-use crate::catalog::{ApiVersion, ListedModel, Model, Tier, build_chain, build_voice_chain};
+use crate::catalog::{ApiVersion, Choice, ListedModel, Model, Surveyed, Tier, arrange, build_voice_chain, survey};
 use crate::client::{Failure, GenRequest, Reply, Speech, Transport, parse_generate, parse_list, parse_speech, speech_body};
 use crate::pool::{KeyId, Millis, Outcome, Pick, Pool, SavedRest};
 use crate::thinking::ThinkingMode;
@@ -51,6 +51,10 @@ struct State {
     voices: Vec<Model>,
     /// When each key may ask each voice again.
     voice_rests: HashMap<(KeyId, String), Millis>,
+    /// Every text model the keys listed, with what its name was read as.
+    survey: Vec<Surveyed>,
+    /// The order the player wants the models asked in, and those taken out.
+    choice: Choice,
 }
 
 /// How long a voice is left alone after it failed for a reason of its own.
@@ -177,8 +181,33 @@ impl<T: Transport> Dispatcher<T> {
         }
         let mut state = self.state.lock().unwrap();
         state.voices = build_voice_chain(&v1, &v1beta);
-        state.pool.set_chain(build_chain(&v1, &v1beta));
+        state.survey = survey(&v1, &v1beta);
+        let chain = arrange(&state.survey, &state.choice);
+        state.pool.set_chain(chain);
         Ok(())
+    }
+
+    /// Every text model the keys listed at the last listing, in the game's own order:
+    /// those in the chain and those left out of it.
+    pub fn survey(&self) -> Vec<Surveyed> {
+        self.state.lock().unwrap().survey.clone()
+    }
+
+    pub fn choice(&self) -> Choice {
+        self.state.lock().unwrap().choice.clone()
+    }
+
+    /// Takes the player's order of the models and what they switched off. The chain follows
+    /// at once, from the lists already in hand: nothing is asked of the network, and no
+    /// key or model that is resting is woken by it.
+    pub fn set_choice(&self, choice: Choice) {
+        let mut state = self.state.lock().unwrap();
+        state.choice = choice;
+        // Before the first listing there is nothing to arrange; the listing will use it.
+        if !state.survey.is_empty() {
+            let chain = arrange(&state.survey, &state.choice);
+            state.pool.set_chain(chain);
+        }
     }
 
     /// The models that can speak, as last listed.
@@ -630,4 +659,46 @@ mod tests {
         assert!(matches!(rig(&[], |_| sound()).dispatcher.speak("Hello.", "Charon"), Err(GenError::NoKeys)));
     }
 
+    fn choice(order: &[&str], off: &[&str]) -> Choice {
+        Choice { order: order.iter().map(|m| m.to_string()).collect(), off: off.iter().map(|m| m.to_string()).collect() }
+    }
+
+    #[test]
+    fn the_players_order_is_followed_and_keys_and_models_still_take_turns() {
+        // The first model of the player's order is out of requests for key a.
+        let r = rig(&["a", "b"], |c| if c.model == "gemma-4-31b-it" && c.key == "a" { status(429, "quota") } else { ok("x") });
+        r.dispatcher.set_choice(choice(&["gemma-4-31b-it", "gemini-2.0-flash", "gemini-3.0-flash-lite"], &["gemini-3.0-flash"]));
+        let (_, model) = r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        assert_eq!(model.id, "gemma-4-31b-it");
+        // The next key on the same model first, as ever.
+        assert_eq!(r.trail(), pairs(&[("gemma-4-31b-it", "a"), ("gemma-4-31b-it", "b")]));
+        // The order stands as given, and the one switched off is not there.
+        let chain: Vec<String> = r.dispatcher.with_pool(|p| p.chain().iter().map(|m| m.id.clone()).collect());
+        assert_eq!(chain, ["gemma-4-31b-it", "gemini-2.0-flash", "gemini-3.0-flash-lite"]);
+    }
+
+    #[test]
+    fn a_new_order_asks_nothing_of_the_network_and_wakes_nobody() {
+        let r = rig(&["a"], |c| if c.model == "gemini-3.0-flash" { status(429, "quota") } else { ok("x") });
+        r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        let listed = r.lists.load(Ordering::SeqCst);
+        r.calls.lock().unwrap().clear();
+        let wanted = choice(&["gemini-3.0-flash", "gemini-3.0-flash-lite", "gemini-2.0-flash", "gemma-4-31b-it"], &[]);
+        r.dispatcher.set_choice(wanted.clone());
+        assert_eq!(r.lists.load(Ordering::SeqCst), listed, "the lists are not fetched again");
+        // The model that is resting is still passed over, wherever it now stands.
+        let (_, model) = r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        assert_eq!(model.id, "gemini-3.0-flash-lite");
+        assert_eq!(r.trail(), pairs(&[("gemini-3.0-flash-lite", "a")]));
+        assert_eq!(r.dispatcher.choice(), wanted);
+    }
+
+    #[test]
+    fn an_order_given_before_the_first_listing_is_used_by_it() {
+        let r = rig(&["a"], |_| ok("x"));
+        r.dispatcher.set_choice(choice(&["gemini-3.0-flash-lite", "gemini-3.0-flash", "gemini-2.0-flash", "gemma-4-31b-it"], &[]));
+        let (_, model) = r.dispatcher.generate(&GenRequest::prompt("hi"), Tier::Gemma).unwrap();
+        assert_eq!(model.id, "gemini-3.0-flash-lite");
+        assert_eq!(r.dispatcher.survey().len(), 4, "the voices are not text models");
+    }
 }

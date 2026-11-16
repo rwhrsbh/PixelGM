@@ -53,7 +53,14 @@ texts! {
     Remove: "Убрать", "Remove";
     ModelsTitle: "Модели по порядку", "Models, in order";
     ModelsUnknown: "Список моделей появится, когда заработает хотя бы один ключ.", "The model list appears once at least one key works.";
-    ModelsLegend: "Справа — сколько ключей свободно, или через сколько вернётся квота.", "On the right: how many keys are free, or how soon the quota returns.";
+    ModelsLegend: "Выше — спрашивается раньше. Справа — свободные ключи или когда вернётся квота.", "Higher is asked sooner. On the right: keys free, or how soon the quota returns.";
+    ModelUp: "Выше", "Up";
+    ModelDown: "Ниже", "Down";
+    ModelSwitch: "Вкл/выкл", "On/off";
+    ModelsReset: "Сброс", "Reset";
+    ModelOff: "выкл", "off";
+    ModelOffLarge: "Pro · выкл", "Pro · off";
+    ModelOffNew: "новая · выкл", "new · off";
     TestGm: "Проверить мастера", "Test the game master";
     TestGmHint: "Один настоящий запрос с текущими настройками. Тратит один ход.", "One real request with the current settings. Spends one turn.";
     TestRunning: "Мастер думает…", "The game master is thinking…";

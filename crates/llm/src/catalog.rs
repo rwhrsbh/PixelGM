@@ -100,6 +100,36 @@ pub struct Choice {
     pub off: Vec<String>,
 }
 
+impl Choice {
+    /// The choice after the player moved a model of the chain one place up or down. The
+    /// whole chain as it stands is written down as the order, so that nothing in it shifts
+    /// by itself later.
+    pub fn moved(&self, chain: &[Model], id: &str, up: bool) -> Choice {
+        let mut order: Vec<String> = chain.iter().map(|m| m.id.clone()).collect();
+        if let Some(at) = order.iter().position(|m| m == id) {
+            let to = if up { at.checked_sub(1) } else { Some(at + 1).filter(|to| *to < order.len()) };
+            if let Some(to) = to {
+                order.swap(at, to);
+            }
+        }
+        Choice { order, off: self.off.clone() }
+    }
+
+    /// The choice after the player switched a model: one in the chain is taken out of it,
+    /// one outside is put at its end, whatever kind it is.
+    pub fn switched(&self, chain: &[Model], id: &str) -> Choice {
+        let mut order: Vec<String> = chain.iter().map(|m| m.id.clone()).collect();
+        let mut off: Vec<String> = self.off.iter().filter(|m| *m != id).cloned().collect();
+        if order.iter().any(|m| m == id) {
+            order.retain(|m| m != id);
+            off.push(id.to_string());
+        } else {
+            order.push(id.to_string());
+        }
+        Choice { order, off }
+    }
+}
+
 /// Since the fourth generation a model's kind is a code name, not `flash` or `pro`. These
 /// are words of a name, not names: the generation is still read from the lists.
 const CODE_NAMES: &[(&str, Class)] = &[("hydrogen", Class::Flash), ("argon", Class::Pro), ("carbon", Class::Pro)];
@@ -394,6 +424,30 @@ mod tests {
     fn a_voice_with_a_code_name_is_a_voice() {
         let voices = build_voice_chain(&[], &listed(&["gemini-4-hydrogen-tts", "gemini-3.8-flash-tts", "gemini-4-argon-tts", "gemini-3.8-flash-lite-tts"], "generateContent"));
         assert_eq!(ids(&voices), ["gemini-4-hydrogen-tts", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"]);
+    }
+
+    #[test]
+    fn moving_and_switching_write_the_whole_order_down() {
+        let all = survey(&[], &listed(FOURTH, "generateContent"));
+        let chain = arrange(&all, &Choice::default());
+        // Down one place, and the rest stay where they were.
+        let lower = Choice::default().moved(&chain, "gemini-4-hydrogen", false);
+        assert_eq!(ids(&arrange(&all, &lower)), ["gemini-4-hydrogen-preview-11-2026", "gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemma-4-31b-it"]);
+        // The first cannot go higher, the last cannot go lower: nothing changes.
+        assert_eq!(ids(&arrange(&all, &Choice::default().moved(&chain, "gemini-4-hydrogen", true))), ids(&chain));
+        assert_eq!(ids(&arrange(&all, &Choice::default().moved(&chain, "gemma-4-31b-it", false))), ids(&chain));
+        // Switched off, a model of the default kind stays off; switched on again it comes
+        // back at the end, for the player to place.
+        let without = lower.switched(&arrange(&all, &lower), "gemini-3.8-flash");
+        assert!(!ids(&arrange(&all, &without)).contains(&"gemini-3.8-flash"));
+        let back = without.switched(&arrange(&all, &without), "gemini-3.8-flash");
+        assert_eq!(ids(&arrange(&all, &back)).last(), Some(&"gemini-3.8-flash"));
+        assert!(back.off.is_empty());
+        // The large kind is put in by switching it on, and goes out the same way.
+        let with_large = Choice::default().switched(&chain, "gemini-4-argon");
+        assert_eq!(ids(&arrange(&all, &with_large)).last(), Some(&"gemini-4-argon"));
+        let again = with_large.switched(&arrange(&all, &with_large), "gemini-4-argon");
+        assert_eq!(ids(&arrange(&all, &again)), ids(&chain));
     }
 
 }
