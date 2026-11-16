@@ -3140,10 +3140,15 @@ fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: Res
                 let home = lead.as_deref().map(|player| enter_scene(&mut game, &mut table, player));
                 master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None, id: id.0 });
                 leave_scene(&mut game, &mut table, home);
+                // Everyone sees what each has set about, a line a hero: the words as they
+                // were said, not as the master is asked them.
                 if session.is_host() {
-                    session.broadcast(&Down::Thinking(said.clone()));
-                    if !own {
-                        table.notices.push(said);
+                    for act in &acts {
+                        let line = format!("{}: {}", hero_of(&game.world, &act.player).unwrap_or(&act.player), act.said);
+                        session.broadcast(&Down::Thinking(line.clone()));
+                        if act.player != me {
+                            table.notices.push(line);
+                        }
                     }
                 }
             }
