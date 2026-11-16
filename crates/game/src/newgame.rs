@@ -1,52 +1,30 @@
-//! Starting a game: the host says what world they want, and waits while the game master
-//! invents and draws it.
+//! Starting a game: the host says what world they want, in three steps, and waits while the
+//! game master invents and draws it.
 
-use crate::art::Art;
 use crate::coop::Session;
 use crate::gm::{Gm, Health, KeyBook, Trouble, trouble_text};
 use crate::i18n::{Lang, T};
 use crate::master::{Answer, Ask, Master};
-use crate::menu::{Nav, ReturnTo, Screen, screen_root, spawn_panel};
+use crate::menu::{ReturnTo, Screen};
 use crate::play;
 use crate::store::{Settings, Store};
-use crate::theme::*;
-use crate::widgets::{Activate, backing, button};
-use bevy::input_focus::AutoFocus;
+use crate::ui::egui::{self, Ui, vec2};
+use crate::ui::kit::{self, Sheet, button, choice, hint, toggle, warning};
 use bevy::prelude::*;
-use bevy::text::{EditableText, TextCursorStyle};
-use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass};
+use world::Difficulty;
 
-#[derive(Component, Clone, Copy)]
-enum Action {
-    Create,
-    Retry,
-    Keys,
-    Violence,
-    Sex,
-    Book,
-    Limits,
-    Method,
-    Edition,
-    Story,
-    Live,
-    Difficulty,
-}
-
-#[derive(Component)]
-struct WishInput;
-
-#[derive(Component)]
-struct StatusLine;
-
-#[derive(Component)]
-struct FailureButtons;
-
-/// The world being made: what was asked for, how long it has taken, and what went wrong.
+/// The world being made: what was asked for, how far the form has come, how long the
+/// master has taken, and what went wrong.
 #[derive(Resource, Default)]
 struct Making {
     request: String,
+    /// Which of the form's three steps is shown.
+    step: usize,
     seconds: f32,
     trouble: Option<Trouble>,
+    /// Answers still to come to a making that was called off: they are not the world asked for now.
+    stale: u32,
     /// The table's content switches; both are on unless the host turns them off here.
     no_violence: bool,
     no_sex: bool,
@@ -55,51 +33,171 @@ struct Making {
     table: world::TableRules,
 }
 
-fn book_label(making: &Making) -> T {
-    if making.table.book_only { T::TableBook } else { T::TableMixed }
+const STEPS: usize = 3;
+/// The most a wish may say.
+const WISH_MOST: usize = 1500;
+
+/// What the player did on the form.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FormAct {
+    Back,
+    Create,
+    Keys,
 }
 
-fn limits_label(making: &Making) -> T {
-    if making.table.no_limits { T::LimitsOff } else { T::LimitsOn }
+/// What the player did while the world is being made.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WaitAct {
+    Cancel,
+    Retry,
+    Keys,
 }
 
-fn edition_label(making: &Making) -> T {
-    if making.table.srd_2024 { T::Edition52 } else { T::Edition51 }
-}
-
-fn method_label(making: &Making) -> T {
-    match making.table.method {
-        rules::AbilityMethod::PointBuy => T::MethodPointBuy,
-        rules::AbilityMethod::StandardArray => T::MethodArray,
-        rules::AbilityMethod::Roll => T::MethodRoll,
+/// The form: the wish; then how the game goes; then its rules. Each setting shows what it
+/// is set to and moves either way; the buttons stay pinned to the sheet's bottom.
+fn form(ui: &mut Ui, making: &mut Making, can_ask: bool, lang: Lang) -> Option<FormAct> {
+    let t = |text: T| text.text(lang);
+    let mut act = None;
+    let steps = [t(T::NwStepWorld), t(T::NwStepGame), t(T::NwStepRules)];
+    let title = format!("{} · {}/{STEPS} {}", t(T::NewWorldTitle), making.step + 1, steps[making.step.min(STEPS - 1)]);
+    let sheet = Sheet { id: "new_world", title: &title, max: vec2(460.0, 230.0), top: 24.0, fixed: true };
+    let last = making.step + 1 == STEPS;
+    kit::sheet(
+        ui,
+        sheet,
+        |ui| match making.step {
+            0 => {
+                ui.label(t(T::NewWorldAsk));
+                let field = ui.add(egui::TextEdit::multiline(&mut making.request).desired_rows(5).desired_width(f32::INFINITY).char_limit(WISH_MOST).hint_text("…"));
+                if ui.memory(|m| m.focused().is_none()) {
+                    field.request_focus();
+                }
+                hint(ui, format!("{} / {WISH_MOST}", making.request.chars().count()));
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(t(T::NwSuggest));
+                    for idea in [T::NwIdeaDark, T::NwIdeaSea, T::NwIdeaSpace, T::NwIdeaWaste, T::NwIdeaNoir] {
+                        if ui.add(button(t(idea))).clicked() {
+                            making.request = t(idea).to_string();
+                        }
+                    }
+                });
+            }
+            1 => {
+                let mut mode = usize::from(making.table.sandbox);
+                if choice(ui, t(T::NwMode), &[t(T::NwStory), t(T::NwSandbox)], &mut mode).changed() {
+                    making.table.sandbox = mode == 1;
+                }
+                hint(ui, t(T::NwModeHint));
+                let mut difficulty = making.table.difficulty as usize;
+                if choice(ui, t(T::NwDifficulty), &[t(T::NwCasual), t(T::NwHonest), t(T::NwHardcore)], &mut difficulty).changed() {
+                    making.table.difficulty = [Difficulty::Casual, Difficulty::Honest, Difficulty::Hardcore][difficulty];
+                }
+                hint(ui, t([T::NwCasualHint, T::NwHonestHint, T::NwHardcoreHint][making.table.difficulty as usize]));
+                toggle(ui, t(T::NwLive), &mut making.table.live);
+                ui.add_space(4.0);
+                let mut violence = usize::from(making.no_violence);
+                if choice(ui, t(T::NwViolence), &[t(T::NwGraphic), t(T::NwOffPage)], &mut violence).changed() {
+                    making.no_violence = violence == 1;
+                }
+                let mut sex = usize::from(making.no_sex);
+                if choice(ui, t(T::NwSex), &[t(T::NwExplicit), t(T::NwOffPage)], &mut sex).changed() {
+                    making.no_sex = sex == 1;
+                }
+            }
+            _ => {
+                let mut book = usize::from(making.table.book_only);
+                if choice(ui, t(T::NwRules), &[t(T::NwMixed), t(T::NwBook)], &mut book).changed() {
+                    making.table.book_only = book == 1;
+                }
+                let mut limits = !making.table.no_limits;
+                if toggle(ui, t(T::NwLimits), &mut limits).changed() {
+                    making.table.no_limits = !limits;
+                }
+                let mut method = making.table.method as usize;
+                if choice(ui, t(T::NwMethod), &[t(T::MethodPointBuy), t(T::MethodArray), t(T::MethodRoll)], &mut method).changed() {
+                    making.table.method = [rules::AbilityMethod::PointBuy, rules::AbilityMethod::StandardArray, rules::AbilityMethod::Roll][method];
+                }
+                let mut edition = usize::from(making.table.srd_2024);
+                if choice(ui, t(T::NwEdition), &["SRD 5.1", t(T::NwSrd52)], &mut edition).changed() {
+                    making.table.srd_2024 = edition == 1;
+                }
+                if !can_ask {
+                    ui.add_space(4.0);
+                    warning(ui, t(T::NeedKey));
+                }
+            }
+        },
+        |footer| {
+            let back = if making.step == 0 { t(T::NwCancel) } else { t(T::Back) };
+            if footer.add(button(back).key("Esc")).clicked() {
+                act = Some(FormAct::Back);
+            }
+            if last && !can_ask && footer.add(button(t(T::Keys))).clicked() {
+                act = Some(FormAct::Keys);
+            }
+            let forward = if last { button(t(T::CreateWorld)).primary().enabled(can_ask, t(T::NeedKey)) } else { button(t(T::NwNext)).primary() };
+            // Ctrl+Enter from the wish's field: Enter there is a new line.
+            let enter = footer.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl);
+            if footer.add(forward.key("Ctrl+Enter")).clicked() || enter && (!last || can_ask) {
+                act = Some(FormAct::Create);
+            }
+        },
+    );
+    if act.is_none() && kit::back_pressed(ui) {
+        act = Some(FormAct::Back);
+    }
+    // Back and forward within the form are the form's own business.
+    match act {
+        Some(FormAct::Back) if making.step > 0 => {
+            making.step -= 1;
+            None
+        }
+        Some(FormAct::Create) if !last => {
+            making.step += 1;
+            None
+        }
+        other => other,
     }
 }
 
-fn story_label(making: &Making) -> T {
-    if making.table.sandbox { T::ModeSandbox } else { T::ModeStory }
-}
-
-fn live_label(making: &Making) -> T {
-    if making.table.live { T::LiveOn } else { T::LiveOff }
-}
-
-fn difficulty_label(making: &Making) -> T {
-    match making.table.difficulty {
-        world::Difficulty::Casual => T::DifficultyCasual,
-        world::Difficulty::Honest => T::DifficultyHonest,
-        world::Difficulty::Hardcore => T::DifficultyHardcore,
+/// While the world is made: what is happening and for how long, and what went wrong.
+fn waiting(ui: &mut Ui, making: &Making, now: u64, keys_label: T, lang: Lang) -> Option<WaitAct> {
+    let t = |text: T| text.text(lang);
+    let mut act = None;
+    let sheet = Sheet { id: "creating", title: t(T::NewWorldTitle), max: vec2(320.0, 200.0), top: 60.0, fixed: false };
+    kit::sheet(
+        ui,
+        sheet,
+        |ui| match &making.trouble {
+            Some(trouble) => {
+                ui.label(t(T::CreateFailed));
+                warning(ui, trouble_text(trouble, now, lang));
+            }
+            None => {
+                ui.label(format!("{}{}", t(T::Creating), dots(making.seconds)));
+                hint(ui, t(T::CreatingHint));
+                ui.label(format!("{} {} {}", t(T::Elapsed), making.seconds as u32, t(T::Seconds)));
+            }
+        },
+        |footer| {
+            if footer.add(button(t(T::NwCancel)).key("Esc")).clicked() {
+                act = Some(WaitAct::Cancel);
+            }
+            if making.trouble.is_some() {
+                if footer.add(button(t(keys_label))).clicked() {
+                    act = Some(WaitAct::Keys);
+                }
+                if footer.add(button(t(T::Recheck)).primary()).clicked() {
+                    act = Some(WaitAct::Retry);
+                }
+            }
+        },
+    );
+    if act.is_none() && kit::back_pressed(ui) {
+        act = Some(WaitAct::Cancel);
     }
+    act
 }
-
-fn violence_label(making: &Making) -> T {
-    if making.no_violence { T::ViolenceOff } else { T::ViolenceOn }
-}
-
-fn sex_label(making: &Making) -> T {
-    if making.no_sex { T::SexOff } else { T::SexOn }
-}
-
-const FIELD_BORDER: f32 = 4.0;
 
 /// Whether there is anyone to draw a world: a key of the host's, or guests whose keys can
 /// be asked.
@@ -107,231 +205,58 @@ fn can_ask(master: &Master, book: &KeyBook, session: &Session, settings: &Settin
     master.fake || !settings.providers().is_empty() || book.entries.iter().any(|e| e.health == Health::Working || e.health == Health::Checking) || !session.players().is_empty()
 }
 
-fn spawn_form(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, book: Res<KeyBook>, master: Res<Master>, making: Res<Making>, session: Res<Session>, settings: Res<Settings>) {
-    build_form(&mut commands, &art, &fonts, &making, can_ask(&master, &book, &session, &settings));
+fn start_making(making: &mut Making, gm: &Gm, store: &Store, settings: &Settings, master: &Master) {
+    making.seconds = 0.0;
+    making.trouble = None;
+    master.ask(gm, store, settings, Ask::NewWorld { request: making.request.trim().to_string(), story: !making.table.sandbox });
 }
 
-/// A key may start working, or a guest sit down, while the form is open: the form is drawn
-/// again, keeping what was typed.
+fn keys_screen(settings: &Settings) -> Screen {
+    if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn refresh_form(
-    mut commands: Commands,
-    art: Res<Art>,
-    fonts: Res<Fonts>,
-    book: Res<KeyBook>,
-    master: Res<Master>,
+fn form_screen(
+    mut egui: EguiContexts,
     mut making: ResMut<Making>,
-    session: Res<Session>,
-    roots: Query<Entity, With<DespawnOnExit<Screen>>>,
-    typed: Query<&EditableText, With<WishInput>>,
-    fresh: Query<(), Added<WishInput>>,
-    mut built: Local<Option<bool>>,
-    settings: Res<Settings>,
+    (book, master, session, settings, gm, store): (Res<KeyBook>, Res<Master>, Res<Session>, Res<Settings>, Res<Gm>, Res<Store>),
+    mut return_to: ResMut<ReturnTo>,
+    mut next: ResMut<NextState<Screen>>,
 ) {
-    let now = can_ask(&master, &book, &session, &settings);
-    if !fresh.is_empty() || *built == Some(now) {
-        *built = Some(now);
-        return;
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let Some(mut ui) = kit::screen_ui(ctx, "new_world") else { return };
+    let can = can_ask(&master, &book, &session, &settings);
+    match form(&mut ui, &mut making, can, settings.lang) {
+        Some(FormAct::Back) => next.set(return_to.0.take().unwrap_or(Screen::Main)),
+        Some(FormAct::Create) => {
+            start_making(&mut making, &gm, &store, &settings, &master);
+            next.set(Screen::Creating);
+        }
+        Some(FormAct::Keys) => {
+            return_to.0 = Some(Screen::NewGame);
+            next.set(keys_screen(&settings));
+        }
+        None => {}
     }
-    *built = Some(now);
-    if let Ok(typed) = typed.single() {
-        making.request = typed.value().to_string();
-    }
-    for root in &roots {
-        commands.entity(root).despawn();
-    }
-    build_form(&mut commands, &art, &fonts, &making, now);
-}
-
-fn build_form(commands: &mut Commands, art: &Art, fonts: &Fonts, making: &Making, can_ask: bool) {
-    let ink = TextColor(color(INK));
-    commands.spawn(screen_root(Screen::NewGame)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(14)), width: px(420), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
-        spawn_panel(root, art, sheet, |sheet| {
-            sheet.spawn((Text::default(), T::NewWorldTitle, fonts.title(1), ink));
-            sheet.spawn((Text::default(), T::NewWorldAsk, fonts.body(), ink));
-            sheet.spawn(Node { height: px(48), padding: UiRect::all(px(5)), overflow: Overflow::clip(), ..default() }).with_children(|field| {
-                field.spawn(backing(art.field.clone(), FIELD_BORDER));
-                field.spawn((
-                    WishInput,
-                    AutoFocus,
-                    AutoDirectionalNavigation::default(),
-                    Node { width: percent(100), height: percent(100), ..default() },
-                    // The last wish is kept, so going back to add a key does not lose it.
-                    EditableText { allow_newlines: false, max_characters: Some(400), ..EditableText::new(&making.request) },
-                    TextLayout { linebreak: LineBreak::WordOrCharacter, ..default() },
-                    fonts.body(),
-                    ink,
-                    TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
-                ));
-            });
-            sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                button(line, art, fonts, violence_label(making), true, Action::Violence);
-                button(line, art, fonts, sex_label(making), true, Action::Sex);
-            });
-            sheet.spawn(Node { column_gap: px(6), row_gap: px(3), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
-                button(line, art, fonts, story_label(making), true, Action::Story);
-                button(line, art, fonts, live_label(making), true, Action::Live);
-                button(line, art, fonts, difficulty_label(making), true, Action::Difficulty);
-            });
-            sheet.spawn(Node { column_gap: px(6), row_gap: px(3), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
-                button(line, art, fonts, book_label(making), true, Action::Book);
-                button(line, art, fonts, limits_label(making), true, Action::Limits);
-                button(line, art, fonts, method_label(making), true, Action::Method);
-                button(line, art, fonts, edition_label(making), true, Action::Edition);
-            });
-            if !can_ask {
-                sheet.spawn((Text::default(), T::NeedKey, fonts.body(), TextColor(color(WAX))));
-            }
-            sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                button(line, art, fonts, T::Back, true, Nav::Back);
-                button(line, art, fonts, T::CreateWorld, can_ask, Action::Create);
-                if !can_ask {
-                    button(line, art, fonts, T::Keys, true, Action::Keys);
-                }
-            });
-        });
-    });
-}
-
-fn spawn_waiting(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
-    commands.spawn(screen_root(Screen::Creating)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(70)), width: px(300), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() };
-        spawn_panel(root, &art, sheet, |sheet| {
-            sheet.spawn((Text::default(), T::NewWorldTitle, fonts.title(1), TextColor(color(INK))));
-            sheet.spawn((Text::default(), StatusLine, fonts.body(), TextColor(color(INK))));
-            sheet.spawn((FailureButtons, Node { column_gap: px(6), display: Display::None, ..default() })).with_children(|line| {
-                button(line, &art, &fonts, T::Back, true, Nav::Go(Screen::NewGame));
-                button(line, &art, &fonts, T::Recheck, true, Action::Retry);
-                button(line, &art, &fonts, if settings.active_provider().is_some() { T::KeysProvider } else { T::Keys }, true, Action::Keys);
-            });
-        });
-    });
-}
-
-fn start_making(making: &mut Making, request: String, gm: &Gm, store: &Store, settings: &Settings, master: &Master) {
-    *making = Making { request: request.clone(), seconds: 0.0, trouble: None, no_violence: making.no_violence, no_sex: making.no_sex, table: making.table };
-    master.ask(gm, store, settings, Ask::NewWorld { request, story: !making.table.sandbox });
 }
 
 #[allow(clippy::too_many_arguments)]
-fn on_activate(
-    used: On<Activate>,
-    buttons: Query<&Action>,
-    input: Query<&EditableText, With<WishInput>>,
-    screen: Res<State<Screen>>,
+fn waiting_screen(
+    mut egui: EguiContexts,
+    mut commands: Commands,
+    time: Res<Time>,
+    (master, gm, settings, store): (Res<Master>, Res<Gm>, Res<Settings>, Res<Store>),
     mut making: ResMut<Making>,
     mut return_to: ResMut<ReturnTo>,
     mut next: ResMut<NextState<Screen>>,
-    gm: Res<Gm>,
-    store: Res<Store>,
-    settings: Res<Settings>,
-    master: Res<Master>,
-) {
-    let Ok(action) = buttons.get(used.entity) else { return };
-    match action {
-        Action::Create => {
-            let request = input.single().map(|i| i.value().to_string()).unwrap_or_default();
-            start_making(&mut making, request.trim().to_string(), &gm, &store, &settings, &master);
-            next.set(Screen::Creating);
-        }
-        Action::Retry => {
-            let request = making.request.clone();
-            start_making(&mut making, request, &gm, &store, &settings, &master);
-        }
-        Action::Keys => {
-            // Keep what was typed, and come back to this form afterwards.
-            if let Ok(input) = input.single() {
-                making.request = input.value().to_string();
-            }
-            return_to.0 = Some(if *screen.get() == Screen::Creating { Screen::NewGame } else { *screen.get() });
-            next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
-        }
-        switch => flip(*switch, &mut making),
-    }
-}
-
-/// What a switch of the form says it is set to; nothing for a button that is not a switch.
-fn switch_label(action: Action, making: &Making) -> Option<T> {
-    Some(match action {
-        Action::Violence => violence_label(making),
-        Action::Sex => sex_label(making),
-        Action::Book => book_label(making),
-        Action::Limits => limits_label(making),
-        Action::Edition => edition_label(making),
-        Action::Method => method_label(making),
-        Action::Story => story_label(making),
-        Action::Live => live_label(making),
-        Action::Difficulty => difficulty_label(making),
-        Action::Create | Action::Retry | Action::Keys => return None,
-    })
-}
-
-/// The switch buttons say what they are set to.
-fn show_switches(making: Res<Making>, buttons: Query<(&Action, &Children)>, mut labels: Query<&mut T>) {
-    if !making.is_changed() {
-        return;
-    }
-    for (action, children) in &buttons {
-        let Some(wanted) = switch_label(*action, &making) else { continue };
-        for child in children {
-            if let Ok(mut label) = labels.get_mut(*child)
-                && *label != wanted
-            {
-                *label = wanted;
-            }
-        }
-    }
-}
-
-/// What pressing a switch does to the world being made. Nothing for a button that is not
-/// a switch.
-fn flip(action: Action, making: &mut Making) {
-    match action {
-        Action::Violence => making.no_violence = !making.no_violence,
-        Action::Sex => making.no_sex = !making.no_sex,
-        Action::Book => making.table.book_only = !making.table.book_only,
-        Action::Limits => making.table.no_limits = !making.table.no_limits,
-        Action::Edition => making.table.srd_2024 = !making.table.srd_2024,
-        Action::Story => making.table.sandbox = !making.table.sandbox,
-        Action::Live => making.table.live = !making.table.live,
-        Action::Difficulty => {
-            making.table.difficulty = match making.table.difficulty {
-                world::Difficulty::Casual => world::Difficulty::Honest,
-                world::Difficulty::Honest => world::Difficulty::Hardcore,
-                world::Difficulty::Hardcore => world::Difficulty::Casual,
-            }
-        }
-        Action::Method => {
-            making.table.method = match making.table.method {
-                rules::AbilityMethod::PointBuy => rules::AbilityMethod::StandardArray,
-                rules::AbilityMethod::StandardArray => rules::AbilityMethod::Roll,
-                rules::AbilityMethod::Roll => rules::AbilityMethod::PointBuy,
-            }
-        }
-        Action::Create | Action::Retry | Action::Keys => {}
-    }
-}
-
-/// Dots that come and go, so a long wait visibly is not a freeze.
-fn dots(seconds: f32) -> &'static str {
-    ["", ".", "..", "..."][(seconds * 2.0) as usize % 4]
-}
-
-#[allow(clippy::too_many_arguments)]
-fn wait_for_world(
-    mut commands: Commands,
-    time: Res<Time>,
-    master: Res<Master>,
-    gm: Res<Gm>,
-    lang: Res<Lang>,
-    mut making: ResMut<Making>,
-    mut next: ResMut<NextState<Screen>>,
-    mut status: Query<(&mut Text, &mut TextColor), With<StatusLine>>,
-    mut buttons: Query<&mut Node, With<FailureButtons>>,
 ) {
     for answer in master.take() {
         let Answer::World(result) = answer else { continue };
+        // The answer to a making that was called off is not the world asked for now.
+        if making.stale > 0 {
+            making.stale -= 1;
+            continue;
+        }
         match result {
             Ok((mut world, notes)) => {
                 for note in notes {
@@ -341,6 +266,7 @@ fn wait_for_world(
                 world.sex = !making.no_sex;
                 world.table = making.table;
                 let world_id = format!("{:x}", crate::store::unix_now());
+                making.step = 0;
                 play::begin(&mut commands, &mut next, *world, world_id);
                 return;
             }
@@ -350,79 +276,134 @@ fn wait_for_world(
     if making.trouble.is_none() {
         making.seconds += time.delta_secs();
     }
-    let (text, ink) = match &making.trouble {
-        Some(trouble) => (format!("{}\n{}", T::CreateFailed.text(*lang), trouble_text(trouble, gm.dispatcher.now(), *lang)), WAX),
-        None => (format!("{}{}\n{}\n{} {} {}", T::Creating.text(*lang), dots(making.seconds), T::CreatingHint.text(*lang), T::Elapsed.text(*lang), making.seconds as u32, T::Seconds.text(*lang)), INK),
-    };
-    for (mut line, mut line_color) in &mut status {
-        if line.0 != text {
-            line.0 = text.clone();
-            line_color.0 = color(ink);
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    // The dots and the seconds move on their own.
+    ctx.request_repaint();
+    let Some(mut ui) = kit::screen_ui(ctx, "creating") else { return };
+    let keys_label = if settings.active_provider().is_some() { T::KeysProvider } else { T::Keys };
+    match waiting(&mut ui, &making, gm.dispatcher.now(), keys_label, settings.lang) {
+        Some(WaitAct::Cancel) => {
+            if making.trouble.is_none() {
+                making.stale += 1;
+            }
+            next.set(Screen::NewGame);
         }
-    }
-    let display = if making.trouble.is_some() { Display::Flex } else { Display::None };
-    for mut node in &mut buttons {
-        if node.display != display {
-            node.display = display;
+        Some(WaitAct::Retry) => start_making(&mut making, &gm, &store, &settings, &master),
+        Some(WaitAct::Keys) => {
+            return_to.0 = Some(Screen::NewGame);
+            next.set(keys_screen(&settings));
         }
+        None => {}
     }
+}
+
+/// Dots that come and go, so a long wait visibly is not a freeze.
+fn dots(seconds: f32) -> &'static str {
+    ["", ".", "..", "..."][(seconds * 2.0) as usize % 4]
 }
 
 pub struct NewGamePlugin;
 
 impl Plugin for NewGamePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Making>()
-            .add_systems(OnEnter(Screen::NewGame), spawn_form)
-            .add_systems(OnEnter(Screen::Creating), spawn_waiting)
-            .add_systems(Update, (wait_for_world.run_if(in_state(Screen::Creating)), (show_switches, refresh_form).run_if(in_state(Screen::NewGame))))
-            .add_observer(on_activate);
+        app.init_resource::<Making>().add_systems(
+            EguiPrimaryContextPass,
+            (form_screen.run_if(in_state(Screen::NewGame)), waiting_screen.run_if(in_state(Screen::Creating))).in_set(crate::ui::UiSet::Screens),
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
 
     #[test]
     fn dots_cycle_twice_a_second_and_start_empty() {
         assert_eq!([dots(0.0), dots(0.5), dots(1.0), dots(1.5), dots(2.0)], ["", ".", "..", "...", ""]);
     }
 
-    const SWITCHES: [Action; 9] = [Action::Violence, Action::Sex, Action::Book, Action::Limits, Action::Method, Action::Edition, Action::Story, Action::Live, Action::Difficulty];
-
-    #[test]
-    fn every_switch_says_something_else_once_pressed() {
-        for switch in SWITCHES {
-            let mut making = Making::default();
-            let before = switch_label(switch, &making).expect("a switch has words");
-            flip(switch, &mut making);
-            let after = switch_label(switch, &making).expect("a switch has words");
-            assert_ne!(before, after, "{:?} was pressed and its words stayed", before);
+    /// Runs the form, pressing the controls named, one per frame. Gives the form as it was
+    /// left and the last thing it asked for.
+    fn on_form(can_ask: bool, presses: &[&str]) -> (Making, Option<FormAct>) {
+        let mut making = Making::default();
+        let mut got = None;
+        {
+            let mut harness = Harness::builder().with_size(vec2(480.0, 340.0)).build_ui(|ui| {
+                crate::ui::theme::install(ui.ctx());
+                if kit::ready(ui.ctx())
+                    && let Some(act) = form(ui, &mut making, can_ask, Lang::En)
+                {
+                    got = Some(act);
+                }
+            });
+            harness.run();
+            for press in presses {
+                harness.get_by_label_contains(press).click();
+                harness.run();
+            }
         }
-        // The buttons that are not switches change nothing and say nothing.
-        for button in [Action::Create, Action::Retry, Action::Keys] {
-            let mut making = Making::default();
-            flip(button, &mut making);
-            assert!(switch_label(button, &making).is_none() && making.table == Making::default().table);
-        }
+        (making, got)
     }
 
     #[test]
-    fn a_switch_comes_round_to_where_it_began() {
-        for switch in SWITCHES {
-            let mut making = Making::default();
-            let first = switch_label(switch, &making);
-            let mut presses = 0;
-            loop {
-                flip(switch, &mut making);
-                presses += 1;
-                if switch_label(switch, &making) == first {
-                    break;
+    fn the_form_goes_step_by_step_and_back() {
+        let (making, act) = on_form(true, &["Next", "Next"]);
+        assert_eq!((making.step, act), (2, None));
+        let (making, act) = on_form(true, &["Next", "Back"]);
+        assert_eq!((making.step, act), (0, None));
+        // Back from the first step leaves the form.
+        let (_, act) = on_form(true, &["Cancel"]);
+        assert_eq!(act, Some(FormAct::Back));
+        let (_, act) = on_form(true, &["Next", "Next", "Create the world"]);
+        assert_eq!(act, Some(FormAct::Create));
+    }
+
+    #[test]
+    fn every_setting_says_what_it_is_set_to_once_pressed() {
+        // Each press moves a setting one value on; the words on it are the new value's.
+        let (making, _) = on_form(true, &["Next", "Mode: story", "Difficulty: honest", "Live world", "Violence: graphic", "Sex: explicit"]);
+        assert!(making.table.sandbox && making.table.live && making.no_violence && making.no_sex);
+        assert_eq!(making.table.difficulty, Difficulty::Hardcore);
+        let (making, _) = on_form(true, &["Next", "Next", "Rules: the book and", "Power held", "Ability scores: Point buy", "Rules edition: SRD 5.1"]);
+        assert!(making.table.book_only && making.table.no_limits && making.table.srd_2024);
+        assert_eq!(making.table.method, rules::AbilityMethod::StandardArray);
+    }
+
+    #[test]
+    fn without_a_key_the_world_cannot_be_made_and_the_way_to_one_is_offered() {
+        let (_, act) = on_form(false, &["Next", "Next", "Create the world"]);
+        assert_eq!(act, None);
+        let (_, act) = on_form(false, &["Next", "Next", "Gemini keys"]);
+        assert_eq!(act, Some(FormAct::Keys));
+    }
+
+    #[test]
+    fn an_idea_fills_the_wish() {
+        let (making, _) = on_form(true, &["Space"]);
+        assert_eq!(making.request, "Space");
+    }
+
+    #[test]
+    fn the_buttons_stand_in_one_place_from_step_to_step() {
+        let mut making = Making::default();
+        let mut places = Vec::new();
+        {
+            let mut harness = Harness::builder().with_size(vec2(960.0, 540.0)).build_ui(|ui| {
+                crate::ui::theme::install(ui.ctx());
+                if kit::ready(ui.ctx()) {
+                    form(ui, &mut making, true, Lang::En);
                 }
-                assert!(presses < 6, "a switch that never comes back");
+            });
+            harness.run();
+            for label in ["Next", "Next", "Create the world"] {
+                let next = harness.get_by_label(label);
+                places.push(next.rect());
+                next.click();
+                harness.run();
             }
-            assert!(presses >= 2);
         }
+        assert!(places.windows(2).all(|w| (w[0].top() - w[1].top()).abs() < 0.5), "{places:?}");
     }
 }

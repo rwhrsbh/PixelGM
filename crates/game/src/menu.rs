@@ -163,7 +163,7 @@ fn escape_goes_back(
     mut next: ResMut<NextState<Screen>>,
 ) {
     let back = keys.just_pressed(KeyCode::Escape) || gamepads.iter().any(|pad| pad.just_pressed(GamepadButton::East));
-    if back && matches!(screen.get(), Screen::Keys | Screen::Settings | Screen::NewGame | Screen::Load | Screen::Lobby) {
+    if back && matches!(screen.get(), Screen::Keys | Screen::Settings | Screen::Load | Screen::Lobby) {
         next.set(return_to.0.take().unwrap_or(Screen::Main));
     }
 }

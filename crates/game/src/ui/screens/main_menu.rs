@@ -34,7 +34,7 @@ pub fn main_menu(ui: &mut Ui, view: &MainView) -> Option<MainAct> {
         ui.label(egui::RichText::new(t(T::Tagline)).color(c(crate::theme::PARCHMENT_SHADE)));
     });
     let no_saves = t(T::NoSavesYet);
-    let sheet = Sheet { id: "main", title: "", max: vec2(200.0, 260.0), top: 64.0 };
+    let sheet = Sheet { id: "main", title: "", max: vec2(200.0, 260.0), top: 64.0, fixed: false };
     kit::bare_sheet(
         ui,
         sheet,
