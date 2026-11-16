@@ -2,8 +2,12 @@
 //!
 //! - `--do "<step>;<step>;…"` plays a script through the real input path: the steps become
 //!   the same window messages a mouse and keyboard produce. Steps: `wait:<seconds>`,
-//!   `move:<x>,<y>` and `click:<x>,<y>` (canvas pixels), `rclick:<x>,<y>`, `tap` (a click without moving), `snap[:<x>,<y>]` (a move, press and release in one frame), `type:<text>`, `key:<name>`,
+//!   `move:<x>,<y>` and `click:<x>,<y>` (pixels of the interface's grid, 480 by 270: half a canvas pixel's
+//!   numbers), `rclick:<x>,<y>`, `tap` (a click without moving), `snap[:<x>,<y>]` (a move, press and release in one frame), `type:<text>`, `key:<name>`,
 //!   `shot:<file.png>`, `hold:<key>,<seconds>`, `warp:<cell x>,<cell y>`, `quit`.
+//! - `--trace-input true` writes down every press of the mouse: where it fell, what was
+//!   under it, whether a button took it, what held the focus and whether the window had
+//!   it. For finding a click that went nowhere.
 //! - `--shot <file.png>` is short for "let the picture settle, save it, quit".
 //! - `--screen <main|keys|settings>` opens a screen, `--size <W>x<H>` sets the window size,
 //!   `--lang <ru|en>` the language, `--keys-file <file>` adds the keys listed in a file,
@@ -57,6 +61,8 @@ pub struct Args {
     pub hidden: bool,
     /// Let a rule-based stand-in answer for the game master: no network, no quota.
     pub fake_gm: bool,
+    /// Write every press of the mouse into the log, with what took it.
+    pub trace_input: bool,
     /// Host a game on this port from the start.
     pub host: Option<u16>,
     /// Join the game at this address from the start.
@@ -204,6 +210,7 @@ impl Args {
                 "--sound" => out.sound = value == "true",
                 "--hidden" => out.hidden = value == "true",
                 "--fake-gm" => out.fake_gm = value == "true",
+                "--trace-input" => out.trace_input = value == "true",
                 "--host" => out.host = value.parse().ok(),
                 "--join" => out.join = Some(value),
                 "--name" => out.name = Some(value),
@@ -347,7 +354,7 @@ pub struct ShotPlugin(pub Args);
 
 impl Plugin for ShotPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(StartArgs(self.0.clone())).init_resource::<Warp>().add_systems(Startup, apply_start).add_systems(First, play_script);
+        app.insert_resource(StartArgs(self.0.clone())).insert_resource(crate::widgets::TraceInput(self.0.trace_input)).init_resource::<Warp>().add_systems(Startup, apply_start).add_systems(First, play_script);
     }
 }
 

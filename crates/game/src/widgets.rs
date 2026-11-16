@@ -368,10 +368,50 @@ fn press_activates(press: On<Pointer<Press>>, buttons: Query<&PixelButton>, mut 
     }
 }
 
+/// Whether every press of the mouse is written into the log: set by `--trace-input`.
+#[derive(Resource, Default)]
+pub struct TraceInput(pub bool);
+
+/// A press of the mouse as the game saw it, for finding one that went nowhere: where it
+/// fell, what it fell on, whether a button took it, and what the window and the focus were
+/// doing. A press that reaches no entity at all is told of by `trace_misses`.
+fn trace_presses(press: On<Pointer<Press>>, trace: Res<TraceInput>, buttons: Query<&PixelButton>, parents: Query<&ChildOf>, names: Query<&T>, focus: Res<InputFocus>, typing: Query<(), With<bevy::text::EditableText>>, windows: Query<&Window>) {
+    // Said once for a press, where it first fell, not at every step of its way up.
+    if !trace.0 || press.button != PointerButton::Primary || press.entity != press.original_event_target() {
+        return;
+    }
+    let first = press.entity;
+    let button = std::iter::once(first).chain(parents.iter_ancestors(first)).find(|e| buttons.contains(*e));
+    let took = match button.and_then(|e| buttons.get(e).ok()) {
+        Some(b) if b.enabled => "a button takes it",
+        Some(_) => "a button that is switched off",
+        None => "no button under it",
+    };
+    let label = names.get(first).map(|t| format!(" {t:?}")).unwrap_or_default();
+    let focused = match focus.get() {
+        Some(entity) if typing.contains(entity) => "a text field",
+        Some(_) => "a control",
+        None => "nothing",
+    };
+    let window = windows.iter().next().map_or("no window".to_string(), |w| format!("window {} {:?}", if w.focused { "focused" } else { "NOT focused" }, w.mode));
+    info!("press at {:?} fell on {first:?}{label}: {took}; focus on {focused}; {window}", press.pointer_location.position);
+}
+
+/// A press that fell on nothing the interface knows of: the pointer events above are only
+/// sent for an entity under the cursor.
+fn trace_misses(trace: Res<TraceInput>, mouse: Res<ButtonInput<MouseButton>>, windows: Query<&Window>, hovered: Query<&Interaction>) {
+    if !trace.0 || !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let under = hovered.iter().filter(|i| **i != Interaction::None).count();
+    let at = windows.iter().next().and_then(|w| w.cursor_position());
+    info!("mouse pressed with the cursor at {at:?}; controls under it by the interface's own count: {under}");
+}
+
 pub struct WidgetsPlugin;
 
 impl Plugin for WidgetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (style_buttons, style_lines, wheel_scrolls, scroll_bars, focus_scrolls_into_view)).add_observer(press_activates);
+        app.init_resource::<TraceInput>().add_systems(Update, (style_buttons, style_lines, wheel_scrolls, scroll_bars, focus_scrolls_into_view, trace_misses)).add_observer(press_activates).add_observer(trace_presses);
     }
 }

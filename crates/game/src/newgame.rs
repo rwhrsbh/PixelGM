@@ -239,6 +239,55 @@ fn on_activate(
             let request = making.request.clone();
             start_making(&mut making, request, &gm, &store, &settings, &master);
         }
+        Action::Keys => {
+            // Keep what was typed, and come back to this form afterwards.
+            if let Ok(input) = input.single() {
+                making.request = input.value().to_string();
+            }
+            return_to.0 = Some(if *screen.get() == Screen::Creating { Screen::NewGame } else { *screen.get() });
+            next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
+        }
+        switch => flip(*switch, &mut making),
+    }
+}
+
+/// What a switch of the form says it is set to; nothing for a button that is not a switch.
+fn switch_label(action: Action, making: &Making) -> Option<T> {
+    Some(match action {
+        Action::Violence => violence_label(making),
+        Action::Sex => sex_label(making),
+        Action::Book => book_label(making),
+        Action::Limits => limits_label(making),
+        Action::Edition => edition_label(making),
+        Action::Method => method_label(making),
+        Action::Story => story_label(making),
+        Action::Live => live_label(making),
+        Action::Difficulty => difficulty_label(making),
+        Action::Create | Action::Retry | Action::Keys => return None,
+    })
+}
+
+/// The switch buttons say what they are set to.
+fn show_switches(making: Res<Making>, buttons: Query<(&Action, &Children)>, mut labels: Query<&mut T>) {
+    if !making.is_changed() {
+        return;
+    }
+    for (action, children) in &buttons {
+        let Some(wanted) = switch_label(*action, &making) else { continue };
+        for child in children {
+            if let Ok(mut label) = labels.get_mut(*child)
+                && *label != wanted
+            {
+                *label = wanted;
+            }
+        }
+    }
+}
+
+/// What pressing a switch does to the world being made. Nothing for a button that is not
+/// a switch.
+fn flip(action: Action, making: &mut Making) {
+    match action {
         Action::Violence => making.no_violence = !making.no_violence,
         Action::Sex => making.no_sex = !making.no_sex,
         Action::Book => making.table.book_only = !making.table.book_only,
@@ -260,39 +309,7 @@ fn on_activate(
                 rules::AbilityMethod::Roll => rules::AbilityMethod::PointBuy,
             }
         }
-        Action::Keys => {
-            // Keep what was typed, and come back to this form afterwards.
-            if let Ok(input) = input.single() {
-                making.request = input.value().to_string();
-            }
-            return_to.0 = Some(if *screen.get() == Screen::Creating { Screen::NewGame } else { *screen.get() });
-            next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
-        }
-    }
-}
-
-/// The switch buttons say what they are set to.
-fn show_switches(making: Res<Making>, buttons: Query<(&Action, &Children)>, mut labels: Query<&mut T>) {
-    if !making.is_changed() {
-        return;
-    }
-    for (action, children) in &buttons {
-        let wanted = match action {
-            Action::Violence => violence_label(&making),
-            Action::Sex => sex_label(&making),
-            Action::Book => book_label(&making),
-            Action::Limits => limits_label(&making),
-            Action::Edition => edition_label(&making),
-            Action::Method => method_label(&making),
-            _ => continue,
-        };
-        for child in children {
-            if let Ok(mut label) = labels.get_mut(*child)
-                && *label != wanted
-            {
-                *label = wanted;
-            }
-        }
+        Action::Create | Action::Retry | Action::Keys => {}
     }
 }
 
@@ -370,5 +387,42 @@ mod tests {
     #[test]
     fn dots_cycle_twice_a_second_and_start_empty() {
         assert_eq!([dots(0.0), dots(0.5), dots(1.0), dots(1.5), dots(2.0)], ["", ".", "..", "...", ""]);
+    }
+
+    const SWITCHES: [Action; 9] = [Action::Violence, Action::Sex, Action::Book, Action::Limits, Action::Method, Action::Edition, Action::Story, Action::Live, Action::Difficulty];
+
+    #[test]
+    fn every_switch_says_something_else_once_pressed() {
+        for switch in SWITCHES {
+            let mut making = Making::default();
+            let before = switch_label(switch, &making).expect("a switch has words");
+            flip(switch, &mut making);
+            let after = switch_label(switch, &making).expect("a switch has words");
+            assert_ne!(before, after, "{:?} was pressed and its words stayed", before);
+        }
+        // The buttons that are not switches change nothing and say nothing.
+        for button in [Action::Create, Action::Retry, Action::Keys] {
+            let mut making = Making::default();
+            flip(button, &mut making);
+            assert!(switch_label(button, &making).is_none() && making.table == Making::default().table);
+        }
+    }
+
+    #[test]
+    fn a_switch_comes_round_to_where_it_began() {
+        for switch in SWITCHES {
+            let mut making = Making::default();
+            let first = switch_label(switch, &making);
+            let mut presses = 0;
+            loop {
+                flip(switch, &mut making);
+                presses += 1;
+                if switch_label(switch, &making) == first {
+                    break;
+                }
+                assert!(presses < 6, "a switch that never comes back");
+            }
+            assert!(presses >= 2);
+        }
     }
 }

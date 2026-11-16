@@ -22,8 +22,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The tests of every crate. A build is published only when they pass.
+  test:
+    name: Tests (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Libraries the game is built against
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-test
+
+      - name: Test
+        run: cargo test --workspace --locked
+
   build:
     name: Build (x86_64-pc-windows-msvc)
+    needs: test
     runs-on: windows-latest
     timeout-minutes: 60
 
