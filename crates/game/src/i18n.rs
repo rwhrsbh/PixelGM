@@ -205,6 +205,7 @@ texts! {
     SetVoice: "Голос мастера", "The master's voice";
     VoiceHint: "Мастер читает рассказ вслух. Тратит квоту голосовых моделей, отдельную от квоты мастера.", "The master reads the telling aloud. Spends the quota of the speaking models, separate from the master's own.";
     MasterBusy: "Мастер занят другим вопросом. Подожди ответа.", "The master is busy with another question. Wait for the answer.";
+    ChoiceGone: "Этого выбора уже нет: его сделал кто-то другой, или сцена ушла дальше.", "That choice is gone: someone else took it, or the scene has moved on.";
     ActVoidLeft: "Ты ушёл оттуда раньше, чем мастер ответил: задуманное не случилось.", "You left before the master answered: what you meant to do did not happen.";
     ActVoidFight: "Начался бой — задуманное не случилось.", "A fight broke out — what you meant to do did not happen.";
     HeroTitle: "Твой герой", "Your hero";

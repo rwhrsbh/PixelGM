@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 8;
+pub const PROTOCOL: u32 = 9;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -35,8 +35,10 @@ pub enum Intent {
     Do { thing: String, index: usize },
     /// The party member's own words, for the game master.
     Say { text: String, near: Option<String> },
-    /// One of the choices offered with the last telling.
-    Choose(usize),
+    /// One of the choices offered with a telling: its place in the list as the player saw
+    /// it, and its words. The words are what it is found by: the list on the host may have
+    /// changed since the player read it.
+    Choose { index: usize, label: String },
     /// Roll the check that is waiting.
     Roll,
     /// The player walked onto an exit.
