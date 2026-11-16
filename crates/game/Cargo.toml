@@ -10,6 +10,7 @@ llm = { path = "../llm" }
 world = { path = "../world" }
 rules = { path = "../rules" }
 net = { path = "../net" }
+table = { path = "../table" }
 serde.workspace = true
 serde_json.workspace = true
 ureq = "2"

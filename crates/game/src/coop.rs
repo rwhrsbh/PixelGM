@@ -321,7 +321,12 @@ pub struct Table {
     pub keys_vote: Option<KeysVote>,
     /// The table chose to wait: seconds until the master asks again.
     pub keys_wait: Option<u64>,
-    /// What the master was last asked on a guest's behalf and has not answered yet.
+    /// What players did that needs the master's word, in the order it came, not yet put in
+    /// the queues: the play screen puts it there.
+    pub wants: Mutex<Vec<Want>>,
+    /// Who waits for the master, place by place.
+    pub queues: table::Queues,
+    /// A direction of the human master's that the model is carrying out.
     pub busy: Option<String>,
     /// The guest that question was asked for: the answer happens where that guest is.
     pub busy_for: Option<String>,
@@ -348,6 +353,15 @@ pub struct Table {
     pub master_note: String,
     /// This player's library of creatures, as last read from disk.
     pub cards: Vec<CreatureCard>,
+}
+
+/// Something a player did that the master must answer.
+pub struct Want {
+    pub player: String,
+    pub said: String,
+    pub near: Option<String>,
+    /// A choice whose outcome is already told: the master is asked what follows.
+    pub follows: bool,
 }
 
 pub struct ChatLine {
@@ -598,6 +612,11 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
         match event {
             HostEvent::Joined(_) => {}
             HostEvent::Left(peer) => {
+                // What the guest who left had waiting for the master did not happen.
+                if let (Some(name), Some(game)) = (hosting.names.get(&peer), &game) {
+                    let place = game.world.place_of(name).to_string();
+                    table.queues.gone_from(&place, name, "");
+                }
                 hosting.names.remove(&peer);
                 hosting.tokens.remove(&peer);
                 hosting.sent.remove(&peer);
@@ -947,9 +966,13 @@ fn client_pump(
                     table.notices.push(said);
                 }
             }
-            ClientEvent::Message(Down::Trouble(_)) => {
+            ClientEvent::Message(Down::Trouble(why)) => {
                 if matches!(*phase, Phase::Asking { .. } | Phase::Drawing { .. }) {
                     *phase = Phase::Walking;
+                }
+                // Said to the player in words: nothing they did ends without them.
+                if !why.trim().is_empty() {
+                    play::show(Turn { narration: why, options: Vec::new() }, &mut phase, &mut table);
                 }
             }
             ClientEvent::Message(Down::Drawing(to)) => {

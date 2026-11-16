@@ -4465,6 +4465,7 @@ dependencies = [
  "rules",
  "serde",
  "serde_json",
+ "table",
  "ureq",
  "windows-sys 0.61.2",
  "world",
@@ -5262,6 +5263,13 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-kit",
  "windows",
+]
+
+[[package]]
+name = "table"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
