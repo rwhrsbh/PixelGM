@@ -3,7 +3,7 @@
 
 use crate::art::Art;
 use crate::audio::Sfx;
-use crate::coop::{Down, DraftView, GmAct, Held, Intent, Session, Table, player_name};
+use crate::coop::{Down, DraftView, GmAct, Held, Intent, Session, Table, Want, player_name};
 use crate::fx::{Actor, Fx, PopIn, Typed};
 use crate::gm::{Gm, Trouble, trouble_text};
 use crate::i18n::{Lang, T};
@@ -1035,7 +1035,7 @@ fn live_world(
         table.chatter.1.clear();
     }
     let speakers = game.world.here().creatures.iter().any(|c| c.attitude != world::Attitude::Hostile) || !game.world.companions_here().is_empty();
-    if speakers && table.chatter.1.is_empty() && !asked.contains(&place) && table.busy.is_none() {
+    if speakers && table.chatter.1.is_empty() && !asked.contains(&place) && table.busy.is_none() && table.queues.idle() {
         asked.insert(place.clone());
         master.ask(&gm, &store, &settings, Ask::Chatter { world: Box::new(game.world.clone()) });
         wait.0 = 8.0;
@@ -1803,13 +1803,10 @@ fn approach_work(
     mut phase: ResMut<Phase>,
     mut pose: ResMut<HeroPose>,
     mut redraw: ResMut<Redraw>,
-    mut background: ResMut<Background>,
     mut table: ResMut<Table>,
     session: Res<Session>,
     settings: Res<Settings>,
     store: Res<Store>,
-    gm: Res<Gm>,
-    master: Res<Master>,
 ) {
     if approach.0.is_none() || *phase != Phase::Walking {
         return;
@@ -1854,11 +1851,7 @@ fn approach_work(
     redraw.0 = true;
     autosave(&store, &game);
     table.going_on = Some(outcome.clone());
-    let next = send(format!("{} {}", option.label, world::prompt::GO_ON), None, &game, &gm, &store, &settings, &master, &session, &table);
-    *phase = match next {
-        Phase::Reading { .. } => told(Turn { narration: outcome, options: Vec::new() }, Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table),
-        other => other,
-    };
+    *phase = follow(&option.label, &outcome, &game, &settings, &session, &table);
 }
 
 /// What came of going at a container, in words.
@@ -2062,7 +2055,72 @@ fn receive(
                     table.travellers.retain(|(_, to)| *to != id);
                 }
             }
-            Answer::Turn { said, near, draft } => {
+            Answer::Turn { id, said, near, draft } if id != 0 => {
+                // An answer to a question of the queues. One nobody waits for is thrown away.
+                let now = clock_ms();
+                let Some(flight) = table.queues.answered(table::RequestId(id), now) else { continue };
+                let me = player_name(&settings);
+                let solo = matches!(*session, Session::Solo);
+                let place_now = |world: &World, player: &str| if player == me || solo { world.current.clone() } else { world.place_of(player).to_string() };
+                if solo || flight.acts.iter().any(|a| a.player == me) {
+                    table.going_on = None;
+                }
+                match draft {
+                    Err(trouble) => {
+                        let why = trouble_text(&trouble, gm.dispatcher.now(), settings.lang);
+                        table.master_note = why.clone();
+                        for act in &flight.acts {
+                            // The host's own, while they still wait on it, keeps its sheet
+                            // with "ask again"; everyone else is told in words.
+                            if (act.player == me || solo) && matches!(*phase, Phase::Asking { .. }) {
+                                *phase = Phase::Refused { said: act.said.clone(), near: act.near.clone(), trouble: trouble.clone() };
+                            } else {
+                                tell_refusal(&act.player, &why, &me, &session, &mut phase, &mut table);
+                            }
+                        }
+                    }
+                    Ok(draft) => {
+                        // Those who walked on meanwhile are not in the scene any more.
+                        let (here, gone): (Vec<table::Act>, Vec<table::Act>) = flight.acts.iter().cloned().partition(|a| place_now(&game.world, &a.player) == flight.place);
+                        for act in &gone {
+                            tell_refusal(&act.player, T::ActVoidLeft.text(settings.lang), &me, &session, &mut phase, &mut table);
+                        }
+                        if here.is_empty() {
+                            continue;
+                        }
+                        // It happens where they are: the host's own place, or a guest's.
+                        let scene = if solo || here.iter().any(|a| a.player == me) { None } else { here.first().map(|a| a.player.clone()) };
+                        let mut desk = Desk { game: &mut game, table: &mut table, phase: &mut phase, redraw: &mut redraw, background: &mut background, session: &session, settings: &settings, store: &store, gm: &gm, master: &master };
+                        if seated(&desk.game.world).is_some() {
+                            // A human master reads the model's answer before the players do.
+                            desk.table.drafts.push_back(Held { said, near, draft: *draft, scene });
+                            if desk.table.drafts.len() == 1 {
+                                offer(&mut desk);
+                            }
+                            continue;
+                        }
+                        let home = scene.as_deref().map(|player| enter_scene(desk.game, desk.table, player));
+                        if desk.game.world.fight_here() {
+                            // A fight broke out there while the master wrote: its answer is
+                            // not played over the fight. Asked once more when it can be.
+                            leave_scene(desk.game, desk.table, home);
+                            let why = T::ActVoidFight.text(settings.lang);
+                            for out in desk.table.queues.give_back(table::Flight { acts: here, ..flight }, why, now) {
+                                if let table::Out::State { player, state: table::ActState::Refused(why), .. } = out {
+                                    tell_refusal(&player, &why, &me, &session, desk.phase, desk.table);
+                                }
+                            }
+                            continue;
+                        }
+                        let lead = here[0].player.clone();
+                        desk.game.world.acting = desk.game.world.owners.iter().position(|o| *o == lead).or_else(|| my_hero(&desk.game.world, &lead, solo));
+                        finish(&mut desk, &said, &draft);
+                        leave_scene(desk.game, desk.table, home);
+                    }
+                }
+            }
+            // A question asked past the queues: a human master's direction, a party's defeat.
+            Answer::Turn { said, near, draft, .. } => {
                 let mine = matches!(&*phase, Phase::Asking { said: asked, .. } if *asked == said);
                 if mine {
                     table.going_on = None;
@@ -2982,25 +3040,121 @@ fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store,
     if said.is_empty() {
         return Phase::Writing { near };
     }
-    // One question to the master at a time, the host's own included.
-    if session.is_host() && (table.busy.is_some() || !table.drafts.is_empty()) {
-        return Phase::Reading { turn: Turn { narration: T::MasterBusy.text(settings.lang).to_string(), options: Vec::new() } };
-    }
     if session.is_client() {
         session.intend(Intent::Say { text: said.clone(), near: near.clone() });
         return Phase::Asking { said, near };
     }
-    // At a table with guests the master is told who is acting.
-    let said = match (session.is_host(), hero_of(&game.world, &player_name(settings))) {
-        (true, Some(hero)) => format!("{hero}: {said}"),
-        _ => said,
-    };
-    master.ask(gm, store, settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near: near.clone(), direction: None });
-    // The guests see what the host has set about.
-    if session.is_host() {
-        session.broadcast(&Down::Thinking(said.clone()));
-    }
+    // It is never refused: it waits its turn in the master's queues.
+    let _ = (game, gm, store, master);
+    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: said.clone(), near: near.clone(), follows: false });
     Phase::Asking { said, near }
+}
+
+/// A choice was taken and its outcome told: the master is asked what follows it. The
+/// guests in the place read the outcome now, whenever the master's answer comes.
+fn follow(label: &str, outcome: &str, game: &Game, settings: &Settings, session: &Session, table: &Table) -> Phase {
+    let told = Turn { narration: outcome.to_string(), options: Vec::new() };
+    for player in session.players() {
+        if game.world.place_of(&player) == game.world.current {
+            session.send_to(&player, &Down::Told(told.clone()));
+        }
+    }
+    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: label.to_string(), near: None, follows: true });
+    Phase::Asking { said: label.to_string(), near: None }
+}
+
+/// The time the master's queues are run by: milliseconds since the game started.
+fn clock_ms() -> u64 {
+    static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    STARTED.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// How a thing done is put to the master: by whom, and whether it goes on from a choice.
+fn act_line(world: &World, act: &table::Act, named: bool) -> String {
+    let said = if act.follows { format!("{} {}", act.said, world::prompt::GO_ON) } else { act.said.clone() };
+    if named { format!("{}: {said}", hero_of(world, &act.player).unwrap_or(&act.player)) } else { said }
+}
+
+/// What a question to the master says the party does: one thing as it was said; several as
+/// a numbered list the master must answer every line of.
+fn asked_words(world: &World, acts: &[table::Act], named: bool) -> String {
+    match acts {
+        [one] => act_line(world, one, named),
+        many => {
+            let mut text = String::from("several characters act at the same moment, and it is one scene — tell what comes of each of them, by name:");
+            for (n, act) in many.iter().enumerate() {
+                let beside = act.near.as_deref().map(|id| format!(" (standing next to \"{id}\")")).unwrap_or_default();
+                text.push_str(&format!("\n{}. {}{beside}", n + 1, act_line(world, act, true)));
+            }
+            text
+        }
+    }
+}
+
+/// Tells a player that something of theirs will not be answered, and why.
+fn tell_refusal(player: &str, why: &str, me: &str, session: &Session, phase: &mut Phase, table: &mut Table) {
+    if player == me || matches!(session, Session::Solo) {
+        if matches!(*phase, Phase::Asking { .. }) {
+            *phase = Phase::Walking;
+        }
+        show(Turn { narration: why.to_string(), options: Vec::new() }, phase, table);
+    } else {
+        session.send_to(player, &Down::Trouble(why.to_string()));
+    }
+}
+
+/// The master's queues: what players did is put in them, and what is due is asked. A place
+/// is asked one question at a time, of everything that gathered there; places are asked
+/// side by side.
+#[allow(clippy::too_many_arguments)]
+fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: ResMut<Phase>, session: Res<Session>, settings: Res<Settings>, master: Res<Master>, gm: Res<Gm>, store: Res<Store>) {
+    if session.is_client() {
+        return;
+    }
+    let wants = std::mem::take(&mut *table.wants.lock().unwrap());
+    if wants.is_empty() && table.queues.idle() {
+        return;
+    }
+    let now = clock_ms();
+    let me = player_name(&settings);
+    let solo = matches!(*session, Session::Solo);
+    let guests = session.players();
+    let mut outs = Vec::new();
+    for want in wants {
+        let place = if want.player == me || solo { game.world.current.clone() } else { game.world.place_of(&want.player).to_string() };
+        let there = usize::from(game.world.current == place) + guests.iter().filter(|g| game.world.place_of(g) == place).count();
+        outs.extend(table.queues.submit(&place, &want.player, &want.said, want.near, want.follows, there <= 1, now).1);
+    }
+    // A human master reads one answer at a time: nothing more is asked while one waits.
+    if table.drafts.is_empty() {
+        outs.extend(table.queues.tick(now));
+    }
+    for out in outs {
+        match out {
+            table::Out::Ask { id, acts, .. } => {
+                let said = asked_words(&game.world, &acts, !solo);
+                let near = if acts.len() == 1 { acts[0].near.clone() } else { None };
+                // The master sees the place through the eyes of the one who acts there.
+                let own = solo || acts.iter().any(|a| a.player == me);
+                let lead = if own { None } else { acts.first().map(|a| a.player.clone()) };
+                let home = lead.as_deref().map(|player| enter_scene(&mut game, &mut table, player));
+                master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None, id: id.0 });
+                leave_scene(&mut game, &mut table, home);
+                if session.is_host() {
+                    session.broadcast(&Down::Thinking(said.clone()));
+                    if !own {
+                        table.notices.push(said);
+                    }
+                }
+            }
+            table::Out::State { player, state: table::ActState::Refused(why) | table::ActState::Void(why), .. } => {
+                if !why.is_empty() {
+                    tell_refusal(&player, &why, &me, &session, &mut phase, &mut table);
+                }
+            }
+            table::Out::State { .. } => {}
+        }
+    }
 }
 
 /// Enter in the field sends what was typed.
@@ -3315,12 +3469,7 @@ fn on_activate(
                 redraw.0 = true;
                 autosave(&store, &game);
                 table.going_on = Some(outcome.clone());
-                let next = send(format!("{} {}", option.label, world::prompt::GO_ON), None, &game, &gm, &store, &settings, &master, &session, &table);
-                *phase = match next {
-                    // The master is busy: the outcome is told on its own.
-                    Phase::Reading { .. } => told(Turn { narration: outcome, options: Vec::new() }, Vec::new(), &mut game, &store, &mut redraw, &mut background, &session, &mut table),
-                    other => other,
-                };
+                *phase = follow(&option.label, &outcome, &game, &settings, &session, &table);
             }
         }
         (PlayAction::AskAgain, Phase::Refused { said, near, .. }) => *phase = send(said, near, &game, &gm, &store, &settings, &master, &session, &table),
@@ -3545,15 +3694,8 @@ fn guests(
             }
             Intent::Choose(index) => table.options.get(&game.world.current).and_then(|options| options.get(index)).cloned().map(|option| {
                 let outcome = game.world.choose(&option);
-                // And what follows it is asked of the master, unless it is busy.
-                if table.busy.is_none() && table.drafts.is_empty() && !matches!(*phase, Phase::Asking { .. }) {
-                    let said = format!("{}: {} {}", hero_of(&game.world, &player).unwrap_or(&player), option.label, world::prompt::GO_ON);
-                    master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near: None, direction: None });
-                    session.broadcast(&Down::Thinking(said.clone()));
-                    table.notices.push(said.clone());
-                    table.busy = Some(said);
-                    table.busy_for = Some(player.clone());
-                }
+                // And what follows it is asked of the master: always, in its turn.
+                table.wants.lock().unwrap().push(Want { player: player.clone(), said: option.label.clone(), near: None, follows: true });
                 outcome_of(outcome)
             }),
             Intent::Roll if !game.world.pending_here() => None,
@@ -3570,19 +3712,9 @@ fn guests(
                 outcome_of(format!("{}: d20 {}{:+} = {} / {} — {}\n{}", done.hero, done.roll.die, done.roll.bonus, done.roll.total(), done.difficulty, verdict.text(settings.lang), done.narration))
             }),
             Intent::Say { text, near } => {
-                // One question to the master at a time; a second one is told to wait.
-                if table.busy.is_some() || !table.drafts.is_empty() || matches!(*phase, Phase::Asking { .. }) {
-                    session.broadcast(&Down::Trouble(T::MasterBusy.text(settings.lang).to_string()));
-                } else {
-                    let said = match hero_of(&game.world, &player) {
-                        Some(hero) => format!("{hero}: {}", text.trim()),
-                        None => format!("{player}: {}", text.trim()),
-                    };
-                    master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None });
-                    session.broadcast(&Down::Thinking(said.clone()));
-                    table.notices.push(said.clone());
-                    table.busy = Some(said);
-                    table.busy_for = Some(player.clone());
+                // Never refused: it waits its turn in the queue of the place it was done in.
+                if !text.trim().is_empty() {
+                    table.wants.lock().unwrap().push(Want { player: player.clone(), said: text.trim().to_string(), near, follows: false });
                 }
                 None
             }
@@ -3590,6 +3722,12 @@ fn guests(
                 // A guest walks on alone: the party may split up. A place that is only a
                 // name is drawn first, and the guest waits at the door.
                 let from = game.world.place_of(&player).to_string();
+                // What the guest had waiting for the master in the place they leave did not happen.
+                for out in table.queues.gone_from(&from, &player, T::ActVoidLeft.text(settings.lang)) {
+                    if let table::Out::State { player, state: table::ActState::Void(why), .. } = out {
+                        session.send_to(&player, &Down::Trouble(why));
+                    }
+                }
                 let leads_there = game.world.locations.get(&from).is_some_and(|place| place.exits.iter().any(|e| e.to == to));
                 if leads_there && game.world.locations.contains_key(&to) {
                     game.world.places.insert(player.clone(), to);
@@ -3996,7 +4134,7 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             if *desk.phase == Phase::Judging {
                 *desk.phase = Phase::Walking;
             }
-            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Turn { world: Box::new(desk.game.world.clone()), said: said.clone(), near, direction: Some(text.clone()) });
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Turn { world: Box::new(desk.game.world.clone()), said: said.clone(), near, direction: Some(text.clone()), id: 0 });
             desk.session.broadcast(&Down::Thinking(text));
             desk.table.busy = Some(said);
         }
@@ -4231,7 +4369,7 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, approach_work, advance, receive, guests, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (submit, keys, walk, approach_work, advance, receive, guests, master_queue, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on, notice, relocate, redress).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)

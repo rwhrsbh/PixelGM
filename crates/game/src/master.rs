@@ -37,6 +37,8 @@ pub enum Ask {
         near: Option<String>,
         /// What a human master told the model to make of it.
         direction: Option<String>,
+        /// The question's number in the master's queues; nought for one asked past them.
+        id: u64,
     },
     /// Abilities of a hero's own: three to choose from, or one secret skill.
     Feats {
@@ -92,7 +94,7 @@ pub enum Ask {
 pub enum Answer {
     World(Result<(Box<World>, Vec<String>), Trouble>),
     Location { id: String, from: String, ahead: bool, draft: Result<Box<LocationDraft>, Trouble> },
-    Turn { said: String, near: Option<String>, draft: Result<Box<TurnDraft>, Trouble> },
+    Turn { id: u64, said: String, near: Option<String>, draft: Result<Box<TurnDraft>, Trouble> },
     Event(Result<Box<TurnDraft>, Trouble>),
     /// Something that came upon the party, drawn and told.
     Ambush(Result<Box<TurnDraft>, Trouble>),
@@ -490,7 +492,7 @@ impl Master {
                     drawing.lock().unwrap().remove(&id);
                     Answer::Location { id, from, ahead, draft: draft.map(Box::new) }
                 }
-                Ask::Turn { world, said, near, direction } => {
+                Ask::Turn { world, said, near, direction, id } => {
                     let asked = match &direction {
                         Some(direction) => prompt::directive(&world, &said, direction),
                         None => prompt::turn(&world, &said, near.as_deref()),
@@ -513,7 +515,7 @@ impl Master {
                             }
                         }
                     }
-                    Answer::Turn { said, near, draft: draft.map(Box::new) }
+                    Answer::Turn { id, said, near, draft: draft.map(Box::new) }
                 }
                 Ask::Feats { world, hero, secret } => {
                     let draft: Result<FeatsDraft, Trouble> = if fake { faked(fake::feats(secret)) } else { call.read(prompt::play_prompt(&world), &prompt::feats(&world, hero, secret)) };
