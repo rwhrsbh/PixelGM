@@ -506,7 +506,7 @@ fn outside(
     let cell = (spot.0.max(0) as usize, spot.1.max(0) as usize);
     let item = bag(world, hero).get(i).cloned();
     if session.is_client() {
-        session.intend(Intent::Drop { index: i, cell });
+        session.intend(Intent::Drop { index: i, cell, name: item.as_ref().map(|it| it.name.clone()).unwrap_or_default() });
     }
     if world.drop_item(hero, i, cell) {
         if let Some(item) = item {

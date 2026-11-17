@@ -218,3 +218,67 @@ fn what_a_hero_far_off_carries_is_not_used_here() {
     assert!(notes.iter().any(|n| n.contains("take")), "{notes:?}");
     assert_eq!(w.story.bags[2].inventory.iter().filter(|i| i.name == "Logs").count(), 1, "Carl's logs are not taken from the camp");
 }
+
+#[test]
+fn a_wound_from_the_story_falls_on_the_one_who_did_it_or_the_one_named() {
+    let mut w = three_at_the_lake();
+    let hp = |w: &World| (w.party[0].hp, w.party[1].hp, w.party[2].hp);
+    let full = hp(&w);
+    // Bob grabs a coal from the fire: Bob's hero is burnt, not Ann's.
+    w.acting = Some(1);
+    w.actors = vec![1];
+    answer(&mut w, "Bob's hero: I grab the coal", serde_json::json!({ "narration": "It burns.", "effects": [{ "op": "damage", "id": "party", "amount": "3" }] }));
+    assert_eq!(hp(&w), (full.0, full.1 - 3, full.2));
+    // Named, the named one.
+    w.acting = Some(0);
+    w.actors = vec![0];
+    answer(&mut w, "Ann's hero: I push Bob into the thorns", serde_json::json!({ "narration": "Thorns.", "effects": [{ "op": "damage", "id": "Bob's hero", "amount": "2" }] }));
+    assert_eq!(hp(&w), (full.0, full.1 - 5, full.2));
+    // Everyone here: Ann and Bob, not Carl far off.
+    answer(&mut w, "Ann's hero: I set off the trap", serde_json::json!({ "narration": "Darts fly.", "effects": [{ "op": "damage", "id": "everyone", "amount": "1" }] }));
+    assert_eq!(hp(&w), (full.0 - 1, full.1 - 6, full.2));
+}
+
+#[test]
+fn a_chest_the_story_brings_up_holds_what_it_said_and_opens_to_its_key() {
+    let mut w = three_at_the_lake();
+    w.acting = Some(1);
+    w.actors = vec![1];
+    let (_, notes) = answer(&mut w, "Bob's hero: I dive and pull up what glints", serde_json::json!({
+        "narration": "You drag a small locked box ashore, and a key on a chain.",
+        "effects": [
+            { "op": "spawn", "kind": "prop", "id": "box", "name": "Small box", "description": "Locked.", "x": 5, "y": 8, "sprite": "chest", "blocking": true, "lock": 15, "key": "Chain key",
+              "contents": [{ "name": "Pearl", "kind": "junk", "rows": sixteen('4') }] },
+            { "op": "give", "name": "Chain key", "kind": "key", "rows": sixteen('5') }
+        ],
+        "gained": ["Chain key"]
+    }));
+    assert!(notes.is_empty(), "{notes:?}");
+    let opened = w.open_chest(0, "box", crate::bag::Opening::Open, &mut rules::Rng::seeded(1));
+    assert!(matches!(opened, Some(crate::bag::Opened::Locked)), "Ann has no key: {opened:?}");
+    let opened = w.open_chest(1, "box", crate::bag::Opening::Open, &mut rules::Rng::seeded(1));
+    assert!(matches!(opened, Some(crate::bag::Opened::Took(ref names)) if names == &vec!["Pearl".to_string()]), "{opened:?}");
+    assert!(w.story.bags[1].inventory.iter().any(|i| i.name == "Pearl"), "into the bag of the one who opened it");
+}
+
+#[test]
+fn logs_dropped_by_one_are_picked_up_by_another_and_a_thing_gone_is_not_taken_twice() {
+    let mut w = three_at_the_lake();
+    w.acting = Some(1);
+    w.actors = vec![1];
+    answer(&mut w, "Bob's hero: I cut the tree", serde_json::json!({ "narration": "Logs.", "effects": [{ "op": "give", "name": "Logs", "kind": "junk", "rows": sixteen('3') }, { "op": "give", "name": "Rope", "kind": "tool", "rows": sixteen('4') }] }));
+    let at = |w: &World, name: &str| w.story.bags[1].inventory.iter().position(|i| i.name == name).unwrap();
+    // Bob throws down both; Ann picks up the logs.
+    assert!(w.drop_item(1, at(&w, "Logs"), (4, 8)));
+    assert!(w.drop_item(1, at(&w, "Rope"), (4, 9)));
+    let seen_logs = w.here().items.iter().position(|l| l.item.name == "Logs").unwrap();
+    let seen_rope = w.here().items.iter().position(|l| l.item.name == "Rope").unwrap();
+    // Ann takes the logs first; Bob's word for the rope, sent before he knew, still finds the rope.
+    let logs = w.lying_at(seen_logs, "Logs", (4, 8)).unwrap();
+    assert!(w.pick_up(0, logs));
+    let rope = w.lying_at(seen_rope, "Rope", (4, 9)).expect("the rope is still there");
+    assert!(w.pick_up(1, rope));
+    assert!(w.story.bags[0].inventory.iter().any(|i| i.name == "Logs") && w.story.bags[1].inventory.iter().any(|i| i.name == "Rope"));
+    // And the logs, asked for again by someone who did not see them go, are not there.
+    assert_eq!(w.lying_at(seen_logs, "Logs", (4, 8)), None);
+}

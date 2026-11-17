@@ -1314,8 +1314,10 @@ fn bag_work(
     let me = player_name(&settings);
     let hero = my_hero(&game.world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
     if let Some(n) = pick.0.take() {
-        if session.is_client() {
-            session.intend(Intent::PickUp { n });
+        if session.is_client()
+            && let Some(lying) = game.world.here().items.get(n)
+        {
+            session.intend(Intent::PickUp { n, name: lying.item.name.clone(), cell: (lying.x, lying.y) });
         }
         if game.world.pick_up(hero, n) {
             redraw.0 = true;
@@ -3325,10 +3327,15 @@ fn guests(
                 }
                 None
             }
-            Intent::Drop { index, cell } => {
+            Intent::Drop { index, cell, name } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     let home = enter_scene(&mut game, &mut table, &player);
-                    game.world.drop_item(hero, index, cell);
+                    // The thing the guest meant, wherever it is in the bag now.
+                    let bag = game.world.story.bags.get(hero).map(|b| b.inventory.as_slice()).unwrap_or_default();
+                    let index = if name.is_empty() || bag.get(index).is_some_and(|i| i.name == name) { Some(index) } else { bag.iter().position(|i| i.name == name) };
+                    if let Some(index) = index {
+                        game.world.drop_item(hero, index, cell);
+                    }
                     leave_scene(&mut game, &mut table, Some(home));
                     redraw.0 = true;
                 }
@@ -3338,10 +3345,13 @@ fn guests(
                 let hero = game.world.owners.iter().position(|o| *o == player).unwrap_or(0);
                 game.world.open_chest(hero, &prop, how, &mut Rng::from_clock()).map(|result| outcome_of(chest_words(&result, settings.lang)))
             }
-            Intent::PickUp { n } => {
+            Intent::PickUp { n, name, cell } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     let home = enter_scene(&mut game, &mut table, &player);
-                    game.world.pick_up(hero, n);
+                    // The very thing the guest saw; gone already, nothing is picked up.
+                    if let Some(n) = game.world.lying_at(n, &name, cell) {
+                        game.world.pick_up(hero, n);
+                    }
                     leave_scene(&mut game, &mut table, Some(home));
                     redraw.0 = true;
                 }

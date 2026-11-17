@@ -437,6 +437,14 @@ impl World {
     }
 
     /// Picks up what lies on the ground, by its place in the list.
+    /// Which of the things lying here is the one called `name` at `cell`: the n-th if it
+    /// still is, otherwise wherever it is in the list now. `None` when it is gone.
+    pub fn lying_at(&self, n: usize, name: &str, cell: (usize, usize)) -> Option<usize> {
+        let items = &self.here().items;
+        let same = |l: &crate::model::Lying| l.item.name == name && (l.x, l.y) == cell;
+        if items.get(n).is_some_and(same) { Some(n) } else { items.iter().position(same) }
+    }
+
     pub fn pick_up(&mut self, hero: usize, n: usize) -> bool {
         self.ensure_bags();
         let here = self.current.clone();
