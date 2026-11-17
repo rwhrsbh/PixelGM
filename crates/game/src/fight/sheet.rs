@@ -146,6 +146,13 @@ pub fn sheet(
         let entered = writing && !*was_writing;
         *was_writing = writing;
         let spent = t(T::ActionSpent);
+        // At a shared table, this player's own fighter: in others' turns a blow can be
+        // prepared for when its turn comes.
+        let me = crate::coop::player_name(&settings);
+        let own = crate::play::my_hero(world, &me, false).and_then(|i| fight.combatants.iter().find(|c| c.id == format!("hero_{i}") && !c.dead));
+        let can_prepare = !matches!(*session, Session::Solo) && !can_act && !playing && !view.asking && own.is_some();
+        let prepared = view.prepared;
+        let prepared_name = prepared.and_then(|w| actor.strikes.get(w)).map(|s| tr(ru, &s.name).to_string());
         let pressed = std::cell::RefCell::new(&mut pressed);
         let push = |action: FightAction| pressed.borrow_mut().push(action);
         let (_, wants) = kit::sheet_at(
@@ -165,6 +172,20 @@ pub fn sheet(
                     hint(ui, t(T::FightPlaying));
                 } else if !can_act {
                     hint(ui, t(T::OthersTurn));
+                    if can_prepare && let Some(own) = own {
+                        ui.horizontal_wrapped(|row| {
+                            hint(row, t(T::PrepareHint));
+                            for (n, strike) in own.strikes.iter().enumerate().filter(|(_, s)| s.uses_left != Some(0)) {
+                                let mut b = button(tr(ru, &strike.name));
+                                if prepared == Some(n) {
+                                    b = b.primary();
+                                }
+                                if row.add(b).clicked() {
+                                    push(FightAction::Prepare(if prepared == Some(n) { None } else { Some(n) }));
+                                }
+                            }
+                        });
+                    }
                 } else {
                     match &view.mode {
                         // The keys are written on the buttons themselves.
@@ -225,6 +246,12 @@ pub fn sheet(
                 }
                 match &view.mode {
                     Mode::Menu => {
+                        // The blow prepared in another's turn, one press away.
+                        if let (Some(name), true) = (&prepared_name, actor.action_left) {
+                            if footer.add(button(format!("{} {name}", t(T::DoPrepared))).primary().key("Enter")).clicked() || footer.input(|i| i.key_pressed(Key::Enter)) {
+                                push(FightAction::Prepared);
+                            }
+                        }
                         if footer.add(button(t(T::Move)).key("1").enabled(actor.movement_left > 0, t(T::NoStepsLeft))).clicked() {
                             push(FightAction::Move);
                         }
