@@ -31,6 +31,8 @@ pub struct TurnDraft {
     pub fight: bool,
     /// The narration in the other languages read at the table, by language name.
     pub told_in: std::collections::BTreeMap<String, String>,
+    /// Pictures of things that had none, drawn along with the turn.
+    pub pictures: Vec<crate::bag::ThingPicture>,
 }
 
 /// Every effect in an answer, however deep: the turn's own, those of its choices, and those
@@ -308,6 +310,11 @@ impl World {
     pub fn take_turn(&mut self, said: &str, draft: &TurnDraft) -> (Turn, Vec<String>) {
         let mut notes = Vec::new();
         self.add_colors(&draft.palette);
+        // Things that had no picture, drawn along with the turn.
+        if !draft.pictures.is_empty() {
+            let drawn = self.draw_things(&draft.pictures);
+            notes.push(format!("{drawn} things drawn with the turn"));
+        }
         for sprite in &draft.sprites {
             let id = slug(&sprite.id);
             match sprite_from(&sprite.rows, self.palette.len()) {

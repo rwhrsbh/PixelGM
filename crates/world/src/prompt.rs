@@ -252,6 +252,16 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     // What only grows comes first and what changes every turn last: a provider that keeps a
     // cache of the prompt takes everything up to the first difference from the request
     // before, so the longer the part that stays the same, the less each turn costs.
+    // The colours behind the letters: whatever is drawn in a turn — a sprite, a tile, a
+    // thing given — is drawn with them.
+    let _ = write!(text, "\nPALETTE (0 is transparent):");
+    for (i, [r, g, b]) in world.palette.colors.iter().enumerate() {
+        let _ = write!(text, " {}=#{r:02x}{g:02x}{b:02x}", char_of(i as u8 + 1));
+    }
+    let free: String = (world.palette.len()..crate::model::PALETTE_MAX).map(|i| char_of(i as u8)).collect();
+    if !free.is_empty() {
+        let _ = write!(text, "\nFREE PALETTE LETTERS (give each a colour in \"palette\" to draw with it): {free}");
+    }
     let _ = write!(text, "\nSPRITES THAT EXIST:");
     for sprite_id in world.sprites.keys() {
         let _ = write!(text, " {sprite_id}");
@@ -593,10 +603,31 @@ pub const GO_ON: &str = "[this choice was taken and its outcome is told above; g
 pub fn turn(world: &World, said: &str, near: Option<&str>) -> String {
     let beside = near.map(|id| format!(" They are standing next to \"{id}\".")).unwrap_or_default();
     format!(
-        "{}\nThe party now does this: «{}»{beside}\n\nTell what happens. Offer two to four \"options\" for what the party might do next, each with its outcome already written, so that picking one needs no further question to you. Leave \"sprites\" empty unless an effect needs a sprite that does not exist. {}\n\nAnswer with this JSON object:\n{TURN_SHAPE}",
+        "{}\nThe party now does this: «{}»{beside}\n\nTell what happens. Offer two to four \"options\" for what the party might do next, each with its outcome already written, so that picking one needs no further question to you. Leave \"sprites\" empty unless an effect needs a sprite that does not exist. {}{}\n\nAnswer with this JSON object:\n{TURN_SHAPE}",
         situation(world, 0..),
         said.trim(),
-        whispers_note(world)
+        whispers_note(world),
+        undrawn_note(world)
+    )
+}
+
+/// How many things without a picture one turn is asked to draw besides its telling.
+pub const DRAWN_WITH_A_TURN: usize = 4;
+
+/// Things that came into the world without a picture, for the master to draw along with the
+/// turn instead of in a request of their own.
+fn undrawn_note(world: &World) -> String {
+    let things = world.undrawn_things(&[], DRAWN_WITH_A_TURN);
+    if things.is_empty() {
+        return String::new();
+    }
+    let list: Vec<String> = things
+        .iter()
+        .map(|t| format!("- \"{}\"{}{}: {} by {} cells", t.name, if t.kind.is_empty() { String::new() } else { format!(" ({})", t.kind) }, if t.description.trim().is_empty() { String::new() } else { format!(" — {}", t.description.trim()) }, t.size.0, t.size.1))
+        .collect();
+    format!(
+        "\n\nTHINGS WITHOUT A PICTURE YET: draw each as an icon for the bag in \"pictures\", besides the telling: {{\"name\": exactly as given, \"size\": [across, down] in cells, \"rows\": 16 rows of 16 palette characters for every cell of its size, '0' transparent, outlined in colour 1, the thing filling most of it, a long thing standing upright}}. You may correct a size that is plainly wrong.\n{}",
+        list.join("\n")
     )
 }
 
@@ -824,6 +855,7 @@ pub fn new_location_sized(world: &World, id: &str, from: &str, large: bool) -> S
     for (place_id, stub) in &world.stubs {
         let _ = writeln!(text, "- {place_id} (not drawn yet): {} — {}", stub.name, stub.description);
     }
+    let _ = write!(text, "{}", place_context(world, id, from));
     let (name, description) = world.stubs.get(id).map(|s| (s.name.as_str(), s.description.as_str())).unwrap_or((id, ""));
     let _ = write!(
         text,
@@ -832,6 +864,41 @@ pub fn new_location_sized(world: &World, id: &str, from: &str, large: bool) -> S
         world.locations.get(from).map_or("clear", |l| if l.weather.is_empty() { "clear" } else { l.weather.as_str() }),
         world.place_name(from)
     );
+    text
+}
+
+/// What a new place is drawn with besides the world's lists: how this world's pictures
+/// look (one creature and one tile, pixel for pixel, so new ones are drawn alike), which
+/// side of the last place the way here leaves from (the way back goes on the facing side),
+/// and the last words of the story (why the party comes).
+fn place_context(world: &World, id: &str, from: &str) -> String {
+    let mut text = String::new();
+    let creature = world.locations.get(from).into_iter().chain(world.locations.values()).flat_map(|l| l.creatures.iter()).find_map(|c| world.sprites.get(&c.sprite).filter(|s| s.rows.len() >= 8).map(|s| (c.sprite.clone(), s)));
+    let tile = world.tiles.iter().filter(|(_, t)| !t.walkable && t.sprite.rows.len() >= 8).max_by_key(|(_, t)| t.sprite.rows.iter().flat_map(|r| r.chars()).collect::<std::collections::BTreeSet<_>>().len());
+    if creature.is_some() || tile.is_some() {
+        let _ = write!(text, "\nTHE LOOK OF THIS WORLD — draw new pictures alike (detail, outline, shading):");
+        if let Some((name, sprite)) = creature {
+            let _ = write!(text, "\nThe creature \"{name}\":\n{}", sprite.rows.join("\n"));
+        }
+        if let Some((name, def)) = tile {
+            let _ = write!(text, "\nThe tile \"{name}\":\n{}", def.sprite.rows.join("\n"));
+        }
+    }
+    if let Some(exit) = world.locations.get(from).and_then(|l| l.exits.iter().find(|e| e.to == id).map(|e| (e, l.size()))) {
+        let ((e, (w, h)), name) = (exit, world.place_name(from));
+        let side = if e.x == 0 { "west" } else if e.x + 1 >= w { "east" } else if e.y == 0 { "north" } else if e.y + 1 >= h { "south" } else { "" };
+        let back = match side { "west" => "east", "east" => "west", "north" => "south", "south" => "north", _ => "" };
+        if back.is_empty() {
+            let _ = write!(text, "\n\nThe way here leaves {name} from inside it, at ({}, {}).", e.x, e.y);
+        } else {
+            let _ = write!(text, "\n\nThe way here leaves {name} on its {side} side: the way back is on the {back} side of this place.");
+        }
+    }
+    let recent: Vec<&str> = world.story.log.iter().rev().take(4).map(|l| l.text.as_str()).collect();
+    if !recent.is_empty() {
+        let _ = write!(text, "\nTHE LAST OF THE STORY:\n{}", recent.into_iter().rev().collect::<Vec<_>>().join("\n"));
+    }
+    text.push('\n');
     text
 }
 

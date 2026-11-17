@@ -1124,7 +1124,7 @@ pub struct Undrawn {
 }
 
 /// The master's picture of a thing, and the cells it says the thing takes.
-#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct ThingPicture {
     pub name: String,
@@ -1161,7 +1161,9 @@ impl World {
             bag.inventory.iter().chain(bag.held.iter()).chain(bag.worn_as.iter()).for_each(&mut each);
         }
         self.story.inventory.iter().for_each(&mut each);
-        for place in self.locations.values() {
+        // The place the party is in before the others: what is in front of it is drawn first.
+        let here = self.locations.get(&self.current);
+        for place in here.into_iter().chain(self.locations.iter().filter(|(id, _)| **id != self.current).map(|(_, l)| l)) {
             place.items.iter().map(|l| &l.item).for_each(&mut each);
             place.props.iter().filter_map(|p| p.chest.as_ref()).flat_map(|c| c.items.iter()).for_each(&mut each);
             place.creatures.iter().flat_map(|c| c.stock.iter().chain(c.wares.iter())).for_each(&mut each);

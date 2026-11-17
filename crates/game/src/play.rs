@@ -390,6 +390,9 @@ struct DarkLayer;
 /// alone after it could not.
 const THINGS_AT_ONCE: usize = 6;
 const THINGS_REST: f32 = 300.0;
+/// Things are drawn along with the turns; only when nobody has asked the master anything for
+/// this long are they asked for on their own.
+const THINGS_IDLE: f32 = 600.0;
 
 /// Work the master does without being asked: drawing places ahead, events, chapters.
 #[derive(Resource, Default)]
@@ -2337,9 +2340,10 @@ fn background_work(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, g
     background.chapter_rest = (background.chapter_rest - dt).max(0.0);
     background.feats_rest = (background.feats_rest - dt).max(0.0);
     background.things_rest = (background.things_rest - dt).max(0.0);
-    // Everything that comes into the world without the master's picture is drawn by the
-    // master, a handful at a time, whatever the screen is doing.
-    if !background.things_asked && background.things_rest == 0.0 {
+    // Everything that comes into the world without the master's picture is drawn with the
+    // next turn; a table that has not asked anything for a long while has them drawn on
+    // their own, a handful at a time.
+    if !background.things_asked && background.things_rest == 0.0 && background.quiet >= THINGS_IDLE {
         let things = game.world.undrawn_things(&background.things_tried, THINGS_AT_ONCE);
         if !things.is_empty() {
             background.things_asked = true;
