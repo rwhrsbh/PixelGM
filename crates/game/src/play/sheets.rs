@@ -105,7 +105,8 @@ pub fn overlay(
         _ => 0.0,
     };
     // The map is seen above the panel: the camera is told how much of the screen it takes.
-    if slot.0 != panel_height {
+    // In a fight the fight's sheet says how tall it is.
+    if slot.0 != panel_height && *phase != Phase::Fighting {
         slot.0 = panel_height;
     }
     let story_rect = Rect::from_min_max(Pos2::new(screen.left(), screen.bottom() - HUD - panel_height), Pos2::new(screen.right() - PARTY, screen.bottom() - HUD));

@@ -415,6 +415,15 @@ texts! {
     Say: "Отправить", "Send";
     WritingHint: "Enter — отправить мастеру. Это тратит один ход.", "Enter sends it to the game master. This spends one turn.";
     Onward: "Дальше", "Go on";
+    ActionSpent: "Действие на этот ход уже потрачено.", "This turn's action is already spent.";
+    NoStepsLeft: "Шагов на этот ход не осталось.", "No steps are left this turn.";
+    OthersTurn: "Ходит другой. Ждём своей очереди.", "Someone else acts. Wait for your turn.";
+    FightPlaying: "Ход разыгрывается…", "The turn is being played out…";
+    SpellsAbout: "Заклинание со звёздочкой судит мастер.", "A spell with a star is judged by the master.";
+    ItemsAbout: "Выпить или съесть — тратит действие.", "Drinking or eating spends the action.";
+    DodgeWhy: "Атаки по тебе — с помехой до следующего хода.", "Attacks on you have disadvantage until your next turn.";
+    DashWhy: "Вдвое больше шагов на этот ход.", "Twice the steps this turn.";
+    DisengageWhy: "Уйти, не получив удара вслед.", "Walk away without a parting blow.";
     RefusedTitle: "Мастер не ответил", "The master did not answer";
     Journal: "Журнал", "Journal";
     Carried: "С собой:", "Carrying:";

@@ -2,23 +2,20 @@
 //! back one event at a time. The rules themselves are in the `rules` crate; nothing here
 //! decides an outcome.
 
-use crate::art::Art;
 use crate::audio::Sfx;
 use crate::fx::{Fx, cell_centre};
 use crate::coop::{Down, Intent, Session, my_turn};
 use crate::gm::Gm;
 use crate::i18n::{Lang, T};
 use crate::master::{Ask, Master};
-use crate::menu::{Nav, Screen, spawn_panel};
+use crate::menu::Screen;
 use crate::play::{Game, HUD_HEIGHT, Phase, Redraw, depth, on_screen};
 use crate::store::{Settings, Store};
 use crate::theme::*;
-use crate::widgets::{Activate, BUTTON_HEIGHT, EnterPresses, backing, button, text_button};
-use bevy::input_focus::AutoFocus;
 use bevy::prelude::*;
-use bevy::text::{EditableText, TextCursorStyle};
-use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use bevy::sprite::Anchor;
+
+mod sheet;
 use bevy::window::PrimaryWindow;
 use rules::combat::{Cell, Strike};
 use rules::{Encounter, Event, Outcome, Side, srd, tr};
@@ -63,16 +60,10 @@ pub struct FightView {
 }
 
 #[derive(Component)]
-struct StuntInput;
-
-#[derive(Component)]
 struct Marker;
 
-#[derive(Component)]
-struct FightSheet;
-
-#[derive(Component, Clone, PartialEq)]
-enum FightAction {
+#[derive(Clone, PartialEq, Debug)]
+pub enum FightAction {
     Move,
     Weapon(usize),
     Spells,
@@ -92,6 +83,8 @@ enum FightAction {
     SendStunt,
     /// A spell the rules cannot carry out: the master judges it.
     Ritual(String, u8),
+    /// Back to an earlier save after a defeat.
+    Load,
 }
 
 const EVENT_SECONDS: f32 = 0.5;
@@ -591,223 +584,10 @@ fn markers(mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res
     }
 }
 
-/// Everything the sheet shows; when it changes the sheet is rebuilt.
-#[derive(Clone, PartialEq, Default)]
-struct Shown {
-    lines: Vec<String>,
-    mode: Mode,
-    actor: String,
-    can_act: bool,
-    action_left: bool,
-    movement_left: u32,
-    over: Option<FightSummary>,
-    lang: Option<Lang>,
-    asking: bool,
-    /// Uses left of the acting hero's feats, so a spent one leaves the menu.
-    uses: Vec<Option<u8>>,
-    /// How tall the sheet is, in its slot under the map.
-    height: f32,
-    /// Who acts when, from whoever acts now: name, side, hit points and the most they can be.
-    strip: Vec<(String, bool, i32, i32)>,
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn sheet(mut frame: ResMut<crate::view::View>, mut commands: Commands, phase: Res<Phase>, game: Res<Game>, view: Res<FightView>, lang: Res<Lang>, art: Res<Art>, fonts: Res<Fonts>, session: Res<Session>, settings: Res<Settings>, mut shown: Local<Option<Shown>>, old: Query<Entity, With<FightSheet>>) {
-    let fighting = *phase == Phase::Fighting;
-    let fight = game.world.fight.as_ref();
-    let wanted = fighting.then(|| Shown {
-        lines: view.lines.clone(),
-        mode: view.mode.clone(),
-        actor: fight.map(|f| f.actor().id.clone()).unwrap_or_default(),
-        can_act: fight.is_some_and(|f| f.actor().side == Side::Party) && view.queue.is_empty() && view.over.is_none() && my_turn(&game.world, &session, &settings),
-        action_left: fight.is_some_and(|f| f.actor().action_left),
-        movement_left: fight.map_or(0, |f| f.actor().movement_left),
-        over: view.over.clone(),
-        lang: Some(*lang),
-        asking: view.asking,
-        uses: fight.map(|f| f.actor().strikes.iter().map(|s| s.uses_left).collect()).unwrap_or_default(),
-        height: crate::view::HEIGHTS[settings.narration.min(2) as usize],
-        strip: fight
-            .map(|f| (0..f.order.len()).map(|step| &f.combatants[f.order[(f.turn + step) % f.order.len()]]).filter(|c| !c.dead).map(|c| (c.name.clone(), c.side == Side::Party, c.hp.max(0), c.max_hp)).collect())
-            .unwrap_or_default(),
-    });
-    let _ = &mut frame;
-    if *shown == wanted && (wanted.is_none() || !old.is_empty()) {
-        return;
-    }
-    for entity in &old {
-        commands.entity(entity).despawn();
-    }
-    *shown = wanted.clone();
-    let Some(wanted) = wanted else { return };
-    let ink = TextColor(color(INK));
-    let faded = TextColor(color(FADED));
-    let ru = *lang == Lang::Ru;
-    // Under the map, beside the party: the fight is never covered.
-    let root = Node { position_type: PositionType::Absolute, left: px(0), bottom: px(HUD_HEIGHT), width: px(crate::screen::UI.x as f32 - crate::view::COLUMN), max_height: px(wanted.height), ..default() };
-    // Who acts when, along the top of the map: the one acting first, then the rest in turn.
-    if wanted.over.is_none() && !wanted.strip.is_empty() {
-        let width = crate::screen::UI.x as f32 - crate::view::COLUMN;
-        let strip = Node { position_type: PositionType::Absolute, left: px(0), top: px(16), width: px(width), justify_content: JustifyContent::Center, column_gap: px(2), ..default() };
-        commands.spawn((FightSheet, DespawnOnExit(Screen::Play), strip, GlobalZIndex(7), Pickable::IGNORE)).with_children(|row| {
-            for (n, (name, ours, hp, most)) in wanted.strip.iter().take(10).enumerate() {
-                let edge = if n == 0 { BRASS_LIGHT } else if *ours { MOSS } else { WAX };
-                row.spawn((Node { width: px(38), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, padding: UiRect::all(px(1)), border: UiRect::all(px(1)), row_gap: px(1), ..default() }, BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.82)), BorderColor::all(color(edge)), Pickable::IGNORE))
-                    .with_children(|cell| {
-                        let short: String = name.chars().take(6).collect();
-                        cell.spawn((Text::new(short), fonts.body(), TextColor(color(if n == 0 { BRASS_LIGHT } else { PARCHMENT })), TextLayout::no_wrap(), Pickable::IGNORE));
-                        if game.world.table.difficulty == world::Difficulty::Casual || *ours {
-                            cell.spawn((Text::new(format!("{hp}/{most}")), fonts.body(), TextColor(color(TALLOW)), TextLayout::no_wrap(), Pickable::IGNORE));
-                        }
-                        let share = (*hp as f32 / (*most).max(1) as f32).clamp(0.0, 1.0);
-                        let bar = if *ours { [0x5c, 0xb0, 0x4a, 0xff] } else { WAX };
-                        cell.spawn((Node { width: px(32), height: px(3), ..default() }, BackgroundColor(color(INK)), Pickable::IGNORE)).with_children(|back| {
-                            back.spawn((Node { width: px((32.0 * share).round()), height: px(3), ..default() }, BackgroundColor(color(bar)), Pickable::IGNORE));
-                        });
-                    });
-            }
-        });
-    }
-    commands.spawn((FightSheet, crate::view::Slot, DespawnOnExit(Screen::Play), root, GlobalZIndex(10))).with_children(|root| {
-        spawn_panel(root, &art, Node { width: percent(100), flex_direction: FlexDirection::Column, row_gap: px(2), overflow: Overflow::clip(), ..default() }, |sheet| {
-            for line in &wanted.lines {
-                sheet.spawn((Text::new(line.clone()), fonts.body(), ink));
-            }
-            if let Some(summary) = &wanted.over {
-                sheet.spawn((Text::default(), if summary.won { T::Victory } else { T::Defeat }, fonts.title(1), ink));
-                if summary.won {
-                    sheet.spawn((Text::new(format!("{} {}", T::XpEach.text(*lang), summary.xp_each)), fonts.body(), ink));
-                    for (name, up) in &summary.level_ups {
-                        sheet.spawn((Text::new(format!("{name}: {} {}! +{} {}", T::Level.text(*lang), up.level, up.hp_gained, T::HitPoints.text(*lang))), fonts.body(), TextColor(color(MOSS))));
-                    }
-                    sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Onward, true, (FightAction::Onward, EnterPresses)));
-                } else if game.world.table.difficulty == world::Difficulty::Casual {
-                    // Nobody is lost on the gentlest setting: the party comes to and goes on.
-                    sheet.spawn((Text::default(), T::DefeatCasual, fonts.body(), ink));
-                    sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Onward, true, (FightAction::Onward, EnterPresses)));
-                } else {
-                    sheet.spawn((Text::default(), T::DefeatAsk, fonts.body(), ink));
-                    sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                        // What becomes of a beaten party is the host's call.
-                        if session.is_client() {
-                            button(line, &art, &fonts, T::Onward, true, FightAction::Onward);
-                        } else {
-                            button(line, &art, &fonts, T::MasterDecides, true, FightAction::MasterDecides);
-                            // On the hardest setting there is no going back to an earlier save.
-                            if game.world.table.difficulty != world::Difficulty::Hardcore {
-                                button(line, &art, &fonts, T::LoadGame, true, Nav::Go(Screen::Load));
-                            }
-                        }
-                    });
-                }
-                return;
-            }
-            let Some(fight) = game.world.fight.as_ref() else { return };
-            let actor = fight.actor();
-            sheet.spawn((
-                Text::new(format!("{} {} · {} {}/{} · {} {}", T::FightTurn.text(*lang), actor.name, T::HitPoints.text(*lang), actor.hp.max(0), actor.max_hp, T::Movement.text(*lang), actor.movement_left)),
-                fonts.body(),
-                TextColor(color(WAX_DARK)),
-            ));
-            if wanted.asking {
-                sheet.spawn((Text::default(), T::TestRunning, fonts.body(), ink));
-                return;
-            }
-            if !wanted.can_act {
-                return;
-            }
-            match &wanted.mode {
-                Mode::Menu => {
-                    sheet.spawn(Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
-                        button(line, &art, &fonts, T::Move, actor.movement_left > 0, FightAction::Move);
-                        for (n, strike) in actor.strikes.iter().enumerate() {
-                            // A feat that is used up is off the menu until the next long rest.
-                            if actor.action_left && strike.uses_left != Some(0) {
-                                let name = tr(ru, &strike.name).to_string();
-                                let label = match strike.uses_left {
-                                    Some(left) => format!("{name} ({left})"),
-                                    None => name,
-                                };
-                                text_button(line, &art, &fonts, label, FightAction::Weapon(n));
-                            }
-                        }
-                        if actor.action_left && !(castable(&game.world, fight).is_empty() && rituals(&game.world, fight).is_empty()) {
-                            button(line, &art, &fonts, T::Spells, true, FightAction::Spells);
-                        }
-                        if !usable(&game.world, fight).is_empty() {
-                            button(line, &art, &fonts, T::FightItems, actor.action_left, FightAction::Items);
-                        }
-                        button(line, &art, &fonts, T::OwnAction, actor.action_left, FightAction::Stunt);
-                        button(line, &art, &fonts, T::Dodge, actor.action_left, FightAction::Dodge);
-                        button(line, &art, &fonts, T::Dash, actor.action_left, FightAction::Dash);
-                        button(line, &art, &fonts, T::Disengage, actor.action_left, FightAction::Disengage);
-                        button(line, &art, &fonts, T::EndTurn, true, FightAction::EndTurn);
-                    });
-                    sheet.spawn((Text::default(), T::FightKeys, fonts.body(), faded));
-                }
-                Mode::Spells => {
-                    sheet.spawn(Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
-                        for (index, slot) in castable(&game.world, fight) {
-                            let name = srd().spells.get(&index).map_or(index.as_str(), |s| tr(ru, &s.name)).to_string();
-                            let label = if slot == 0 { name } else { format!("{name} ({slot})") };
-                            text_button(line, &art, &fonts, label, FightAction::Spell(index, slot));
-                        }
-                        for (index, slot) in rituals(&game.world, fight) {
-                            let name = srd().spells.get(&index).map_or(index.as_str(), |s| tr(ru, &s.name)).to_string();
-                            let label = if slot == 0 { format!("{name} *") } else { format!("{name} ({slot}) *") };
-                            text_button(line, &art, &fonts, label, FightAction::Ritual(index, slot));
-                        }
-                        button(line, &art, &fonts, T::Cancel, true, FightAction::Cancel);
-                    });
-                }
-                Mode::Items => {
-                    sheet.spawn(Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
-                        for (i, name, heal, count) in usable(&game.world, fight) {
-                            let many = if count > 1 { format!(" ×{count}") } else { String::new() };
-                            text_button(line, &art, &fonts, format!("{name}{many} (+{heal})"), FightAction::Item(i));
-                        }
-                        button(line, &art, &fonts, T::Cancel, true, FightAction::Cancel);
-                    });
-                }
-                Mode::Moving => {
-                    sheet.spawn((Text::default(), T::MoveHint, fonts.body(), faded));
-                }
-                Mode::Writing => {
-                    sheet.spawn((Text::default(), T::StuntHint, fonts.body(), faded));
-                    sheet.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                        line.spawn(Node { flex_grow: 1.0, height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }).with_children(|field| {
-                            field.spawn(backing(art.field.clone(), 4.0));
-                            field.spawn((
-                                StuntInput,
-                                AutoFocus,
-                                AutoDirectionalNavigation::default(),
-                                Node { width: percent(100), ..default() },
-                                EditableText { allow_newlines: false, max_characters: Some(300), ..default() },
-                                TextLayout::no_wrap(),
-                                fonts.body(),
-                                ink,
-                                TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
-                            ));
-                        });
-                        button(line, &art, &fonts, T::Say, true, FightAction::SendStunt);
-                        button(line, &art, &fonts, T::Cancel, true, FightAction::Cancel);
-                    });
-                }
-                Mode::Aiming(aim) => {
-                    let none = strike_of(&game.world, fight, aim).is_none_or(|s| targets(fight, &s).is_empty());
-                    sheet.spawn((Text::default(), if none { T::NoTargets } else { T::AimHint }, fonts.body(), faded));
-                    sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Cancel, true, FightAction::Cancel));
-                }
-            }
-        });
-    });
-}
-
 #[allow(clippy::too_many_arguments)]
 fn on_activate(
-    used: On<Activate>,
-    buttons: Query<&FightAction>,
+    used: On<sheet::FightPress>,
+    mut next: ResMut<NextState<Screen>>,
     game: Option<ResMut<Game>>,
     mut view: ResMut<FightView>,
     mut phase: ResMut<Phase>,
@@ -818,9 +598,9 @@ fn on_activate(
     master: Res<Master>,
     lang: Res<Lang>,
     session: Res<Session>,
-    typed: Query<&EditableText, With<StuntInput>>,
 ) {
-    let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
+    let action = &used.action;
+    let Some(mut game) = game else { return };
     let world = &mut game.world;
     match action {
         FightAction::Stunt => {
@@ -828,7 +608,7 @@ fn on_activate(
             return;
         }
         FightAction::SendStunt => {
-            let said = typed.single().map(|t| t.value().to_string()).unwrap_or_default().trim().to_string();
+            let said = used.typed.trim().to_string();
             if !said.is_empty() && world.fight.is_some() {
                 ask_stunt(said, None, world, &mut view, &session, &gm, &store, &settings, &master);
             }
@@ -843,6 +623,10 @@ fn on_activate(
         _ => {}
     }
     match action {
+        FightAction::Load => {
+            next.set(Screen::Load);
+            return;
+        }
         FightAction::Onward => {
             *view = FightView::default();
             *phase = Phase::Walking;
@@ -898,32 +682,9 @@ fn on_activate(
         FightAction::Dash => FightIntent::Dash,
         FightAction::Disengage => FightIntent::Disengage,
         FightAction::EndTurn => FightIntent::EndTurn,
-        FightAction::Onward | FightAction::MasterDecides | FightAction::Stunt | FightAction::SendStunt | FightAction::Ritual(..) => return,
+        FightAction::Onward | FightAction::MasterDecides | FightAction::Load | FightAction::Stunt | FightAction::SendStunt | FightAction::Ritual(..) => return,
     };
     act(intent, world, &mut view, &session, &mut redraw);
-}
-
-/// Enter in the field sends what the hero tries.
-#[allow(clippy::too_many_arguments)]
-fn submit_stunt(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    typed: Query<&EditableText, With<StuntInput>>,
-    game: Option<Res<Game>>,
-    mut view: ResMut<FightView>,
-    session: Res<Session>,
-    gm: Res<Gm>,
-    store: Res<Store>,
-    settings: Res<Settings>,
-    master: Res<Master>,
-) {
-    if view.mode != Mode::Writing || !keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
-        return;
-    }
-    let (Some(game), Ok(typed)) = (game, typed.single()) else { return };
-    let said = typed.value().to_string().trim().to_string();
-    if !said.is_empty() && game.world.fight.is_some() {
-        ask_stunt(said, None, &game.world, &mut view, &session, &gm, &store, &settings, &master);
-    }
 }
 
 /// A fight that starts gets a clean view. It is the fight that counts, not the screen: a
@@ -941,9 +702,11 @@ pub struct FightPlugin;
 impl Plugin for FightPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FightView>()
-            .add_systems(Update, (reset, submit_stunt, input, drive, drive_elsewhere, markers, sheet).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (reset, input, drive, drive_elsewhere, markers).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             // A fight left behind (a save loaded after a defeat) leaves nothing on the next screen.
             .add_systems(OnExit(Screen::Play), |mut view: ResMut<FightView>| *view = FightView::default())
+            .init_resource::<sheet::StuntField>()
+            .add_systems(bevy_egui::EguiPrimaryContextPass, sheet::sheet.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate);
     }
 }
