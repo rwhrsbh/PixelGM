@@ -54,6 +54,17 @@ impl Pixels {
         }
     }
 
+    /// The same picture turned a quarter round, clockwise: a thing laid on its side.
+    pub fn turned(&self) -> Pixels {
+        let mut out = Pixels::new(self.h, self.w, CLEAR);
+        for y in 0..self.h as i32 {
+            for x in 0..self.w as i32 {
+                out.set(self.h as i32 - 1 - y, x, self.get(x, y));
+            }
+        }
+        out
+    }
+
     /// The same picture mirrored left to right.
     pub fn flipped(&self) -> Pixels {
         let mut out = Pixels::new(self.w, self.h, CLEAR);

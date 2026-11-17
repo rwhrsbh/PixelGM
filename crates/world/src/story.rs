@@ -414,6 +414,9 @@ pub struct Item {
     /// Cells across and down, when the master gave them.
     #[serde(default)]
     pub size_cells: Option<(u8, u8)>,
+    /// Laid on its side in the bag: its cells across and down are swapped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turned: bool,
     /// The master's own picture of it, rows of palette indices.
     #[serde(default)]
     pub rows: Vec<String>,
@@ -607,6 +610,7 @@ impl ThingDraft {
             at: None,
             kind: traits.kind.trim().to_lowercase(),
             size_cells: traits.size(),
+            turned: false,
             rows: traits.rows.clone(),
             heal: traits.heal.trim().to_string(),
             damage: traits.damage.trim().to_string(),

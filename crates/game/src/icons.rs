@@ -58,10 +58,73 @@ fn disc(p: &mut Pixels, cx: f32, cy: f32, r: f32, c: impl Fn(f32, f32) -> Rgba) 
     }
 }
 
+/// The food every hero sets out with: a loaf, and a bundle of sausage and cheese in cloth
+/// tied with twine. Drawn by hand, sixteen pixels across and thirty-two down.
+const RATION: [&str; 32] = [
+    "................",
+    "................",
+    "....bbbbbbbb....",
+    "..bblllllllllb..",
+    ".blllllwwlllllb.",
+    ".bllcllwlllcllb.",
+    "bblllcllllllcllb",
+    "bbllllcllllllclb",
+    "bbbllllcllllllbb",
+    ".bbblllllllllbbc",
+    ".cbbbbbbbbbbbbc.",
+    "..ccbbbbbbbbcc..",
+    "....cccccccc....",
+    ".....ss.........",
+    "....srs.....yy..",
+    "...srrs....yyyy.",
+    "...srfs...yyhyyo",
+    "..nnnnnnnnnnnnn.",
+    ".nnnnnnnnnnnnnnm",
+    ".nnnmnnnnnnnmnnm",
+    ".nnnnmnnnnnmnnnm",
+    ".tttttttttttttt.",
+    ".nnnnnmtnnmnnnnm",
+    ".nnnnnntnnnnnnnm",
+    ".nnnnnttnnnnnnnm",
+    ".nnnnntntnnnnnnm",
+    ".nnnnnnnnnnnnnnm",
+    ".mnnnnnnnnnnnnmm",
+    ".mmnnnnnnnnnnmm.",
+    "..mmmmmmmmmmmm..",
+    "................",
+    "................",
+];
+
+fn ration() -> Pixels {
+    let legend = [
+        ('c', [150, 92, 40, 255]),
+        ('b', [196, 132, 60, 255]),
+        ('l', [228, 176, 96, 255]),
+        ('w', [248, 226, 176, 255]),
+        ('n', [214, 200, 160, 255]),
+        ('m', [164, 148, 112, 255]),
+        ('t', [120, 80, 40, 255]),
+        ('s', [150, 50, 40, 255]),
+        ('r', [196, 84, 62, 255]),
+        ('f', [240, 204, 192, 255]),
+        ('y', [238, 198, 82, 255]),
+        ('o', [198, 148, 52, 255]),
+        ('h', [176, 126, 40, 255]),
+    ];
+    Pixels::from_rows(&RATION, &legend)
+}
+
 /// The picture of a thing, as large as the cells it takes.
 pub fn icon(item: &Item) -> Pixels {
     let (w, h) = item.size();
     let mut p = Pixels::new(w as u32 * CELL as u32, h as u32 * CELL as u32, CLEAR);
+    // The ration every hero sets out with has a picture drawn by hand.
+    if world::bag::is_ration(&item.name) {
+        let art = ration();
+        p.stamp(&art, (p.w as i32 - art.w as i32) / 2, (p.h as i32 - art.h as i32) / 2, false);
+        outline(&mut p, INK);
+        return p;
+    }
     let (pw, ph) = (p.w as i32, p.h as i32);
     match item.gear.as_deref() {
         Some(index) => match gear_kind(index) {

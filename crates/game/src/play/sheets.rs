@@ -156,6 +156,10 @@ pub fn overlay(
                 if !turn.narration.starts_with(fields.telling.as_str()) || fields.telling.is_empty() {
                     fields.letters = 0.0;
                 }
+                // Another player's telling has been waiting folded: it is read whole at once.
+                if turn.theirs {
+                    fields.letters = f32::MAX;
+                }
                 fields.telling = turn.narration.clone();
             }
             fields.letters += crate::play::LETTERS_PER_SECOND * time.delta_secs();

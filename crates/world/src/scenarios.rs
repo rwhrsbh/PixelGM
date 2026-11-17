@@ -353,3 +353,44 @@ fn the_master_is_told_where_the_other_heroes_stand() {
     let asked = crate::prompt::turn(&w, "Brak: I want a bridge", None);
     assert!(asked.contains("- the hero Bob's hero at (4, 8): beside the party"), "{asked}");
 }
+
+#[test]
+fn a_long_thing_is_laid_on_its_side_where_it_fits_and_stood_up_again() {
+    let mut w = three_at_the_lake();
+    let spear: crate::Item = serde_json::from_value(serde_json::json!({ "name": "Spear", "description": "", "count": 1, "size_cells": [1, 4] })).unwrap();
+    w.story.bags[0].receive(spear);
+    let at = |w: &World| w.story.bags[0].inventory.iter().position(|i| i.name == "Spear").unwrap();
+    let i = at(&w);
+    assert_eq!(w.story.bags[0].inventory[i].size(), (1, 4));
+    assert!(w.turn_item(0, i));
+    let spear = &w.story.bags[0].inventory[i];
+    assert_eq!((spear.size(), spear.upright_size()), ((4, 1), (1, 4)), "on its side it takes four across");
+    let at_cell = spear.at.expect("it still has a place");
+    assert!(w.story.bags[0].fits((4, 1), at_cell, Some(i)), "and it fits where it lies");
+    assert!(w.turn_item(0, i));
+    assert_eq!(w.story.bags[0].inventory[i].size(), (1, 4), "stood up again");
+    // A square thing is the same either way.
+    w.story.bags[0].receive(serde_json::from_value(serde_json::json!({ "name": "Box", "description": "", "count": 1, "size_cells": [2, 2] })).unwrap());
+    let b = w.story.bags[0].inventory.iter().position(|i| i.name == "Box").unwrap();
+    assert!(!w.turn_item(0, b));
+    // Saved and loaded, it lies as it was laid.
+    assert!(w.turn_item(0, i));
+    let back: World = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+    assert!(back.story.bags[0].inventory.iter().find(|i| i.name == "Spear").unwrap().turned);
+}
+
+#[test]
+fn what_the_master_made_without_a_picture_is_drawn_by_it_and_what_the_game_gives_is_not() {
+    let mut w = three_at_the_lake();
+    w.outfit(1);
+    w.story.bags[1].receive(serde_json::from_value(serde_json::json!({ "name": "Old Map", "description": "Torn.", "count": 1 })).unwrap());
+    w.story.bags[1].stow("longsword");
+    let names: Vec<String> = w.undrawn_things(&[], 6).into_iter().map(|t| t.name).collect();
+    assert!(names.contains(&"Old Map".to_string()) && names.contains(&"Logs".to_string()), "{names:?}");
+    assert!(!names.iter().any(|n| crate::bag::is_ration(n) || n.to_lowercase().contains("sword")), "the game's own are not asked for: {names:?}");
+    let drawn: crate::bag::ThingsDraft = serde_json::from_str(&fake::things(&[("Old Map".into(), (2, 2))])).unwrap();
+    assert_eq!(w.draw_things(&drawn.things), 1);
+    let map = w.story.bags[1].inventory.iter().find(|i| i.name == "Old Map").unwrap();
+    assert!(!map.rows.is_empty() && map.size() == (2, 2) && map.at.is_some(), "drawn, at the master's size, with a place in the bag");
+    assert!(!w.undrawn_things(&[], 6).iter().any(|t| t.name == "Old Map"));
+}

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 12;
+pub const PROTOCOL: u32 = 13;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -78,6 +78,8 @@ pub enum Intent {
     /// One of a thing in the bag thrown on the ground of a cell.
     /// Known by its name too: the master may have taken something from the bag meanwhile.
     Drop { index: usize, cell: (usize, usize), name: String },
+    /// A thing of the bag laid on its side or stood up, known by its name too.
+    Turn { index: usize, name: String },
     /// What lies on the ground picked up: the n-th as this guest saw it, known by its name
     /// and cell, since another may have picked up something before it meanwhile.
     PickUp { n: usize, name: String, cell: (usize, usize) },

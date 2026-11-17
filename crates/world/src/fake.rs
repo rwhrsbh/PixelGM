@@ -299,6 +299,18 @@ pub fn stunt(said: &str) -> String {
 }
 
 /// The answer to "draw this hero": a figure unlike the stock one.
+/// Pictures for things: a plain bar the size of each.
+pub fn things(names: &[(String, (u8, u8))]) -> String {
+    let things: Vec<Value> = names
+        .iter()
+        .map(|(name, (w, h))| {
+            let rows: Vec<String> = (0..16 * *h as usize).map(|y| (0..16 * *w as usize).map(|x| if x == 0 || y == 0 { '1' } else { '3' }).collect()).collect();
+            json!({ "name": name, "size": [w, h], "rows": rows })
+        })
+        .collect();
+    json!({ "things": things }).to_string()
+}
+
 pub fn portrait() -> String {
     json!({ "rows": [
         "0000011111000000", "0000199999100000", "0000199999100000", "0000122222100000",

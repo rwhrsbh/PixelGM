@@ -160,7 +160,14 @@ const WORDS_1X3: [&str; 6] = ["sword", "club", "меч", "дубин", "посо
 
 impl Item {
     /// How many cells across and down the thing takes.
+    /// The cells it takes in the bag as it lies: on its side, across and down are swapped.
     pub fn size(&self) -> (u8, u8) {
+        let (w, h) = self.upright_size();
+        if self.turned { (h, w) } else { (w, h) }
+    }
+
+    /// The cells it takes standing up, as it was drawn.
+    pub fn upright_size(&self) -> (u8, u8) {
         if let Some(size) = self.size_cells {
             return size;
         }
@@ -350,6 +357,12 @@ impl World {
             bag.gold += 15;
             bag.receive(ration);
         }
+    }
+
+    /// What the game itself gives and draws (the rations every hero sets out with, coins,
+    /// the gear of the rules), as against what the master makes and must draw.
+    pub fn is_standard(&self, item: &Item) -> bool {
+        item.gear.is_some() || is_ration(&item.name) || item.kind == "gold" || item.name == self.gold_name()
     }
 
     fn ration_name(&self) -> &'static str {
@@ -652,6 +665,27 @@ impl World {
             }
         }
         done
+    }
+
+    /// Lays a thing of a hero's bag on its side, or stands it up again, as in the old
+    /// games' grids. Where it lies, if it still fits there; otherwise wherever it fits, or
+    /// beside the bag. `false` for a thing that is the same either way.
+    pub fn turn_item(&mut self, hero: usize, i: usize) -> bool {
+        self.ensure_bags();
+        let Some(bag) = self.story.bags.get_mut(hero) else { return false };
+        let Some(item) = bag.inventory.get_mut(i) else { return false };
+        let (w, h) = item.upright_size();
+        if w == h {
+            return false;
+        }
+        item.turned = !item.turned;
+        let size = item.size();
+        let at = item.at;
+        if at.is_none_or(|at| !bag.fits(size, at, Some(i))) {
+            bag.inventory[i].at = None;
+            bag.inventory[i].at = bag.free_spot(size, Some(i));
+        }
+        true
     }
 
     /// Puts a thing of a hero's bag on a quick slot, by its name; an empty name clears it.
@@ -1071,5 +1105,120 @@ mod tests {
         w.tidy_gear();
         assert_eq!(w.party[0].weapons.len(), 2);
         assert_eq!(w.story.bags[0].inventory.iter().filter(|i| i.gear.is_some()).count(), 2);
+    }
+}
+
+/// Whether a thing is the ration every hero sets out with, in either language.
+pub fn is_ration(name: &str) -> bool {
+    matches!(name.trim().to_lowercase().as_str(), "паёк" | "паек" | "ration" | "rations")
+}
+
+/// A thing the master has not drawn yet, as it is asked to draw it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Undrawn {
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+    /// Cells across and down as it stands: the picture is drawn to fill them.
+    pub size: (u8, u8),
+}
+
+/// The master's picture of a thing, and the cells it says the thing takes.
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct ThingPicture {
+    pub name: String,
+    pub size: serde_json::Value,
+    pub rows: Vec<String>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct ThingsDraft {
+    pub things: Vec<ThingPicture>,
+}
+
+impl World {
+    /// Every thing in the world that can be held: in bags and hands, on the ground, in
+    /// chests, in shops and in companions' packs.
+    fn every_item_mut(&mut self, mut each: impl FnMut(&mut Item)) {
+        for bag in &mut self.story.bags {
+            bag.inventory.iter_mut().chain(bag.held.iter_mut()).chain(bag.worn_as.iter_mut()).for_each(&mut each);
+        }
+        self.story.inventory.iter_mut().for_each(&mut each);
+        for place in self.locations.values_mut() {
+            place.items.iter_mut().map(|l| &mut l.item).for_each(&mut each);
+            place.props.iter_mut().filter_map(|p| p.chest.as_mut()).flat_map(|c| c.items.iter_mut()).for_each(&mut each);
+            place.creatures.iter_mut().flat_map(|c| c.stock.iter_mut().chain(c.wares.iter_mut())).for_each(&mut each);
+        }
+        for companion in &mut self.companions {
+            companion.weapon.iter_mut().chain(companion.armor.iter_mut()).chain(companion.pack.iter_mut()).for_each(&mut each);
+        }
+    }
+
+    fn every_item(&self, mut each: impl FnMut(&Item)) {
+        for bag in &self.story.bags {
+            bag.inventory.iter().chain(bag.held.iter()).chain(bag.worn_as.iter()).for_each(&mut each);
+        }
+        self.story.inventory.iter().for_each(&mut each);
+        for place in self.locations.values() {
+            place.items.iter().map(|l| &l.item).for_each(&mut each);
+            place.props.iter().filter_map(|p| p.chest.as_ref()).flat_map(|c| c.items.iter()).for_each(&mut each);
+            place.creatures.iter().flat_map(|c| c.stock.iter().chain(c.wares.iter())).for_each(&mut each);
+        }
+        for companion in &self.companions {
+            companion.weapon.iter().chain(companion.armor.iter()).chain(companion.pack.iter()).for_each(&mut each);
+        }
+    }
+
+    /// Things with no picture of the master's yet, the ones in the heroes' hands first, at
+    /// most `most` of them and none of those in `skip` (asked already).
+    pub fn undrawn_things(&self, skip: &[String], most: usize) -> Vec<Undrawn> {
+        let mut found: Vec<Undrawn> = Vec::new();
+        self.every_item(|item| {
+            let name = item.name.trim();
+            if found.len() >= most || !item.rows.is_empty() || name.is_empty() || self.is_standard(item) {
+                return;
+            }
+            let lower = name.to_lowercase();
+            if skip.iter().any(|s| s.to_lowercase() == lower) || found.iter().any(|f| f.name.to_lowercase() == lower) {
+                return;
+            }
+            found.push(Undrawn { name: name.to_string(), description: item.description.clone(), kind: item.kind.clone(), size: item.upright_size() });
+        });
+        found
+    }
+
+    /// Puts the master's pictures on every thing of that name still undrawn, at the size the
+    /// master gave (gear of the rules keeps its own size), and finds each a place in the bag
+    /// again. Gives how many things were drawn.
+    pub fn draw_things(&mut self, drawn: &[ThingPicture]) -> usize {
+        let mut count = 0;
+        for picture in drawn {
+            let wanted = picture.name.trim().to_lowercase();
+            let has_pixels = picture.rows.iter().any(|r| r.chars().any(|c| c != '0' && c != ' '));
+            if wanted.is_empty() || !has_pixels {
+                continue;
+            }
+            let size = match &picture.size {
+                serde_json::Value::Array(wh) if wh.len() == 2 => wh[0].as_u64().zip(wh[1].as_u64()).map(|(w, h)| (w.clamp(1, 4) as u8, h.clamp(1, 4) as u8)),
+                _ => None,
+            };
+            self.every_item_mut(|item| {
+                if item.rows.is_empty() && item.name.trim().to_lowercase() == wanted {
+                    item.rows = picture.rows.clone();
+                    if item.gear.is_none()
+                        && let Some(size) = size
+                    {
+                        item.size_cells = Some(size);
+                    }
+                    count += 1;
+                }
+            });
+        }
+        for bag in &mut self.story.bags {
+            bag.pack();
+        }
+        count
     }
 }
