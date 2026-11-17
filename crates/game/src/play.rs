@@ -1700,6 +1700,47 @@ pub struct Walking {
 #[derive(Resource, Default)]
 pub struct Approach(Option<Walking>);
 
+/// The cells to walk to stand on a cell here, from where the hero is.
+pub fn way_to_cell(world: &World, goal: (usize, usize)) -> Option<Vec<(usize, usize)>> {
+    let here = world.here();
+    let (px, py) = world.player.cell();
+    let (w, h) = here.size();
+    let start = (px.clamp(0, w as i32 - 1) as usize, py.clamp(0, h as i32 - 1) as usize);
+    world::path::route(start, |cell| cell == goal, |(x, y)| (x, y) != goal && (here.blocked(x as i32, y as i32, &world.tiles) || here.exit_at(x, y).is_some()))
+}
+
+/// The story walks the hero along the cells it was given, as a hero walks to a thing; a key
+/// pressed to walk elsewhere lets go of it.
+fn led(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, mut table: ResMut<Table>, mut game: ResMut<Game>, mut pose: ResMut<HeroPose>) {
+    if table.led.is_empty() {
+        return;
+    }
+    let steering = [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::ArrowLeft, KeyCode::ArrowRight];
+    if keyboard.any_pressed(steering) {
+        table.led.clear();
+        return;
+    }
+    let (cx, cy) = table.led[0];
+    let goal = world::Player::in_cell(cx, cy);
+    let world = &mut game.world;
+    let way = Vec2::new(goal.x - world.player.x, goal.y - world.player.y);
+    if way.length() < 1.0 {
+        world.player = goal;
+        table.led.remove(0);
+        pose.moving = !table.led.is_empty();
+        return;
+    }
+    let step = way.clamp_length_max(SPEED * time.delta_secs());
+    if let Some(facing) = crate::doll::Facing::of(step.x, step.y) {
+        pose.facing = facing;
+    }
+    if !world.walk(step.x, step.y) {
+        world.player = goal;
+    }
+    pose.moving = true;
+    pose.clock += time.delta_secs();
+}
+
 /// The cells to walk to stand beside a thing here.
 fn way_to(world: &World, id: &str) -> Option<Vec<(usize, usize)>> {
     let here = world.here();
@@ -3641,7 +3682,7 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (keys, walk, approach_work, advance, receive, guests, master_queue, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, veil).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (keys, walk, approach_work, led, advance, receive, guests, master_queue, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, veil).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, forget_going_on, notice, relocate, redress).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
@@ -3667,6 +3708,23 @@ mod tests {
     fn world() -> World {
         let draft: world::WorldDraft = serde_json::from_str(&fake::world("play")).unwrap();
         world::build_world(&draft, "play", "English").unwrap().0
+    }
+
+    #[test]
+    fn a_hero_the_story_moves_walks_there_cell_by_cell() {
+        let w = world();
+        let here = w.here();
+        let (px, py) = w.player.cell();
+        // A walkable cell a few steps away.
+        let goal = (0..here.size().1).flat_map(|y| (0..here.size().0).map(move |x| (x, y))).find(|(x, y)| (x.abs_diff(px as usize) + y.abs_diff(py as usize)) >= 3 && !here.blocked(*x as i32, *y as i32, &w.tiles) && here.exit_at(*x, *y).is_none()).unwrap();
+        let path = way_to_cell(&w, goal).expect("a way there");
+        assert_eq!(path.last(), Some(&goal));
+        // Each step is to a cell beside the one before.
+        let mut at = (px as usize, py as usize);
+        for cell in &path {
+            assert_eq!(cell.0.abs_diff(at.0) + cell.1.abs_diff(at.1), 1, "{at:?} -> {cell:?}");
+            at = *cell;
+        }
     }
 
     #[test]

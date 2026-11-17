@@ -164,6 +164,7 @@ texts! {
     InviteByCode: "Отправь другу код стола: он впишет его справа, в «Другие столы».", "Send a friend the table's code: they type it at the right, under Other tables.";
     Close: "Закрыть", "Close";
     Rejoining: "Связь с хостом потеряна. Подключаюсь…", "Lost the host. Connecting…";
+    LedThere: "Мастер ведёт твоего героя — WASD, чтобы остановиться.", "The master leads your hero — WASD to stop.";
     PlayAlone: "Играть одному", "Play alone";
     PlayAloneHint: "Продолжить со своей копии мира, без стола", "Go on from your copy of the world, without the table";
     ToMenu: "В меню", "To the menu";

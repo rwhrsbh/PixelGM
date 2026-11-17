@@ -463,6 +463,8 @@ pub struct Table {
     pub inbox: Vec<(String, Intent)>,
     /// A line for the player about the connection, shown on the lobby screen.
     pub status: Option<T>,
+    /// The cells the story is walking this guest's hero along, the next one first.
+    pub led: Vec<(usize, usize)>,
     /// The line to the host dropped and the table is being tried again.
     pub rejoin: Option<Rejoin>,
     /// The table could not be reached again: the game goes on alone.
@@ -1141,8 +1143,17 @@ fn client_pump(
                 }
             }
             ClientEvent::Message(Down::MoveTo { x, y }) => {
+                // The story takes this guest's hero somewhere: it walks there, the way the
+                // host's does to a thing, and the player is told; where no way leads there,
+                // it is set down at once.
                 if let Some(game) = game.as_mut() {
-                    game.world.player = world::Player::in_cell(x, y);
+                    match play::way_to_cell(&game.world, (x, y)) {
+                        Some(path) if !path.is_empty() => {
+                            table.led = path;
+                            table.notices.push(T::LedThere.text(settings.lang).to_string());
+                        }
+                        _ => game.world.player = world::Player::in_cell(x, y),
+                    }
                 }
             }
             ClientEvent::Message(Down::Told(turn)) => {
