@@ -294,13 +294,29 @@ impl<C: DeserializeOwned + Send + 'static, H: Serialize> Host<C, H> {
         let (to_game, events) = channel();
         let peers: Peers = Arc::default();
         let lobby: LobbyState = Arc::default();
-        let (steam, known, state) = (steam.clone(), peers.clone(), lobby.clone());
-        std::thread::spawn(move || host_thread(steam, to_game, known, state));
-        Self { events, peers, port: 0, lobby, _sends: PhantomData }
+        let alive = Arc::new(());
+        let (steam, known, state, weak) = (steam.clone(), peers.clone(), lobby.clone(), Arc::downgrade(&alive));
+        std::thread::spawn(move || host_thread(steam, to_game, known, state, weak));
+        Self { events, peers, port: 0, lobby, _alive: alive, _sends: PhantomData }
+    }
+
+    /// Hosts in a friends-only Steam lobby and, at once, on a port: friends come through
+    /// Steam, everyone else by the table's code or address.
+    pub fn listen_both(steam: &Steam, listener: std::net::TcpListener) -> std::io::Result<Self> {
+        let port = listener.local_addr()?.port();
+        let (to_game, events) = channel();
+        let peers: Peers = Arc::default();
+        let lobby: LobbyState = Arc::default();
+        let alive = Arc::new(());
+        let (steam, known, state, weak) = (steam.clone(), peers.clone(), lobby.clone(), Arc::downgrade(&alive));
+        let (tcp_to_game, tcp_known, tcp_weak) = (to_game.clone(), peers.clone(), Arc::downgrade(&alive));
+        std::thread::spawn(move || host_thread(steam, to_game, known, state, weak));
+        std::thread::spawn(move || crate::accept(listener, tcp_to_game, tcp_known, tcp_weak, crate::TCP_PEERS));
+        Ok(Self { events, peers, port, lobby, _alive: alive, _sends: PhantomData })
     }
 }
 
-fn host_thread<C: DeserializeOwned>(steam: Steam, to_game: Sender<HostEvent<C>>, known: Peers, state: LobbyState) {
+fn host_thread<C: DeserializeOwned>(steam: Steam, to_game: Sender<HostEvent<C>>, known: Peers, state: LobbyState, alive: std::sync::Weak<()>) {
     let client = steam.client.clone();
     let (matchmaking, messages, friends) = (client.matchmaking(), client.networking_messages(), client.friends());
     {
@@ -326,7 +342,7 @@ fn host_thread<C: DeserializeOwned>(steam: Steam, to_game: Sender<HostEvent<C>>,
     let mut announced = false;
     let mut heartbeat = Heartbeat(Instant::now());
     // The game dropping its end leaves this thread the only holder of the peers.
-    'serving: while Arc::strong_count(&known) > 1 {
+    'serving: while alive.upgrade().is_some() {
         steam.run_callbacks();
         let lobby = match &*state.lock().unwrap() {
             Some(Ok(lobby)) => Some(LobbyId::from_raw(*lobby)),
