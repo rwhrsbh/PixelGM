@@ -497,46 +497,26 @@ pub struct KeysVote {
     votes: HashMap<String, bool>,
 }
 
-#[derive(Component)]
-struct VoteSheet;
-
-#[derive(Component)]
-struct WaitLine;
-
-/// While the table waits for the quota, a line at the top says how long is left.
-fn keys_wait_line(mut commands: Commands, fonts: Res<crate::theme::Fonts>, lang: Res<Lang>, session: Res<Session>, mut table: ResMut<Table>, mut lines: Query<(Entity, &mut Text), With<WaitLine>>) {
+/// The table deciding what to do about spent keys, on egui, wherever the player is: a sheet
+/// in the middle of the screen while they decide, a line at the top while the table waits
+/// for the quota. The keys' own screens are not covered by it.
+#[allow(clippy::too_many_arguments)]
+fn keys_vote(
+    mut egui: bevy_egui::EguiContexts,
+    lang: Res<Lang>,
+    screen: Res<State<Screen>>,
+    session: Res<Session>,
+    settings: Res<Settings>,
+    mut table: ResMut<Table>,
+    mut return_to: ResMut<crate::menu::ReturnTo>,
+    mut next: ResMut<NextState<Screen>>,
+    mut at_the_keys: Local<bool>,
+) {
+    use crate::ui::egui::vec2;
+    use crate::ui::kit::{self, Sheet, button, hint};
     if matches!(*session, Session::Solo) && table.keys_wait.is_some() {
         table.keys_wait = None;
     }
-    match (table.keys_wait, lines.single_mut()) {
-        (Some(left), Ok((_, mut text))) => {
-            let said = format!("{} {left} {}", T::KeysOutAgain.text(*lang), T::KeysOutSeconds.text(*lang));
-            if text.0 != said {
-                text.0 = said;
-            }
-        }
-        (Some(_), Err(_)) => {
-            commands.spawn((WaitLine, GlobalZIndex(29), Node { position_type: PositionType::Absolute, left: percent(12), width: percent(76), top: px(40), padding: UiRect::axes(px(5), px(2)), ..default() }, BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.9)), Text::default(), TextLayout::justify(Justify::Center), fonts.body(), TextColor(color(BRASS_LIGHT)), Pickable::IGNORE));
-        }
-        (None, _) => {
-            for (line, _) in &lines {
-                commands.entity(line).despawn();
-            }
-        }
-    }
-}
-
-#[derive(Component, Clone, Copy)]
-enum VoteAct {
-    Wait,
-    Enter,
-}
-
-/// The sheet everyone sees while the table decides, and the way back from entering a key.
-#[allow(clippy::too_many_arguments)]
-fn keys_vote_sheet(mut commands: Commands, art: Res<Art>, fonts: Res<crate::theme::Fonts>, lang: Res<Lang>, screen: Res<State<Screen>>, session: Res<Session>, mut table: ResMut<Table>, sheets: Query<Entity, With<VoteSheet>>, mut shown: Local<Option<KeysVote>>, mut at_the_keys: Local<bool>) {
-    // The sheet is for wherever the player is, a guest still making a hero too; only the
-    // keys themselves are not covered by it.
     let keys = matches!(screen.get(), Screen::Keys | Screen::Provider);
     let entering = table.keys_vote.as_ref().is_some_and(|v| v.entering);
     *at_the_keys = entering && (*at_the_keys || keys);
@@ -546,49 +526,59 @@ fn keys_vote_sheet(mut commands: Commands, art: Res<Art>, fonts: Res<crate::them
         vote.chosen = Some(true);
         session.send(Up::KeysVote { entered: true });
     }
-    let wanted = table.keys_vote.clone().filter(|v| !keys && !v.entering);
-    if wanted == *shown {
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    if !kit::ready(ctx) {
         return;
     }
-    for sheet in &sheets {
-        commands.entity(sheet).despawn();
-    }
-    *shown = wanted.clone();
-    let Some(vote) = wanted else { return };
-    let ink = TextColor(color(INK));
-    commands
-        .spawn((VoteSheet, GlobalZIndex(30), Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }))
-        .with_children(|root| {
-            spawn_panel(root, &art, Node { width: px(300), flex_direction: FlexDirection::Column, row_gap: px(5), ..default() }, |sheet| {
-                sheet.spawn((Text::default(), T::KeysOutTitle, fonts.title(1), ink));
-                sheet.spawn((Text::default(), T::KeysOutText, fonts.body(), ink));
-                if vote.chosen.is_none() {
-                    sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                        button(line, &art, &fonts, T::KeysOutWait, true, VoteAct::Wait);
-                        button(line, &art, &fonts, T::KeysOutEnter, true, VoteAct::Enter);
-                    });
-                } else {
-                    sheet.spawn((Text::default(), T::KeysOutChosen, fonts.body(), TextColor(color(WAX_DARK))));
-                }
-                if !vote.waiting.is_empty() {
-                    sheet.spawn((Text::new(format!("{} {}", T::KeysOutWaiting.text(*lang), vote.waiting.join(", "))), fonts.body(), TextColor(color(FADED))));
-                }
+    let t = |text: T| text.text(*lang);
+    if let Some(left) = table.keys_wait {
+        crate::ui::egui::Area::new(crate::ui::egui::Id::new("keys_wait")).anchor(crate::ui::egui::Align2::CENTER_TOP, vec2(0.0, 30.0)).interactable(false).show(ctx, |ui| {
+            crate::ui::egui::Frame::new().fill(crate::ui::egui::Color32::from_rgba_unmultiplied(0x10, 0x0a, 0x08, 0xe8)).inner_margin(crate::ui::egui::Margin::symmetric(6, 3)).show(ui, |ui| {
+                ui.label(crate::ui::egui::RichText::new(format!("{} {left} {}", t(T::KeysOutAgain), t(T::KeysOutSeconds))).color(crate::ui::theme::c(BRASS_LIGHT)));
             });
         });
-}
-
-fn keys_vote_act(used: On<Activate>, acts: Query<&VoteAct>, session: Res<Session>, settings: Res<Settings>, screen: Res<State<Screen>>, mut table: ResMut<Table>, mut return_to: ResMut<crate::menu::ReturnTo>, mut next: ResMut<NextState<Screen>>) {
-    let (Ok(act), Some(vote)) = (acts.get(used.entity), table.keys_vote.as_mut()) else { return };
-    match act {
-        VoteAct::Wait => {
+    }
+    let Some(vote) = table.keys_vote.clone().filter(|v| !keys && !v.entering) else { return };
+    let mut chose = None;
+    crate::ui::egui::Area::new(crate::ui::egui::Id::new("keys_vote")).order(crate::ui::egui::Order::Foreground).fixed_pos(ctx.content_rect().min).show(ctx, |ui| {
+        ui.set_min_size(ctx.content_rect().size());
+        let paper = Sheet { id: "keys_vote", title: t(T::KeysOutTitle), about: "", max: vec2(320.0, 200.0), top: 90.0, fixed: false };
+        kit::sheet(
+            ui,
+            paper,
+            |ui| {
+                ui.add(crate::ui::egui::Label::new(t(T::KeysOutText)).wrap());
+                if vote.chosen.is_some() {
+                    hint(ui, t(T::KeysOutChosen));
+                }
+                if !vote.waiting.is_empty() {
+                    hint(ui, format!("{} {}", t(T::KeysOutWaiting), vote.waiting.join(", ")));
+                }
+            },
+            |footer| {
+                if vote.chosen.is_none() {
+                    if footer.add(button(t(T::KeysOutWait))).clicked() {
+                        chose = Some(false);
+                    }
+                    if footer.add(button(t(T::KeysOutEnter)).primary()).clicked() {
+                        chose = Some(true);
+                    }
+                }
+            },
+        );
+    });
+    let Some(vote) = table.keys_vote.as_mut() else { return };
+    match chose {
+        Some(false) => {
             vote.chosen = Some(false);
             session.send(Up::KeysVote { entered: false });
         }
-        VoteAct::Enter => {
+        Some(true) => {
             vote.entering = true;
             return_to.0 = Some(*screen.get());
             next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
         }
+        None => {}
     }
 }
 
@@ -1426,8 +1416,7 @@ impl Plugin for CoopPlugin {
             .add_systems(PreUpdate, (host_pump, client_pump, presence, roster).chain())
             .add_systems(Startup, steam_start)
             .add_systems(Update, steam_invites)
-            .add_systems(Update, (keys_vote_sheet, keys_wait_line))
-            .add_observer(keys_vote_act)
+            .add_systems(bevy_egui::EguiPrimaryContextPass, keys_vote.in_set(crate::ui::UiSet::Screens))
             .add_systems(Update, (lobby_status, refresh_lobby).run_if(in_state(Screen::Lobby)))
             .add_observer(on_invite)
             .add_observer(on_activate);
