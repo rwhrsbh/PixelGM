@@ -440,6 +440,15 @@ pub struct SteamLink {
     asked: Vec<u64>,
 }
 
+/// Opens Steam's overlay to invite friends to the table being hosted in a Steam lobby.
+pub fn invite_friends(link: &SteamLink, session: &Session) {
+    if let (Some(steam), Session::Host(hosting)) = (&link.steam, session)
+        && let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby()
+    {
+        steam.invite(lobby);
+    }
+}
+
 /// How often the list of friends hosting is looked up while the lobby screen is open.
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 

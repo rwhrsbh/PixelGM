@@ -73,9 +73,15 @@ pub struct ScreenFixed(pub Vec2);
 #[derive(Component)]
 pub struct Slot;
 
-fn measure(mut view: ResMut<View>, slots: Query<&ComputedNode, With<Slot>>, phase: Res<Phase>) {
+/// How tall the story's panel under the map is, in units of the new interface: the map is
+/// seen above it.
+#[derive(Resource, Default)]
+pub struct StoryPanel(pub f32);
+
+fn measure(mut view: ResMut<View>, slots: Query<&ComputedNode, With<Slot>>, story: Res<StoryPanel>) {
     let tallest = slots.iter().map(|node| node.size().y * node.inverse_scale_factor()).fold(0.0f32, f32::max);
-    let _ = &phase;
+    // The panel is laid out in units, a unit being half a pixel of the old interface.
+    let tallest = tallest.max(story.0 / UI_PIXEL);
     let bottom = HUD_HEIGHT + tallest.round();
     if view.bottom != bottom {
         view.bottom = bottom;
@@ -182,6 +188,7 @@ pub struct ViewPlugin;
 
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<StoryPanel>();
         app.init_resource::<View>()
             .add_systems(Update, (overview, wheel, measure, follow).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(PostUpdate, place_camera)

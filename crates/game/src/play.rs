@@ -4,7 +4,7 @@
 use crate::art::Art;
 use crate::audio::Sfx;
 use crate::coop::{Down, DraftView, GmAct, Held, Intent, Session, Table, Want, player_name};
-use crate::fx::{Actor, Fx, PopIn, Typed};
+use crate::fx::{Actor, Fx};
 use crate::gm::{Gm, Trouble, trouble_text};
 use crate::i18n::{Lang, T};
 use crate::master::{Answer, Ask, Master};
@@ -14,18 +14,16 @@ use crate::shot::Warp;
 use crate::store::{Initiative, Settings, Store};
 use crate::theme::*;
 use crate::translate::{Translator, foreign};
-use crate::widgets::{Activate, BUTTON_HEIGHT, EnterPresses, backing, button, scroll_list, text_button};
-use bevy::input_focus::{AutoFocus, InputFocus};
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
-use bevy::text::{EditableText, TextCursorStyle};
-use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use world::base::MARKER_SPRITE;
 use world::walk::FEET;
 use crate::hero::sheet_lines;
 use rules::dice::Edge;
 use rules::{Ability, Rng, Roll, Side, tr};
 use world::{CreatureCard, LocationDraft, Speaker, TILE, Turn, TurnDraft, Whisper, World, fake};
+
+mod sheets;
 
 /// The game being played.
 #[derive(Resource)]
@@ -493,27 +491,9 @@ struct ArrivalSheet;
 #[derive(Component)]
 struct ArrivalText;
 
-#[derive(Component)]
-struct Overlay;
-
-#[derive(Component)]
-struct SayInput;
-
-/// The telling of a draft, for the master to change.
-#[derive(Component)]
-struct JudgeInput;
-
-/// How the model should redo a draft.
-#[derive(Component)]
-struct RedoInput;
-
-/// The parameter of the master's tools.
-#[derive(Component)]
-struct MasterInput;
-
 /// What the master's panel can do. The panel's text field is each tool's parameter.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Tool {
+pub enum Tool {
     ToModel,
     Narrate,
     Whisper,
@@ -585,13 +565,6 @@ fn brush_paint(phase: Res<Phase>, panel: Res<Panel>, mouse: Res<ButtonInput<Mous
 /// How far from the master's token "nearest" reaches when removing a thing.
 const REMOVE_REACH: f32 = 48.0;
 
-#[derive(bevy::ecs::system::SystemParam)]
-struct MasterFields<'w, 's> {
-    judge: Query<'w, 's, &'static EditableText, With<JudgeInput>>,
-    redo: Query<'w, 's, &'static EditableText, With<RedoInput>>,
-    panel: Query<'w, 's, &'static EditableText, With<MasterInput>>,
-}
-
 /// The last things said at the table, in a corner of the screen.
 #[derive(Component)]
 struct ChatLog;
@@ -600,8 +573,8 @@ struct ChatLog;
 const CHAT_SECONDS: f32 = 14.0;
 const CHAT_LINES: usize = 4;
 
-#[derive(Component, Clone, Copy)]
-enum PlayAction {
+#[derive(Component, Clone, Copy, PartialEq, Debug)]
+pub enum PlayAction {
     Resume,
     Save,
     Keys,
@@ -766,7 +739,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
     });
 }
 
-fn leave(mut commands: Commands, things: Query<Entity, Or<(With<InLocation>, With<Overlay>)>>, mut backdrop: Query<&mut Visibility, With<Backdrop>>) {
+fn leave(mut commands: Commands, things: Query<Entity, With<InLocation>>, mut backdrop: Query<&mut Visibility, With<Backdrop>>) {
     for entity in &things {
         commands.entity(entity).despawn();
     }
@@ -1553,8 +1526,9 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
             _ => {}
         }
     }
-    // With the bag open the hero still walks, as in the old games.
-    if *phase != Phase::Walking && *phase != Phase::Bag {
+    // With the bag open the hero still walks, as in the old games; and while a telling is
+    // read or the master is answering, nobody has to stand still for it.
+    if !matches!(*phase, Phase::Walking | Phase::Bag | Phase::Reading { .. } | Phase::Asking { .. }) {
         pose.moving = false;
         return;
     }
@@ -1667,7 +1641,8 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
             Phase::Walking => Phase::Paused,
             Phase::Paused | Phase::Looking { .. } | Phase::Writing { .. } | Phase::Journal | Phase::Sheet | Phase::Bag | Phase::Judging | Phase::Master => Phase::Walking,
             // A telling with choices stays until one is made or it is closed by its button.
-            Phase::Reading { turn } if turn.options.is_empty() => settled(&game.world),
+            // Escape closes a telling as "Go on" does: its choices stay where they were offered.
+            Phase::Reading { .. } => settled(&game.world),
             _ => return,
         };
         *phase = next;
@@ -1726,7 +1701,9 @@ pub fn show(turn: Turn, phase: &mut Phase, table: &mut Table) {
     if table.elsewhere {
         return;
     }
-    if matches!(*phase, Phase::Walking | Phase::Asking { .. } | Phase::Looking { .. } | Phase::Rolling) {
+    // It does not take the place of a thing being looked at, a die about to be rolled or
+    // words being typed: those wait, and it is read after them.
+    if matches!(*phase, Phase::Walking | Phase::Asking { .. }) {
         *phase = Phase::Reading { turn };
     } else {
         table.unread.push_back(turn);
@@ -2544,44 +2521,6 @@ struct Extra {
 #[derive(Resource, Default)]
 pub struct Folded(pub bool);
 
-/// A button that folds the telling away, or opens it again.
-#[derive(Component, Clone, Copy)]
-struct Fold(bool);
-
-fn on_fold(used: On<Activate>, buttons: Query<&Fold>, mut folded: ResMut<Folded>) {
-    if let Ok(fold) = buttons.get(used.entity) {
-        folded.0 = fold.0;
-    }
-}
-
-/// The button that makes the window of the telling taller, then shorter again.
-#[derive(Component, Clone, Copy)]
-struct Resize;
-
-fn on_resize(used: On<Activate>, buttons: Query<&Resize>, mut settings: ResMut<Settings>, store: Res<Store>) {
-    if buttons.get(used.entity).is_ok() {
-        settings.narration = (settings.narration + 1) % crate::view::HEIGHTS.len() as u8;
-        if let Err(e) = store.save_settings(&settings) {
-            error!("could not save settings: {e}");
-        }
-    }
-}
-
-/// A choice or a prepared action is taken by its number, as replies were in the old games.
-fn number_keys(keyboard: Res<ButtonInput<KeyCode>>, phase: Res<Phase>, buttons: Query<(Entity, &PlayAction)>, mut commands: Commands) {
-    if !matches!(*phase, Phase::Reading { .. } | Phase::Looking { .. }) {
-        return;
-    }
-    let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6];
-    let Some(pressed) = digits.iter().position(|key| keyboard.just_pressed(*key)) else { return };
-    for (entity, action) in &buttons {
-        if matches!(action, PlayAction::Choose(n) | PlayAction::Approach(n) | PlayAction::Do(n) if *n == pressed) {
-            commands.trigger(Activate { entity });
-            return;
-        }
-    }
-}
-
 /// A new telling opens unfolded; H folds and unfolds it.
 fn fold_keys(keyboard: Res<ButtonInput<KeyCode>>, phase: Res<Phase>, mut folded: ResMut<Folded>) {
     if !matches!(*phase, Phase::Reading { .. }) {
@@ -2676,442 +2615,6 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
         Phase::Walking => world.story.log.iter().rev().find(|l| l.speaker == Speaker::Master && !l.text.starts_with('[')).map_or(Sheet::None, |l| Sheet::Last(l.text.clone())),
         _ => Sheet::None,
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn overlay(
-    mut commands: Commands,
-    phase: Res<Phase>,
-    game: Res<Game>,
-    gm: Res<Gm>,
-    lang: Res<Lang>,
-    art: Res<Art>,
-    fonts: Res<Fonts>,
-    session: Res<Session>,
-    table: Res<Table>,
-    panel: Res<Panel>,
-    settings: Res<Settings>,
-    (folded, use_for, mut frame): (Res<Folded>, Res<UseFor>, ResMut<crate::view::View>),
-    mut translator: ResMut<Translator>,
-    mut shown: Local<Sheet>,
-    old: Query<Entity, With<Overlay>>,
-) {
-    let me = player_name(&settings);
-    let solo = matches!(*session, Session::Solo);
-    let mut extra = Extra {
-        seat: seat_state(&game.world, &session, &me),
-        judging: table.judging.clone(),
-        panel: PanelView::default(),
-        lost: hero_lost(&game.world, &me, solo),
-        offer: my_offer(&game.world, &me, solo).map(|offer| offer.feats.iter().map(|f| crate::hero::feat_line(f, *lang)).collect()).unwrap_or_default(),
-        advancing: my_hero(&game.world, &me, solo)
-            .and_then(|i| game.world.party.get(i))
-            .and_then(|hero| rules::srd().class(hero.advancing()))
-            .map(|class| tr(*lang == Lang::Ru, &class.name).to_string())
-            .unwrap_or_default(),
-        folded: folded.0,
-        going_on: table.going_on.clone(),
-        use_for: use_for.0.clone().unwrap_or_default(),
-    };
-    if *phase == Phase::Master {
-        let others = others_at_table(&game.world, &me);
-        extra.panel = PanelView {
-            typed: panel.typed.clone(),
-            target: others.get(panel.target % others.len().max(1)).cloned().unwrap_or_default(),
-            hostile: panel.hostile,
-            note: table.master_note.clone(),
-            cards: table.cards.iter().map(|card| card.name.clone()).collect(),
-            presses: panel.presses,
-        };
-    }
-    // A countdown in a refusal would rebuild the sheet every second and swallow clicks, so
-    // the time is fixed when the sheet first appears.
-    let wanted = match (&*phase, &*shown) {
-        (Phase::Stuck { .. }, Sheet::Stuck(_)) | (Phase::Refused { .. }, Sheet::Refused(_)) if !old.is_empty() => shown.clone(),
-        _ => translated(sheet_for(&phase, &game.world, gm.dispatcher.now(), *lang, &extra), foreign(&game.world, *lang), translator.bypass_change_detection()),
-    };
-    // Sheets about the story lie in a slot under the map; the rest take the middle of the
-    // screen, over everything.
-    let low = matches!(wanted, Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Folded | Sheet::Last(_) | Sheet::Rolling(_) | Sheet::Judging(_) | Sheet::Master(_));
-    let height = match &wanted {
-        Sheet::Folded => 30.0,
-        Sheet::Last(_) => 40.0,
-        _ => crate::view::HEIGHTS[settings.narration.min(2) as usize],
-    };
-    let _ = &mut frame;
-    static WAS_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let resized = WAS_HEIGHT.swap(height.to_bits(), std::sync::atomic::Ordering::Relaxed) != height.to_bits();
-    if *shown == wanted && !resized && (wanted == Sheet::None || !old.is_empty()) {
-        return;
-    }
-    for entity in &old {
-        commands.entity(entity).despawn();
-    }
-    // A sheet of another kind slides in; the same sheet with other words on it does not.
-    let fresh = std::mem::discriminant(&*shown) != std::mem::discriminant(&wanted);
-    *shown = wanted.clone();
-    if wanted == Sheet::None {
-        return;
-    }
-    let ink = TextColor(color(INK));
-    let faded = TextColor(color(FADED));
-    let slot_width = crate::screen::UI.x as f32 - crate::view::COLUMN;
-    let full = if low {
-        Node { position_type: PositionType::Absolute, left: px(0), bottom: px(HUD_HEIGHT), width: px(slot_width), max_height: px(height), ..default() }
-    } else {
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(0),
-            top: px(0),
-            width: percent(100),
-            height: percent(100),
-            padding: UiRect { top: px(4), bottom: px(HUD_HEIGHT + 4.0), ..default() },
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        }
-    };
-    let mut root = commands.spawn((Overlay, full, GlobalZIndex(10)));
-    if low {
-        root.insert(crate::view::Slot);
-    } else {
-        root.insert(PopIn(if fresh { 0.0 } else { 1.0 }));
-    }
-    root.with_children(|root| {
-        let sheet = if low {
-            Node { width: percent(100), flex_direction: FlexDirection::Column, ..default() }
-        } else {
-            Node { width: px(if matches!(wanted, Sheet::Journal { .. } | Sheet::Character { .. }) { 440.0 } else { 240.0 }), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }
-        };
-        // What a sheet in the slot holds can be longer than the slot: it scrolls.
-        let body = |sheet: &mut ChildSpawnerCommands| match &wanted {
-            Sheet::Drawing(place) => {
-                sheet.spawn((Text::default(), T::Drawing, fonts.body(), ink));
-                sheet.spawn((Text::new(place.clone()), fonts.title(1), ink));
-                sheet.spawn((Text::default(), T::DrawingHint, fonts.body(), faded));
-            }
-            Sheet::Stuck(why) => {
-                sheet.spawn((Text::default(), T::StuckTitle, fonts.title(1), ink));
-                sheet.spawn((Text::new(why.clone()), fonts.body(), TextColor(color(WAX))));
-                button(sheet, &art, &fonts, T::Recheck, true, PlayAction::Retry);
-                button(sheet, &art, &fonts, T::Sketch, true, PlayAction::Sketch);
-                button(sheet, &art, &fonts, if settings.active_provider().is_some() { T::KeysProvider } else { T::Keys }, true, PlayAction::Keys);
-                button(sheet, &art, &fonts, T::StayHere, true, PlayAction::Stay);
-            }
-            Sheet::Judging(view) => {
-                sheet.spawn((Text::default(), T::DraftTitle, fonts.title(1), ink));
-                if !view.said.is_empty() {
-                    sheet.spawn((Text::new(format!("«{}»", view.said)), fonts.body(), faded));
-                }
-                sheet.spawn(Node { height: px(72), padding: UiRect::all(px(4)), overflow: Overflow::clip(), ..default() }).with_children(|field| {
-                    field.spawn(backing(art.field.clone(), 4.0));
-                    field.spawn((
-                        JudgeInput,
-                        AutoFocus,
-                        AutoDirectionalNavigation::default(),
-                        Node { width: percent(100), height: percent(100), ..default() },
-                        EditableText { allow_newlines: false, max_characters: Some(2000), ..EditableText::new(&view.narration) },
-                        TextLayout { linebreak: LineBreak::WordOrCharacter, ..default() },
-                        fonts.body(),
-                        ink,
-                        TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
-                    ));
-                });
-                if !view.effects.is_empty() || !view.options.is_empty() {
-                    sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, 34.0)).with_children(|rows| {
-                        for effect in &view.effects {
-                            rows.spawn((Text::new(format!("• {effect}")), fonts.body(), faded));
-                        }
-                        for option in &view.options {
-                            rows.spawn((Text::new(format!("→ {option}")), fonts.body(), ink));
-                        }
-                    });
-                }
-                sheet.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                    button(line, &art, &fonts, T::Accept, true, PlayAction::Judge(true));
-                    button(line, &art, &fonts, T::Reject, true, PlayAction::Judge(false));
-                    line.spawn((Text::default(), T::RedoLabel, fonts.body(), faded));
-                    line.spawn(Node { flex_grow: 1.0, height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }).with_children(|field| {
-                        field.spawn(backing(art.field.clone(), 4.0));
-                        field.spawn((
-                            RedoInput,
-                            AutoDirectionalNavigation::default(),
-                            Node { width: percent(100), ..default() },
-                            EditableText { allow_newlines: false, max_characters: Some(300), ..default() },
-                            TextLayout::no_wrap(),
-                            fonts.body(),
-                            ink,
-                            TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
-                        ));
-                    });
-                    button(line, &art, &fonts, T::Redo, true, PlayAction::Redo);
-                });
-            }
-            Sheet::Master(view) => {
-                sheet.spawn((Text::default(), T::MasterTitle, fonts.title(1), ink));
-                sheet.spawn(Node { height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }).with_children(|field| {
-                    field.spawn(backing(art.field.clone(), 4.0));
-                    field.spawn((
-                        MasterInput,
-                        AutoFocus,
-                        AutoDirectionalNavigation::default(),
-                        Node { width: percent(100), ..default() },
-                        EditableText { allow_newlines: false, max_characters: Some(400), ..EditableText::new(&view.typed) },
-                        TextLayout::no_wrap(),
-                        fonts.body(),
-                        ink,
-                        TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
-                    ));
-                });
-                let tool = |tool: Tool| PlayAction::Tool(tool);
-                let wrap = || Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, align_items: AlignItems::Center, ..default() };
-                sheet.spawn(wrap()).with_children(|line| {
-                    button(line, &art, &fonts, T::ToModel, true, tool(Tool::ToModel));
-                    button(line, &art, &fonts, T::Narrate, true, tool(Tool::Narrate));
-                    let target = if view.target.is_empty() { "—" } else { view.target.as_str() };
-                    text_button(line, &art, &fonts, format!("{} {target}", T::WhisperTo.text(*lang)), tool(Tool::Whisper));
-                    button(line, &art, &fonts, T::NextPlayer, true, tool(Tool::NextTarget));
-                });
-                sheet.spawn(wrap()).with_children(|line| {
-                    button(line, &art, &fonts, T::ToolCreature, true, tool(Tool::Creature));
-                    button(line, &art, &fonts, if view.hostile { T::MoodHostile } else { T::MoodNeutral }, true, tool(Tool::Mood));
-                    button(line, &art, &fonts, T::ToolRemove, true, tool(Tool::Remove));
-                    button(line, &art, &fonts, T::ToolTile, true, tool(Tool::Tile));
-                    button(line, &art, &fonts, T::ToolDamage, true, tool(Tool::Damage));
-                    button(line, &art, &fonts, T::ToolHeal, true, tool(Tool::Heal));
-                    button(line, &art, &fonts, T::ToolGive, true, tool(Tool::Give));
-                    button(line, &art, &fonts, T::ToolFight, true, tool(Tool::Fight));
-                    button(line, &art, &fonts, T::ToolRoll, true, tool(Tool::Roll));
-                    button(line, &art, &fonts, T::ToolGold, true, tool(Tool::Gold));
-                    button(line, &art, &fonts, T::ToolHours, true, tool(Tool::Hours));
-                    button(line, &art, &fonts, T::ToolSky, true, tool(Tool::Sky));
-                    button(line, &art, &fonts, T::ToolSay, true, tool(Tool::Say));
-                    button(line, &art, &fonts, T::ToolBrush, true, tool(Tool::Brush));
-                });
-                sheet.spawn(wrap()).with_children(|line| {
-                    button(line, &art, &fonts, T::ToolInvent, true, tool(Tool::Invent));
-                    for (n, card) in view.cards.iter().enumerate() {
-                        text_button(line, &art, &fonts, card.clone(), tool(Tool::Card(n)));
-                    }
-                });
-                // The line is there even when empty, so the buttons do not move under the cursor.
-                let note = if view.note.is_empty() { " ".to_string() } else { view.note.clone() };
-                sheet.spawn((Text::new(note), TextLayout::no_wrap(), Node { overflow: Overflow::clip(), ..default() }, fonts.body(), TextColor(color(WAX_DARK))));
-                sheet.spawn((Text::default(), T::MasterHint, fonts.body(), faded));
-                sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                    button(line, &art, &fonts, T::SeatLeave, true, PlayAction::SeatLeave);
-                    button(line, &art, &fonts, T::Leave, true, PlayAction::Close);
-                });
-            }
-            Sheet::Paused { seat, lost } => {
-                sheet.spawn((Text::default(), T::Paused, fonts.title(1), ink));
-                button(sheet, &art, &fonts, T::Continue, true, PlayAction::Resume);
-                if *lost {
-                    button(sheet, &art, &fonts, T::NewHero, true, PlayAction::NewHero);
-                }
-                if game.world.table.difficulty != world::Difficulty::Hardcore {
-                    button(sheet, &art, &fonts, T::SaveGame, true, PlayAction::Save);
-                }
-                button(sheet, &art, &fonts, T::ShortRest, !game.world.party.is_empty(), PlayAction::ShortRest);
-                match seat {
-                    SeatState::Alone => {}
-                    SeatState::Mine => button(sheet, &art, &fonts, T::SeatLeave, true, PlayAction::SeatLeave),
-                    SeatState::Free | SeatState::Taken => button(sheet, &art, &fonts, T::SeatTake, *seat == SeatState::Free, PlayAction::SeatTake),
-                }
-                button(sheet, &art, &fonts, T::LongRest, !game.world.party.is_empty(), PlayAction::Rest);
-                button(sheet, &art, &fonts, if settings.active_provider().is_some() { T::KeysProvider } else { T::Keys }, true, PlayAction::Keys);
-                // At a Steam table friends are invited from here too, through Steam's overlay.
-                if crate::coop::steam_table(&session) {
-                    button(sheet, &art, &fonts, T::SteamInvite, true, crate::coop::InviteButton);
-                }
-                // The host may have the place drawn afresh: when it came out wrong.
-                if !session.is_client() {
-                    button(sheet, &art, &fonts, T::RedrawPlace, game.world.fight.is_none(), PlayAction::RedrawPlace);
-                }
-                button(sheet, &art, &fonts, T::Report, true, PlayAction::Report);
-                button(sheet, &art, &fonts, T::ToMainMenu, true, PlayAction::MainMenu);
-            }
-            Sheet::Looking { name, description, actions, chest, shop } => {
-                sheet.spawn((Text::new(name.clone()), fonts.title(1), ink));
-                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), width: percent(100), ..default() }, height - 56.0)).with_children(|sheet| {
-                sheet.spawn((Text::new(description.clone()), fonts.body(), ink));
-                // A container: open it, and when it is locked, pick it or break it.
-                if let Some(locked) = chest {
-                    sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                        button(line, &art, &fonts, T::ChestOpen, true, PlayAction::Chest(world::bag::Opening::Open));
-                        if *locked {
-                            button(line, &art, &fonts, T::ChestPick, true, PlayAction::Chest(world::bag::Opening::Pick));
-                            button(line, &art, &fonts, T::ChestForce, true, PlayAction::Chest(world::bag::Opening::Force));
-                        }
-                    });
-                }
-                for (n, label) in actions.iter().enumerate() {
-                    crate::widgets::line_button(sheet, &fonts, format!("{}. {label}", n + 1), PlayAction::Do(n));
-                }
-                });
-                sheet.spawn(Node { column_gap: px(6), flex_shrink: 0.0, ..default() }).with_children(|line| {
-                    if *shop {
-                        button(line, &art, &fonts, T::Trade, true, PlayAction::Trade);
-                    }
-                    button(line, &art, &fonts, T::OwnAction, true, PlayAction::Own);
-                    button(line, &art, &fonts, T::Leave, true, PlayAction::Close);
-                });
-            }
-            Sheet::Writing { table, about } => {
-                if about.is_empty() {
-                    sheet.spawn((Text::default(), T::WhatDoYouDo, fonts.body(), ink));
-                } else {
-                    sheet.spawn((Text::new(format!("{about} — {}", T::UseForWhat.text(*lang))), fonts.body(), ink));
-                }
-                sheet.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                    line.spawn(Node { flex_grow: 1.0, height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }).with_children(|field| {
-                        field.spawn(backing(art.field.clone(), 4.0));
-                        field.spawn((
-                            SayInput,
-                            AutoFocus,
-                            AutoDirectionalNavigation::default(),
-                            Node { width: percent(100), ..default() },
-                            EditableText { allow_newlines: false, max_characters: Some(300), ..default() },
-                            TextLayout::no_wrap(),
-                            fonts.body(),
-                            ink,
-                            TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
-                        ));
-                    });
-                    button(line, &art, &fonts, T::Say, true, PlayAction::Send);
-                    if *table {
-                        button(line, &art, &fonts, T::TableTalk, true, PlayAction::Talk);
-                    }
-                });
-                sheet.spawn((Text::default(), if *table { T::WritingHintTable } else { T::WritingHint }, fonts.body(), faded));
-            }
-            Sheet::Asking(said) => {
-                let shown = if table.going_on.is_some() { said.clone() } else { format!("«{said}»") };
-                sheet.spawn((Text::new(shown), fonts.body(), if table.going_on.is_some() { ink } else { faded }));
-                sheet.spawn((Text::default(), T::TestRunning, fonts.body(), ink));
-            }
-            Sheet::Reading(turn) => {
-                // The telling is written out letter by letter over a copy of itself that
-                // cannot be seen, so the sheet has its full size from the first letter.
-                let cell = || Node { grid_row: GridPlacement::start(1), grid_column: GridPlacement::start(1), ..default() };
-                // The telling and the choices scroll when they are long; the buttons under
-                // them never move out of reach.
-                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), width: percent(100), ..default() }, height - 40.0)).with_children(|sheet| {
-                sheet.spawn(Node { display: Display::Grid, ..default() }).with_children(|stack| {
-                    stack.spawn((cell(), Text::new(turn.narration.clone()), fonts.body(), TextColor(Color::NONE)));
-                    stack.spawn((cell(), Text::default(), Typed(turn.narration.clone()), fonts.body(), ink));
-                });
-                for (n, option) in turn.options.iter().enumerate() {
-                    // A choice that needs the party beside something far off waits for it there.
-                    let far = option.near.as_deref().and_then(|id| far_from(&game.world, id));
-                    match far {
-                        // Too far: the hero walks there first, and then does it.
-                        Some(name) => crate::widgets::line_button(sheet, &fonts, format!("{}. {} ({} {name})", n + 1, option.label, T::WalkUpTo.text(*lang)), PlayAction::Approach(n)),
-                        None => {
-                            let chance = game.world.chance(option).map(|c| format!("  [~{c}%]")).unwrap_or_default();
-                            crate::widgets::line_button(sheet, &fonts, format!("{}. {}{chance}", n + 1, option.label), PlayAction::Choose(n))
-                        }
-                    }
-                }
-                });
-                sheet.spawn(Node { column_gap: px(6), flex_shrink: 0.0, ..default() }).with_children(|line| {
-                    if !turn.options.is_empty() {
-                        button(line, &art, &fonts, T::OwnAction, true, PlayAction::Own);
-                    }
-                    button(line, &art, &fonts, T::Onward, true, (PlayAction::Close, EnterPresses));
-                    line.spawn(Node { flex_grow: 1.0, ..default() });
-                    button(line, &art, &fonts, T::SheetSize, true, Resize);
-                    button(line, &art, &fonts, T::Fold, true, Fold(true));
-                });
-            }
-            Sheet::Folded => {
-                sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                    line.spawn((Text::new(T::FoldedHint.text(*lang)), fonts.body(), faded));
-                    line.spawn(Node { flex_grow: 1.0, ..default() });
-                    button(line, &art, &fonts, T::Unfold, true, (Fold(false), EnterPresses));
-                });
-            }
-            Sheet::Refused(why) => {
-                sheet.spawn((Text::default(), T::RefusedTitle, fonts.title(1), ink));
-                sheet.spawn((Text::new(why.clone()), fonts.body(), TextColor(color(WAX))));
-                button(sheet, &art, &fonts, T::Recheck, true, PlayAction::AskAgain);
-                button(sheet, &art, &fonts, if settings.active_provider().is_some() { T::KeysProvider } else { T::Keys }, true, PlayAction::Keys);
-                button(sheet, &art, &fonts, T::Leave, true, PlayAction::Close);
-            }
-            Sheet::Journal { quests, carried, lines } => {
-                sheet.spawn((Text::default(), T::Journal, fonts.title(1), ink));
-                for (n, line) in quests.iter().enumerate() {
-                    sheet.spawn((Text::new(line.clone()), fonts.body(), TextColor(color(if n == 0 { WAX_DARK } else { INK }))));
-                }
-                let bag = if carried.is_empty() { T::CarryNothing.text(*lang).to_string() } else { format!("{} {carried}", T::Carried.text(*lang)) };
-                sheet.spawn((Text::new(bag), fonts.body(), TextColor(color(WAX_DARK))));
-                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(3), ..default() }, 150.0)).with_children(|rows| {
-                    if lines.is_empty() {
-                        rows.spawn((Text::default(), T::JournalEmpty, fonts.body(), faded));
-                    }
-                    for (speaker, text) in lines {
-                        let (prefix, tone) = if *speaker == Speaker::Player { ("» ", WAX_DARK) } else { ("", INK) };
-                        rows.spawn((Text::new(format!("{prefix}{text}")), fonts.body(), TextColor(color(tone))));
-                    }
-                });
-                sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Leave, true, PlayAction::Close));
-            }
-            Sheet::Rolling(what) => {
-                sheet.spawn((Text::default(), T::CheckTitle, fonts.title(1), ink));
-                sheet.spawn((Text::new(what.clone()), fonts.body(), ink));
-                sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::RollDie, true, (PlayAction::Roll, EnterPresses)));
-            }
-            Sheet::Character { lines, points, offer, advancing } => {
-                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }, 164.0)).with_children(|rows| {
-                    for line in lines {
-                        // Headings stand out, notes step back.
-                        if let Some(heading) = line.strip_prefix("# ") {
-                            rows.spawn((Text::new(heading.to_string()), fonts.body(), TextColor(color(WAX_DARK)), Node { margin: UiRect::top(px(3)), ..default() }));
-                        } else if let Some(note) = line.strip_prefix("~ ") {
-                            rows.spawn((Text::new(note.to_string()), fonts.body(), faded));
-                        } else {
-                            rows.spawn((Text::new(line.clone()), fonts.body(), ink));
-                        }
-                    }
-                });
-                if !advancing.is_empty() {
-                    sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|slot| {
-                        text_button(slot, &art, &fonts, format!("{} {advancing}", T::NextLevels.text(*lang)), PlayAction::Advance);
-                        slot.spawn((Text::default(), T::NextLevelsHint, fonts.body(), faded));
-                    });
-                }
-                if !offer.is_empty() {
-                    sheet.spawn((Text::default(), T::FeatChoose, fonts.body(), TextColor(color(WAX_DARK))));
-                    for (n, line) in offer.iter().enumerate() {
-                        crate::widgets::wrap_button(sheet, &art, &fonts, line.clone(), PlayAction::Feat(n));
-                    }
-                }
-                if *points {
-                    let ru = *lang == Lang::Ru;
-                    sheet.spawn(Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
-                        for ability in Ability::ALL {
-                            text_button(line, &art, &fonts, format!("+1 {}", tr(ru, ability.name())), PlayAction::Improve(ability));
-                        }
-                    });
-                }
-                sheet.spawn(Node::default()).with_children(|slot| button(slot, &art, &fonts, T::Leave, true, PlayAction::Close));
-            }
-            Sheet::Last(text) => {
-                sheet.spawn((Text::new(text.clone()), fonts.body(), faded));
-            }
-            Sheet::None => {}
-        };
-        let pinned = matches!(wanted, Sheet::Reading(_) | Sheet::Looking { .. });
-        spawn_panel(root, &art, sheet, |sheet| {
-            if pinned {
-                sheet.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), width: percent(100), ..default() }).with_children(body);
-            } else if low {
-                sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(2), width: percent(100), ..default() }, height - 14.0)).with_children(body);
-            } else {
-                body(sheet);
-            }
-        });
-    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3242,36 +2745,9 @@ fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: Res
     }
 }
 
-/// Enter in the field sends what was typed.
-#[allow(clippy::too_many_arguments)]
-fn submit(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    focus: Res<InputFocus>,
-    input: Query<(Entity, &EditableText), With<SayInput>>,
-    mut phase: ResMut<Phase>,
-    game: Res<Game>,
-    gm: Res<Gm>,
-    store: Res<Store>,
-    settings: Res<Settings>,
-    master: Res<Master>,
-    session: Res<Session>,
-    table: Res<Table>,
-    use_for: Res<UseFor>,
-) {
-    if !keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
-        return;
-    }
-    let (Phase::Writing { near }, Ok((entity, input))) = (&*phase, input.single()) else { return };
-    if focus.get() == Some(entity) {
-        *phase = send(with_use(&use_for, input.value().to_string()), near.clone(), &game, &gm, &store, &settings, &master, &session, &table);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn on_activate(
-    used: On<Activate>,
-    buttons: Query<&PlayAction>,
-    input: Query<&EditableText, With<SayInput>>,
+    used: On<sheets::PlayPress>,
     mut phase: ResMut<Phase>,
     game: Option<ResMut<Game>>,
     mut toast: ResMut<Toast>,
@@ -3288,7 +2764,8 @@ fn on_activate(
     (mut table, mut approach, use_for, mut shopping): (ResMut<Table>, ResMut<Approach>, Res<UseFor>, ResMut<crate::shop_ui::Shopping>),
 ) {
     // This observer hears every button in the game; outside a game there is nothing to act on.
-    let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
+    let Some(mut game) = game else { return };
+    let action = &used.action;
     let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
     if let PlayAction::Report = *action {
         *phase = Phase::Walking;
@@ -3310,7 +2787,7 @@ fn on_activate(
         return;
     }
     if let (PlayAction::Talk, Phase::Writing { .. }) = (*action, &*phase) {
-        let typed = input.single().map(|i| i.value().to_string()).unwrap_or_default();
+        let typed = used.typed.clone();
         if !typed.trim().is_empty() {
             session.chat(&mut table, &player_name(&settings), typed.trim());
         }
@@ -3532,9 +3009,7 @@ fn on_activate(
         (PlayAction::Own, Phase::Looking { thing }) => *phase = Phase::Writing { near: Some(thing) },
         (PlayAction::Own, _) => *phase = Phase::Writing { near: None },
         (PlayAction::Send, Phase::Writing { near }) => {
-            if let Ok(input) = input.single() {
-                *phase = send(with_use(&use_for, input.value().to_string()), near, &game, &gm, &store, &settings, &master, &session, &table);
-            }
+            *phase = send(with_use(&use_for, used.typed.clone()), near, &game, &gm, &store, &settings, &master, &session, &table);
         }
         (PlayAction::Approach(index), Phase::Reading { turn }) => {
             if let Some(option) = turn.options.get(index) {
@@ -4375,9 +3850,7 @@ fn tool_act(tool: Tool, typed: &str, world: &World, panel: &mut Panel, table: &m
 /// The buttons of the master's seat, on whichever machine the master sits at.
 #[allow(clippy::too_many_arguments)]
 fn on_master_activate(
-    used: On<Activate>,
-    buttons: Query<&PlayAction>,
-    fields: MasterFields,
+    used: On<sheets::PlayPress>,
     mut phase: ResMut<Phase>,
     game: Option<ResMut<Game>>,
     mut table: ResMut<Table>,
@@ -4391,8 +3864,8 @@ fn on_master_activate(
     gm: Res<Gm>,
     master: Res<Master>,
 ) {
-    let (Ok(action), Some(mut game)) = (buttons.get(used.entity), game) else { return };
-    let text_of = |field: Result<&EditableText, bevy::ecs::query::QuerySingleError>| field.map(|f| f.value().to_string()).unwrap_or_default();
+    let Some(mut game) = game else { return };
+    let action = &used.action;
     let me = player_name(&settings);
     let guest = session.is_client();
     let act = match (*action, phase.clone()) {
@@ -4406,7 +3879,7 @@ fn on_master_activate(
             GmAct::Seat(false)
         }
         (PlayAction::Judge(accept), Phase::Judging) => {
-            let narration = text_of(fields.judge.single());
+            let narration = used.typed.clone();
             if guest {
                 table.judging = None;
                 *phase = Phase::Walking;
@@ -4414,7 +3887,7 @@ fn on_master_activate(
             GmAct::Verdict { accept, narration }
         }
         (PlayAction::Redo, Phase::Judging) => {
-            let direction = text_of(fields.redo.single());
+            let direction = used.typed.clone();
             if direction.trim().is_empty() {
                 return;
             }
@@ -4425,7 +3898,7 @@ fn on_master_activate(
             GmAct::Direct(direction)
         }
         (PlayAction::Tool(tool), Phase::Master) => {
-            let typed = text_of(fields.panel.single());
+            let typed = used.typed.clone();
             let Some(act) = tool_act(tool, &typed, &game.world, &mut panel, &mut table, settings.lang, &me) else { return };
             // A direction is answered with a draft: the panel steps aside for it.
             if tool == Tool::ToModel {
@@ -4459,15 +3932,12 @@ impl Plugin for PlayPlugin {
             .init_resource::<Approach>()
             .init_resource::<UseFor>()
             .init_resource::<ShownPlace>()
-            .add_observer(on_resize)
             .add_systems(Update, ambush_ask.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, brush_paint.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (place_allies, live_world, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (run_clock, clock_face).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, goal_line.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
-            .add_systems(Update, number_keys.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, keep_facing.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
-            .add_observer(on_fold)
             .init_resource::<Dolls>()
             .init_resource::<Background>()
             .init_resource::<Panel>()
@@ -4475,11 +3945,13 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (submit, keys, walk, approach_work, advance, receive, guests, master_queue, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil, overlay).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (keys, walk, approach_work, advance, receive, guests, master_queue, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
             .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on, notice, relocate, redress).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
-            .add_observer(on_master_activate);
+            .add_observer(on_master_activate)
+            .init_resource::<sheets::Fields>()
+            .add_systems(bevy_egui::EguiPrimaryContextPass, sheets::overlay.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>));
     }
 }
 
