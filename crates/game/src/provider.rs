@@ -4,32 +4,20 @@
 //! speaking models for the narrator's voice. The models a provider offers can be fetched and
 //! picked from.
 
-use crate::art::Art;
 use crate::i18n::{Lang, T};
-use crate::menu::{ReturnTo, Screen, screen_root, spawn_panel};
+use crate::menu::{ReturnTo, Screen};
 use crate::store::{Settings, Store};
 use crate::theme::*;
-use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, scroll_list, text_button};
+use crate::ui::egui::{self, Key, RichText, Ui, vec2};
+use crate::ui::kit::{self, Sheet, button, hint};
+use crate::ui::theme::c;
 use bevy::prelude::*;
-use bevy::text::{EditableText, TextCursorStyle};
-use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use llm::providers::{Kind, Rotation};
 use std::sync::{Arc, Mutex};
 
-#[derive(Component, Clone, Copy, PartialEq)]
-enum Field {
-    /// Cloudflare's account id, or the address of a service of one's own.
-    Address,
-    Key,
-    Model,
-    Voice,
-}
-
-#[derive(Component, Clone, Copy)]
+/// What a press on the screen asks for.
+#[derive(Clone, Copy)]
 enum Act {
-    Tab(Kind),
-    /// To Gemini's keys: the same desk, another master.
-    Gemini,
     Toggle,
     AddKey,
     DropKey(usize),
@@ -46,16 +34,6 @@ enum Act {
     Back,
 }
 
-#[derive(Component)]
-struct Root;
-
-/// Where the models on offer are listed.
-#[derive(Component)]
-struct Offered;
-
-#[derive(Component)]
-struct Outcome;
-
 /// What a thread came back with: the models on offer.
 type Fetched = Arc<Mutex<Option<Result<Vec<String>, String>>>>;
 
@@ -66,7 +44,7 @@ pub struct Desk {
     /// The provider another screen asked to be shown, once.
     pub open_on: Option<Kind>,
     voices: bool,
-    /// What is typed and not yet added, kept over a redraw.
+    /// What is typed and not yet added.
     typed_key: String,
     typed_model: String,
     /// The models the provider offers, as last fetched, and for which list.
@@ -74,15 +52,11 @@ pub struct Desk {
     offered_for: Option<(Kind, bool)>,
     fetched: Fetched,
     note: Arc<Mutex<String>>,
-    /// Raised when the screen must be drawn again.
-    redraw: bool,
-    /// What the list of models on offer was last drawn from.
-    shown: String,
 }
 
 impl Default for Desk {
     fn default() -> Self {
-        Self { tab: Kind::Nim, open_on: None, voices: false, typed_key: String::new(), typed_model: String::new(), offered: Vec::new(), offered_for: None, fetched: Arc::default(), note: Arc::default(), redraw: false, shown: String::new() }
+        Self { tab: Kind::Nim, open_on: None, voices: false, typed_key: String::new(), typed_model: String::new(), offered: Vec::new(), offered_for: None, fetched: Arc::default(), note: Arc::default() }
     }
 }
 
@@ -92,17 +66,36 @@ impl Plugin for ProviderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Desk>()
             .add_systems(OnEnter(Screen::Provider), enter)
-            .add_systems(Update, (arrived, redraw, offered, show_note, escape).chain().run_if(in_state(Screen::Provider)))
-            .add_observer(on_activate);
+            .add_systems(Update, arrived.run_if(in_state(Screen::Provider)))
+            .add_systems(bevy_egui::EguiPrimaryContextPass, provider_screen.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Provider)));
     }
 }
 
-fn field(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, which: Field, value: &str, width: f32) {
-    parent.spawn(Node { width: px(width), height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(4), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }).with_children(|slot| {
-        slot.spawn(backing(art.field.clone(), 4.0));
-        let text = EditableText { allow_newlines: false, max_characters: Some(300), ..EditableText::new(value) };
-        slot.spawn((which, AutoDirectionalNavigation::default(), Node { width: percent(100), ..default() }, text, TextLayout::no_wrap(), fonts.body(), TextColor(color(INK)), TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() }));
+/// The masters, one tab each, the one that runs the game marked. Gives, on a press of
+/// another tab, `None` for Gemini or the provider pressed.
+pub fn tabs(ui: &mut Ui, settings: &Settings, current: Option<Kind>, lang: Lang) -> Option<Option<Kind>> {
+    let running = settings.active_provider();
+    let mut to = None;
+    ui.horizontal_wrapped(|row| {
+        let name = |runs: bool, name: &str| if runs { format!("● {name}") } else { name.to_string() };
+        let mut gemini = button(name(running.is_none(), "Gemini"));
+        if current.is_none() {
+            gemini = gemini.primary();
+        }
+        if row.add(gemini).on_hover_text(T::MasterMark.text(lang)).clicked() && current.is_some() {
+            to = Some(None);
+        }
+        for kind in Kind::ALL {
+            let mut tab = button(name(running == Some(kind), kind.name()));
+            if current == Some(kind) {
+                tab = tab.primary();
+            }
+            if row.add(tab).on_hover_text(T::MasterMark.text(lang)).clicked() && current != Some(kind) {
+                to = Some(Some(kind));
+            }
+        }
     });
+    to
 }
 
 /// The end of a key, to tell keys apart without showing them.
@@ -111,110 +104,15 @@ fn tail(key: &str) -> String {
     format!("…{}", key.chars().skip(n.saturating_sub(4)).collect::<String>())
 }
 
-fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, mut settings: ResMut<Settings>, mut desk: ResMut<Desk>, lang: Res<Lang>) {
+fn enter(mut settings: ResMut<Settings>, mut desk: ResMut<Desk>) {
     desk.note.lock().unwrap().clear();
-    desk.shown.clear();
     // Opened on the provider that is the master now, if one is.
     if let Some(asked) = desk.open_on.take() {
         desk.tab = asked;
     } else if let Some(active) = settings.active_provider() {
         desk.tab = active;
     }
-    build(&mut commands, &art, &fonts, &mut settings, &desk, *lang);
-}
-
-fn build(commands: &mut Commands, art: &Art, fonts: &Fonts, settings: &mut Settings, desk: &Desk, lang: Lang) {
-    let ink = TextColor(color(INK));
-    let faded = TextColor(color(FADED));
-    let on: Vec<Kind> = settings.providers.iter().filter(|p| p.on).map(|p| p.kind).collect();
-    let this = settings.provider_mut(desk.tab).clone();
-    let keys = this.plain_keys();
-    let chosen = if desk.voices { &this.voices } else { &this.models };
-    let line = || Node { column_gap: px(4), row_gap: px(2), flex_wrap: FlexWrap::Wrap, align_items: AlignItems::Center, ..default() };
-    commands.spawn((Root, screen_root(Screen::Provider))).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(3)), width: px(468), flex_direction: FlexDirection::Column, row_gap: px(3), ..default() };
-        spawn_panel(root, art, sheet, |sheet| {
-            // The providers: the one being looked at in brackets, those switched on marked.
-            sheet.spawn(line()).with_children(|tabs| {
-                text_button(tabs, art, fonts, if on.is_empty() { "● Gemini".to_string() } else { "Gemini".to_string() }, Act::Gemini);
-                for kind in Kind::ALL {
-                    let mark = if on.contains(&kind) { "● " } else { "" };
-                    let name = if kind == desk.tab { format!("[{mark}{}]", kind.name()) } else { format!("{mark}{}", kind.name()) };
-                    text_button(tabs, art, fonts, name, Act::Tab(kind));
-                }
-            });
-            sheet.spawn(line()).with_children(|row| {
-                row.spawn((Text::default(), T::ProviderUse, fonts.body(), ink));
-                button(row, art, fonts, if this.on { T::Yes } else { T::No }, true, Act::Toggle);
-                if !this.on {
-                    row.spawn((Text::default(), T::ProvOne, fonts.body(), faded));
-                }
-            });
-            // What only this provider needs, on a line of its own.
-            if matches!(desk.tab, Kind::Cloudflare | Kind::Custom) {
-                sheet.spawn(line()).with_children(|row| match desk.tab {
-                    Kind::Cloudflare => {
-                        row.spawn((Text::default(), T::ProvAccount, fonts.body(), ink));
-                        field(row, art, fonts, Field::Address, &this.account, 230.0);
-                    }
-                    _ => {
-                        row.spawn((Text::default(), T::ProviderUrl, fonts.body(), ink));
-                        field(row, art, fonts, Field::Address, &this.url, 250.0);
-                    }
-                });
-            }
-            // The keys take turns; a press on one takes it away.
-            sheet.spawn(line()).with_children(|row| {
-                row.spawn((Text::new(format!("{} {}", T::ProvKeys.text(lang), keys.len())), fonts.body(), ink));
-                for (n, key) in keys.iter().enumerate().take(8) {
-                    text_button(row, art, fonts, format!("{} x", tail(key)), Act::DropKey(n));
-                }
-                field(row, art, fonts, Field::Key, &desk.typed_key, 130.0);
-                button(row, art, fonts, T::ProvAddKey, true, Act::AddKey);
-            });
-            if desk.tab == Kind::Nim {
-                sheet.spawn((Text::default(), T::ProvNimSlow, fonts.body(), TextColor(color(WAX_DARK))));
-            }
-            sheet.spawn(line()).with_children(|row| {
-                for (voices, label) in [(false, T::ProvChat), (true, T::ProvVoice)] {
-                    let name = if voices == desk.voices { format!("[{}]", label.text(lang)) } else { label.text(lang).to_string() };
-                    text_button(row, art, fonts, name, Act::Section(voices));
-                }
-                if desk.voices {
-                    row.spawn((Text::default(), T::ProvVoiceName, fonts.body(), ink));
-                    field(row, art, fonts, Field::Voice, &this.voice, 90.0);
-                } else {
-                    row.spawn((Text::default(), T::ProvOrder, fonts.body(), faded));
-                }
-            });
-            // Those chosen, the first asked first.
-            sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, 50.0)).with_children(|rows| {
-                if chosen.is_empty() {
-                    rows.spawn((Text::default(), T::ProvNone, fonts.body(), faded));
-                }
-                for (n, model) in chosen.iter().enumerate() {
-                    rows.spawn(Node { column_gap: px(3), align_items: AlignItems::Center, ..default() }).with_children(|row| {
-                        row.spawn((Node { width: px(300), overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }, Text::new(format!("{}. {model}", n + 1)), TextLayout::no_wrap(), fonts.body(), ink));
-                        text_button(row, art, fonts, "▲".to_string(), Act::Up(n));
-                        text_button(row, art, fonts, "▼".to_string(), Act::Down(n));
-                        text_button(row, art, fonts, "x".to_string(), Act::Drop(n));
-                    });
-                }
-            });
-            sheet.spawn(line()).with_children(|row| {
-                field(row, art, fonts, Field::Model, &desk.typed_model, 220.0);
-                button(row, art, fonts, T::ProvAdd, true, Act::AddModel);
-                button(row, art, fonts, T::ProvFetch, true, Act::Fetch);
-            });
-            // Those on offer, narrowed by what is typed above; a press chooses one.
-            sheet.spawn((Offered, scroll_list(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(3), row_gap: px(2), ..default() }, 52.0)));
-            sheet.spawn(line()).with_children(|row| {
-                button(row, art, fonts, T::Back, true, Act::Back);
-                button(row, art, fonts, T::TestGm, true, Act::Test);
-                row.spawn((Outcome, Node { width: px(300), overflow: Overflow::clip(), ..default() }, Text::default(), TextLayout::no_wrap(), fonts.body(), ink));
-            });
-        });
-    });
+    settings.provider_mut(desk.tab);
 }
 
 /// The models on offer that what is typed lets through: those shown, in order.
@@ -236,106 +134,194 @@ fn arrived(mut desk: ResMut<Desk>, lang: Res<Lang>) {
             desk.offered.clear();
         }
     }
-    desk.shown.clear();
 }
 
-fn redraw(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, mut settings: ResMut<Settings>, mut desk: ResMut<Desk>, lang: Res<Lang>, roots: Query<Entity, With<Root>>) {
-    if !std::mem::take(&mut desk.redraw) {
-        return;
-    }
-    for root in &roots {
-        commands.entity(root).despawn();
-    }
-    desk.shown.clear();
-    build(&mut commands, &art, &fonts, &mut settings, &desk, *lang);
-}
-
-/// The list of models on offer follows what is typed, without the rest of the screen being
-/// drawn again under the cursor.
-fn offered(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, mut desk: ResMut<Desk>, lists: Query<Entity, With<Offered>>, fields: Query<(&Field, &EditableText)>, lang: Res<Lang>) {
-    let Ok(list) = lists.single() else { return };
-    let typed = fields.iter().find(|(f, _)| **f == Field::Model).map(|(_, t)| t.value().to_string()).unwrap_or_default();
-    let stale = desk.offered_for != Some((desk.tab, desk.voices));
-    let print = format!("{:?}|{}|{typed}|{}|{stale}", desk.tab, desk.voices, desk.offered.len());
-    if desk.shown == print {
-        return;
-    }
-    desk.shown = print;
-    let shown = if stale { Vec::new() } else { narrowed(&desk, &typed) };
-    let more = !stale && desk.offered.len() > shown.len();
-    commands.entity(list).despawn_children().with_children(|rows| {
-        if shown.is_empty() {
-            let words = if !stale && !desk.offered.is_empty() { T::ProvNoMatch } else { T::ProvFetchHint };
-            rows.spawn((Text::new(words.text(*lang)), fonts.body(), TextColor(color(FADED))));
-        }
-        for (n, id) in shown.iter().enumerate() {
-            text_button(rows, &art, &fonts, id.clone(), Act::Pick(n));
-        }
-        if more && shown.len() >= 60 {
-            rows.spawn((Text::new("…"), fonts.body(), TextColor(color(FADED))));
-        }
-    });
-}
-
-fn show_note(desk: Res<Desk>, mut outcome: Query<&mut Text, With<Outcome>>) {
-    let said = desk.note.lock().unwrap().clone();
-    for mut text in &mut outcome {
-        if text.0 != said {
-            text.0 = said.clone();
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn on_activate(used: On<Activate>, acts: Query<&Act>, fields: Query<(&Field, &EditableText)>, mut settings: ResMut<Settings>, store: Res<Store>, mut desk: ResMut<Desk>, lang: Res<Lang>, mut return_to: ResMut<ReturnTo>, mut next: ResMut<NextState<Screen>>) {
-    let Ok(act) = acts.get(used.entity) else { return };
-    let typed = |which: Field| fields.iter().find(|(f, _)| **f == which).map(|(_, t)| t.value().to_string().trim().to_string());
-    // What is in the fields is kept before anything else: the screen may be drawn again.
+/// The screen of another master, drawn with egui: whether it runs the game, its keys, its
+/// models for the telling or for the voice in the order they are tried, those it offers,
+/// and a test.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang): (ResMut<Settings>, Res<Store>, Res<Lang>), mut desk: ResMut<Desk>, (mut next, mut return_to): (ResMut<NextState<Screen>>, ResMut<ReturnTo>)) {
+    let lang = *lang;
+    let t = |text: T| text.text(lang);
     let tab = desk.tab;
     let voices = desk.voices;
-    {
-        let this = settings.provider_mut(tab);
-        if let Some(address) = typed(Field::Address) {
-            match tab {
-                Kind::Cloudflare => this.account = address,
-                Kind::Custom => this.url = address,
-                _ => {}
+    let note = desk.note.lock().unwrap().clone();
+    let mut this = settings.provider_mut(tab).clone();
+    let keys = this.plain_keys();
+    let stale = desk.offered_for != Some((tab, voices));
+    let shown = if stale { Vec::new() } else { narrowed(&desk, &desk.typed_model) };
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let Some(mut ui) = kit::screen_ui(ctx, "provider") else { return };
+    let mut acts: Vec<Act> = Vec::new();
+    // What the footer's buttons asked for, after what the body's did.
+    let mut pressed: Vec<Act> = Vec::new();
+    let mut to_tab = None;
+    let mut edited = false;
+    let desk = &mut *desk;
+    let sheet = Sheet { id: "provider", title: t(T::AiTitle), about: t(T::ProviderAbout), max: vec2(480.0, 420.0), top: 0.0, fixed: true };
+    kit::sheet(
+        &mut ui,
+        sheet,
+        |ui| {
+            to_tab = tabs(ui, &settings, Some(tab), lang);
+            let mut runs = this.on;
+            if kit::toggle(ui, t(T::ProviderUse), &mut runs).changed() {
+                acts.push(Act::Toggle);
             }
-        }
-        if let Some(voice) = typed(Field::Voice) {
-            this.voice = voice;
-        }
+            if !this.on {
+                hint(ui, t(T::ProvOne));
+            }
+            // What only this provider needs.
+            let address = match tab {
+                Kind::Cloudflare => Some((T::ProvAccount, &mut this.account)),
+                Kind::Custom => Some((T::ProviderUrl, &mut this.url)),
+                _ => None,
+            };
+            if let Some((label, value)) = address {
+                ui.horizontal(|row| {
+                    row.label(t(label));
+                    edited |= row.add(egui::TextEdit::singleline(value).desired_width(260.0).char_limit(300)).changed();
+                });
+            }
+            // The keys take turns; a press on one takes it away.
+            ui.horizontal_wrapped(|row| {
+                row.label(format!("{} {}", t(T::ProvKeys), keys.len()));
+                for (n, key) in keys.iter().enumerate().take(8) {
+                    if row.add(button(format!("{} ×", tail(key)))).on_hover_text(t(T::ProvDropKey)).clicked() {
+                        acts.push(Act::DropKey(n));
+                    }
+                }
+            });
+            ui.horizontal(|row| {
+                let field = row.add(egui::TextEdit::singleline(&mut desk.typed_key).desired_width(220.0).char_limit(2000));
+                let ready = !desk.typed_key.trim().is_empty();
+                let entered = field.lost_focus() && row.input(|i| i.key_pressed(Key::Enter)) && ready;
+                if row.add(button(t(T::ProvAddKey)).enabled(ready, t(T::KeyTypeFirst))).clicked() || entered {
+                    acts.push(Act::AddKey);
+                }
+            });
+            if tab == Kind::Nim {
+                ui.add(egui::Label::new(RichText::new(t(T::ProvNimSlow)).color(c(WAX_DARK))).wrap());
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|row| {
+                for (section, label) in [(false, T::ProvChat), (true, T::ProvVoice)] {
+                    let mut b = button(t(label));
+                    if section == voices {
+                        b = b.primary();
+                    }
+                    if row.add(b).clicked() && section != voices {
+                        acts.push(Act::Section(section));
+                    }
+                }
+                if voices {
+                    row.label(t(T::ProvVoiceName));
+                    edited |= row.add(egui::TextEdit::singleline(&mut this.voice).desired_width(90.0).char_limit(100)).changed();
+                } else {
+                    hint(row, t(T::ProvOrder));
+                }
+            });
+            // Those chosen, the first asked first.
+            let chosen = if voices { &this.voices } else { &this.models };
+            egui::ScrollArea::vertical().id_salt("chosen").max_height(64.0).show(ui, |ui| {
+                if chosen.is_empty() {
+                    hint(ui, t(T::ProvNone));
+                }
+                for (n, model) in chosen.iter().enumerate() {
+                    ui.horizontal(|row| {
+                        if row.add(button("▲").enabled(n > 0, "")).clicked() {
+                            acts.push(Act::Up(n));
+                        }
+                        if row.add(button("▼").enabled(n + 1 < chosen.len(), "")).clicked() {
+                            acts.push(Act::Down(n));
+                        }
+                        if row.add(button("×")).clicked() {
+                            acts.push(Act::Drop(n));
+                        }
+                        row.label(format!("{}. {model}", n + 1));
+                    });
+                }
+            });
+            ui.horizontal(|row| {
+                row.add(egui::TextEdit::singleline(&mut desk.typed_model).desired_width(220.0).char_limit(300));
+                if row.add(button(t(T::ProvAdd)).enabled(!desk.typed_model.trim().is_empty(), t(T::ModelTypeFirst))).clicked() {
+                    acts.push(Act::AddModel);
+                }
+                if row.add(button(t(T::ProvFetch))).clicked() {
+                    acts.push(Act::Fetch);
+                }
+            });
+            // Those on offer, narrowed by what is typed above; a press chooses one.
+            egui::ScrollArea::vertical().id_salt("offered").max_height(64.0).show(ui, |ui| {
+                ui.horizontal_wrapped(|row| {
+                    if shown.is_empty() {
+                        hint(row, t(if !stale && !desk.offered.is_empty() { T::ProvNoMatch } else { T::ProvFetchHint }));
+                    }
+                    for (n, id) in shown.iter().enumerate() {
+                        if row.add(button(id.as_str())).clicked() {
+                            acts.push(Act::Pick(n));
+                        }
+                    }
+                });
+            });
+            // What the last fetch or test came to.
+            if !note.is_empty() {
+                ui.add(egui::Label::new(RichText::new(&note).color(c(WAX_DARK))).wrap());
+            }
+        },
+        |footer| {
+            if footer.add(button(t(T::Back)).key("Esc")).clicked() {
+                pressed.push(Act::Back);
+            }
+            if footer.add(button(t(T::TestGm))).on_hover_text(t(T::TestGmHint)).clicked() {
+                pressed.push(Act::Test);
+            }
+        },
+    );
+    if edited {
+        let kept = settings.provider_mut(tab);
+        kept.account = this.account.clone();
+        kept.url = this.url.clone();
+        kept.voice = this.voice.clone();
     }
-    desk.typed_key = typed(Field::Key).unwrap_or_default();
-    desk.typed_model = typed(Field::Model).unwrap_or_default();
-    desk.redraw = true;
-    let shown = narrowed(&desk, &desk.typed_model);
-    let this = settings.provider_mut(tab);
-    fn list(this: &mut crate::store::ProviderSetting, voices: bool) -> &mut Vec<String> {
-        if voices { &mut this.voices } else { &mut this.models }
-    }
-    match *act {
-        Act::Tab(kind) => {
+    match to_tab {
+        Some(None) => next.set(Screen::Keys),
+        Some(Some(kind)) => {
             desk.tab = kind;
             desk.typed_key.clear();
             desk.typed_model.clear();
             desk.note.lock().unwrap().clear();
         }
-        Act::Gemini => {
-            desk.redraw = false;
-            next.set(Screen::Keys);
-        }
+        None => {}
+    }
+    acts.extend(pressed);
+    let save = edited || !acts.is_empty();
+    for act in acts {
+        do_act(act, &mut settings, desk, &shown, tab, voices, lang, &mut next, &mut return_to);
+    }
+    if save && let Err(e) = store.save_settings(&settings) {
+        error!("could not save settings: {e}");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn do_act(act: Act, settings: &mut Settings, desk: &mut Desk, shown: &[String], tab: Kind, voices: bool, lang: Lang, next: &mut NextState<Screen>, return_to: &mut ReturnTo) {
+    let patience = settings.patience();
+    let this = settings.provider_mut(tab);
+    fn list(this: &mut crate::store::ProviderSetting, voices: bool) -> &mut Vec<String> {
+        if voices { &mut this.voices } else { &mut this.models }
+    }
+    match act {
         Act::Toggle => {
             let on = !this.on;
             settings.set_master(on.then_some(tab));
         }
         Act::AddKey => {
             // Several keys may be pasted at once, parted by spaces, commas or new lines.
-            let pasted = desk.typed_key.clone();
+            let pasted = std::mem::take(&mut desk.typed_key);
             for key in pasted.split([' ', ',', ';', '\n']).filter(|k| !k.trim().is_empty()) {
                 this.add_key(key);
             }
-            desk.typed_key.clear();
         }
         Act::DropKey(n) => {
             // The place among the keys that can be read, which is what is shown.
@@ -352,12 +338,11 @@ fn on_activate(used: On<Activate>, acts: Query<&Act>, fields: Query<(&Field, &Ed
             desk.typed_model.clear();
         }
         Act::AddModel => {
-            let model = desk.typed_model.clone();
+            let model = std::mem::take(&mut desk.typed_model).trim().to_string();
             let models = list(this, voices);
             if !model.is_empty() && !models.contains(&model) {
                 models.push(model);
             }
-            desk.typed_model.clear();
         }
         Act::Up(n) => {
             let models = list(this, voices);
@@ -390,7 +375,7 @@ fn on_activate(used: On<Activate>, acts: Query<&Act>, fields: Query<(&Field, &Ed
             let slot = desk.fetched.clone();
             desk.offered_for = Some((tab, voices));
             desk.offered.clear();
-            *desk.note.lock().unwrap() = T::ProvFetching.text(*lang).to_string();
+            *desk.note.lock().unwrap() = T::ProvFetching.text(lang).to_string();
             std::thread::spawn(move || {
                 let listed = if voices { provider.list_voices() } else { provider.list_models() };
                 *slot.lock().unwrap() = Some(listed);
@@ -399,10 +384,8 @@ fn on_activate(used: On<Activate>, acts: Query<&Act>, fields: Query<(&Field, &Ed
         Act::Test => {
             let provider = this.provider(llm::ThinkingSetting::Off);
             let note = desk.note.clone();
-            *note.lock().unwrap() = T::TestRunning.text(*lang).to_string();
-            let lang = *lang;
+            *note.lock().unwrap() = T::TestRunning.text(lang).to_string();
             // The test waits as long as the master would: the player's setting.
-            let patience = settings.patience();
             std::thread::spawn(move || {
                 // Asked afresh, with nothing resting, so that the word is about now.
                 let rotation = Rotation::default();
@@ -420,20 +403,7 @@ fn on_activate(used: On<Activate>, acts: Query<&Act>, fields: Query<(&Field, &Ed
                 };
                 *note.lock().unwrap() = said;
             });
-            desk.redraw = false;
         }
-        Act::Back => {
-            desk.redraw = false;
-            next.set(return_to.0.take().unwrap_or(Screen::Main));
-        }
-    }
-    if let Err(e) = store.save_settings(&settings) {
-        error!("could not save settings: {e}");
-    }
-}
-
-fn escape(keys: Res<ButtonInput<KeyCode>>, mut return_to: ResMut<ReturnTo>, mut next: ResMut<NextState<Screen>>) {
-    if keys.just_pressed(KeyCode::Escape) {
-        next.set(return_to.0.take().unwrap_or(Screen::Main));
+        Act::Back => next.set(return_to.0.take().unwrap_or(Screen::Main)),
     }
 }

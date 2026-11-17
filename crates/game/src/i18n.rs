@@ -514,6 +514,15 @@ texts! {
     MasterCloudflare: "Мастер: Cloudflare", "Master: Cloudflare";
     MasterCustom: "Мастер: свой сервер", "Master: own server";
     MasterNow: "Сейчас игру ведёт:", "The game is run by:";
+    AiTitle: "Мастер (ИИ)", "Master (AI)";
+    KeysAbout: "Мастер ходит по ключам по очереди. Модели спрашиваются сверху вниз; щелчок по модели — выбрать её для кнопок под списком.", "The master takes the keys in turn. Models are asked from the top down; click one to pick it for the buttons under the list.";
+    ProviderAbout: "Ключи берутся по очереди, модели пробуются сверху вниз. Всё сохраняется само.", "The keys take turns, the models are tried from the top down. Everything is saved by itself.";
+    GeminiAlready: "Gemini уже ведёт игру.", "Gemini already runs the game.";
+    KeyTypeFirst: "Сначала вставь ключ в поле.", "Paste a key in the field first.";
+    PickModelFirst: "Сначала выбери модель в списке.", "Pick a model in the list first.";
+    ProvDropKey: "Убрать этот ключ", "Remove this key";
+    MasterMark: "● — этот мастер ведёт игру.", "● — this master runs the game.";
+    ModelTypeFirst: "Сначала впиши или выбери модель.", "Type or pick a model first.";
     MasterUseGemini: "Сделать Gemini мастером", "Make Gemini the master";
     ProvOne: "мастер один: включишь этого — прежний выключится", "one master at a time: switching this on switches the other off";
     KeysProvider: "Ключи и модели провайдера", "The provider's keys and models";

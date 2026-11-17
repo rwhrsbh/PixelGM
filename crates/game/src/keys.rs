@@ -1,77 +1,16 @@
 //! The key screen: enter Gemini keys, see which ones work, and watch how much of each model
 //! is left.
 
-use crate::art::Art;
 use crate::gm::{Gm, GmTest, Health, KeyBook, masked, trouble_text};
 use crate::i18n::{Lang, T, wait_text};
-use crate::menu::{Nav, Screen, screen_root, spawn_panel};
+use crate::menu::{ReturnTo, Screen};
 use crate::store::Settings;
 use crate::theme::*;
-use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, scroll_list, text_button};
-use bevy::input_focus::{AutoFocus, InputFocus};
+use crate::ui::egui::{self, Key, RichText, Sense, vec2};
+use crate::ui::kit::{self, Sheet, button, hint, warning};
+use crate::ui::theme::c;
 use bevy::prelude::*;
-use bevy::text::{EditableText, TextCursorStyle};
-use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use llm::{Availability, Class, KeyId, Tier};
-
-#[derive(Component, Clone, Copy)]
-enum KeyAction {
-    Add,
-    Remove(KeyId),
-    Recheck(KeyId),
-    TestGm,
-    /// To another master's keys and models.
-    Provider(llm::providers::Kind),
-    /// Gemini runs the game again.
-    UseGemini,
-}
-
-#[derive(Component)]
-struct MasterLine;
-
-fn master_line(settings: Res<Settings>, lang: Res<Lang>, mut lines: Query<&mut Text, With<MasterLine>>) {
-    let who = settings.active_provider().map_or("Gemini", |kind| kind.name());
-    let said = format!("{} {who}", T::MasterNow.text(*lang));
-    for mut text in &mut lines {
-        if text.0 != said {
-            text.0 = said.clone();
-        }
-    }
-}
-
-#[derive(Component)]
-struct TestResult;
-
-#[derive(Component)]
-struct KeyInput;
-
-#[derive(Component)]
-struct KeyList;
-
-#[derive(Component)]
-struct ModelList;
-
-/// A model's line in the list; pressing it picks the model for the buttons underneath.
-#[derive(Component)]
-struct ModelRow(String);
-
-/// The words at the right of a model's line: they change by the second, the line does not.
-#[derive(Component)]
-struct ModelState(String);
-
-/// What the buttons under the list do with the model that is picked.
-#[derive(Component, Clone, Copy)]
-enum ModelAct {
-    Up,
-    Down,
-    Switch,
-    /// Back to the game's own order, with nothing switched off.
-    Reset,
-}
-
-/// The model the player last pressed in the list.
-#[derive(Resource, Default)]
-struct Picked(Option<String>);
 
 /// A model as its line shows it.
 #[derive(Clone, PartialEq, Debug)]
@@ -92,14 +31,8 @@ fn model_lines(chain: &[llm::Model], survey: &[llm::Surveyed]) -> Vec<ModelLine>
     lines
 }
 
-const FIELD_BORDER: f32 = 4.0;
-const KEY_ROW_GAP: f32 = 2.0;
-/// Keys beyond this many scroll, so the sheet keeps fitting the screen.
-const VISIBLE_KEY_ROWS: f32 = 4.0;
 /// Where a player gets a key. An address, so it is the same in every language.
 const KEY_PAGE: &str = "aistudio.google.com/apikey";
-/// Models beyond what fits in this scroll, so the buttons under the list stay on the sheet.
-const MODEL_LIST_HEIGHT: f32 = 92.0;
 
 fn model_status(a: Availability, now: u64, lang: Lang) -> String {
     match (a.live_keys, a.free_keys, a.next_free) {
@@ -109,83 +42,6 @@ fn model_status(a: Availability, now: u64, lang: Lang) -> String {
     }
 }
 
-fn column(gap: f32) -> Node {
-    Node { flex_direction: FlexDirection::Column, row_gap: px(gap), ..default() }
-}
-
-fn row(gap: f32) -> Node {
-    Node { align_items: AlignItems::Center, column_gap: px(gap), ..default() }
-}
-
-fn spawn_keys(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>) {
-    let ink = TextColor(color(INK));
-    commands.spawn(screen_root(Screen::Keys)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(12)), width: px(452), ..column(6.0) };
-        spawn_panel(root, &art, sheet, |sheet| {
-            sheet.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|tabs| {
-                // The tab one is on: pressing it does nothing.
-                text_button(tabs, &art, &fonts, "[Gemini]".to_string(), ());
-                for kind in llm::providers::Kind::ALL {
-                    text_button(tabs, &art, &fonts, kind.name().to_string(), KeyAction::Provider(kind));
-                }
-            });
-            sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                line.spawn((Text::default(), MasterLine, fonts.body(), TextColor(color(WAX_DARK))));
-                button(line, &art, &fonts, T::MasterUseGemini, true, KeyAction::UseGemini);
-            });
-            sheet.spawn(Node { column_gap: px(12), align_items: AlignItems::FlexStart, ..default() }).with_children(|columns| {
-                columns.spawn(Node { width: px(216), flex_shrink: 0.0, ..column(5.0) }).with_children(|left| {
-                    left.spawn((Text::default(), T::KeysHelp, fonts.body(), ink));
-                    left.spawn((Text::new(KEY_PAGE), fonts.body(), TextColor(color(WAX_DARK))));
-                    left.spawn(row(4.0)).with_children(|line| {
-                        line.spawn(Node {
-                            flex_grow: 1.0,
-                            height: px(16),
-                            padding: UiRect::axes(px(5), px(0)),
-                            align_items: AlignItems::Center,
-                            overflow: Overflow::clip(),
-                            ..default()
-                        })
-                        .with_children(|field| {
-                            field.spawn(backing(art.field.clone(), FIELD_BORDER));
-                            field.spawn((
-                                KeyInput,
-                                AutoFocus,
-                                AutoDirectionalNavigation::default(),
-                                Node { width: percent(100), ..default() },
-                                EditableText { allow_newlines: false, max_characters: Some(200), ..default() },
-                                TextLayout::no_wrap(),
-                                fonts.body(),
-                                ink,
-                                TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
-                            ));
-                        });
-                        button(line, &art, &fonts, T::Add, true, KeyAction::Add);
-                    });
-                    left.spawn((Text::default(), T::KeysInputHint, fonts.body(), TextColor(color(FADED))));
-                    left.spawn((scroll_list(column(KEY_ROW_GAP), VISIBLE_KEY_ROWS * (BUTTON_HEIGHT + KEY_ROW_GAP)), KeyList));
-                });
-                columns.spawn(Node { flex_grow: 1.0, ..column(3.0) }).with_children(|right| {
-                    right.spawn((Text::default(), T::ModelsTitle, fonts.body(), TextColor(color(WAX_DARK))));
-                    right.spawn((Text::default(), T::ModelsLegend, fonts.body(), TextColor(color(FADED))));
-                    right.spawn((scroll_list(column(0.0), MODEL_LIST_HEIGHT), ModelList));
-                    right.spawn(Node { column_gap: px(3), row_gap: px(2), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|line| {
-                        button(line, &art, &fonts, T::ModelUp, true, ModelAct::Up);
-                        button(line, &art, &fonts, T::ModelDown, true, ModelAct::Down);
-                        button(line, &art, &fonts, T::ModelSwitch, true, ModelAct::Switch);
-                        button(line, &art, &fonts, T::ModelsReset, true, ModelAct::Reset);
-                    });
-                });
-            });
-            sheet.spawn(row(6.0)).with_children(|line| {
-                button(line, &art, &fonts, T::Back, true, Nav::Back);
-                button(line, &art, &fonts, T::TestGm, true, KeyAction::TestGm);
-                line.spawn((Node { flex_grow: 1.0, flex_basis: px(0), ..default() }, Text::default(), TestResult, fonts.body(), ink));
-            });
-        });
-    });
-}
-
 fn health_text(health: &Health) -> (T, Rgba) {
     match health {
         Health::Checking => (T::KeyChecking, FADED),
@@ -193,38 +49,6 @@ fn health_text(health: &Health) -> (T, Rgba) {
         Health::Rejected => (T::KeyRejected, WAX),
         Health::Unreachable => (T::KeyUnreachable, WAX),
     }
-}
-
-/// The list of keys is redrawn only when it changes: redrawing it under the cursor would
-/// swallow a click that is half way through.
-fn redraw_keys(
-    mut commands: Commands,
-    art: Res<Art>,
-    fonts: Res<Fonts>,
-    book: Res<KeyBook>,
-    list: Query<Entity, With<KeyList>>,
-    fresh: Query<(), Added<KeyList>>,
-) {
-    let Ok(list) = list.single() else { return };
-    if !book.is_changed() && fresh.is_empty() {
-        return;
-    }
-    commands.entity(list).despawn_children().with_children(|rows| {
-        if book.entries.is_empty() {
-            rows.spawn((Text::default(), T::NoKeys, fonts.body(), TextColor(color(WAX))));
-        }
-        for entry in &book.entries {
-            let (status, status_color) = health_text(&entry.health);
-            rows.spawn(row(4.0)).with_children(|line| {
-                line.spawn((Node { width: px(64), flex_shrink: 0.0, ..default() }, Text::new(masked(&entry.secret)), TextLayout::no_wrap(), fonts.body(), TextColor(color(INK))));
-                line.spawn((Node { flex_grow: 1.0, ..default() }, Text::default(), status, fonts.body(), TextColor(color(status_color))));
-                if entry.health == Health::Unreachable {
-                    button(line, &art, &fonts, T::Recheck, true, KeyAction::Recheck(entry.id));
-                }
-                button(line, &art, &fonts, T::Remove, true, KeyAction::Remove(entry.id));
-            });
-        }
-    });
 }
 
 /// The words at the right of a model's line and their colour.
@@ -239,131 +63,6 @@ fn state_of(line: &ModelLine, availability: Availability, now: u64, lowest: Tier
     }
 }
 
-/// The list is built anew only when the models in it or their order change: its lines are
-/// pressed, and a line redrawn under the cursor would swallow the press. What changes by
-/// the second — how many keys are free, how long a rest has left — is written into the
-/// lines that are there.
-#[allow(clippy::too_many_arguments)]
-fn redraw_models(
-    mut commands: Commands,
-    fonts: Res<Fonts>,
-    gm: Res<Gm>,
-    lang: Res<Lang>,
-    settings: Res<Settings>,
-    time: Res<Time>,
-    mut picked: ResMut<Picked>,
-    mut since: Local<f32>,
-    mut shown: Local<Vec<ModelLine>>,
-    list: Query<Entity, With<ModelList>>,
-    fresh: Query<(), Added<ModelList>>,
-    mut states: Query<(&ModelState, &mut Text, &mut TextColor)>,
-    mut rows: Query<(&ModelRow, &Interaction, &mut BackgroundColor)>,
-) {
-    let Ok(list) = list.single() else { return };
-    let now = gm.dispatcher.now();
-    let survey = gm.dispatcher.survey();
-    let (lines, free): (Vec<ModelLine>, Vec<Availability>) = gm.dispatcher.with_pool(|pool| {
-        let lines = model_lines(pool.chain(), &survey);
-        let free = lines.iter().map(|line| pool.availability(now, &line.id)).collect();
-        (lines, free)
-    });
-    // A model that is gone cannot stay picked.
-    if picked.0.as_ref().is_some_and(|id| !lines.iter().any(|line| line.id == *id)) {
-        picked.0 = None;
-    }
-    for (row, interaction, mut back) in &mut rows {
-        let wanted = if picked.0.as_deref() == Some(row.0.as_str()) {
-            color(BRASS_LIGHT)
-        } else if *interaction != Interaction::None {
-            color(PARCHMENT_SHADE)
-        } else {
-            Color::NONE
-        };
-        if back.0 != wanted {
-            back.0 = wanted;
-        }
-    }
-    if *shown != lines || !fresh.is_empty() {
-        *shown = lines.clone();
-        *since = 0.0;
-        commands.entity(list).despawn_children().with_children(|rows| {
-            if lines.is_empty() {
-                rows.spawn((Text::default(), T::ModelsUnknown, fonts.body(), TextColor(color(FADED))));
-            }
-            for (line, availability) in lines.iter().zip(&free) {
-                let (state, state_color) = state_of(line, *availability, now, settings.lowest_tier, *lang);
-                let name = if line.place.is_some() && line.tier <= settings.lowest_tier { INK } else { FADED };
-                let label = line.place.map_or_else(|| format!(" · {}", line.id), |n| format!("{n:>2} {}", line.id));
-                rows.spawn((
-                    crate::widgets::Plate,
-                    crate::widgets::PixelButton::plain(),
-                    ModelRow(line.id.clone()),
-                    AutoDirectionalNavigation::default(),
-                    Node { width: percent(100), justify_content: JustifyContent::SpaceBetween, column_gap: px(6), padding: UiRect::horizontal(px(2)), flex_shrink: 0.0, ..default() },
-                    BackgroundColor(Color::NONE),
-                ))
-                .with_children(|row| {
-                    row.spawn((Text::new(label), TextLayout::no_wrap(), fonts.body(), TextColor(color(name)), Pickable::IGNORE));
-                    row.spawn((ModelState(line.id.clone()), Text::new(state), TextLayout::no_wrap(), fonts.body(), TextColor(color(state_color)), Pickable::IGNORE));
-                });
-            }
-        });
-        return;
-    }
-    *since += time.delta_secs();
-    if *since < 1.0 && !lang.is_changed() && !settings.is_changed() {
-        return;
-    }
-    *since = 0.0;
-    for (state, mut text, mut ink) in &mut states {
-        let Some((line, availability)) = lines.iter().zip(&free).find(|(line, _)| line.id == state.0) else { continue };
-        let (said, said_color) = state_of(line, *availability, now, settings.lowest_tier, *lang);
-        if text.0 != said {
-            text.0 = said;
-        }
-        if ink.0 != color(said_color) {
-            ink.0 = color(said_color);
-        }
-    }
-}
-
-/// A line of the list pressed: that model is the one the buttons underneath act on.
-fn on_pick(used: On<Activate>, rows: Query<&ModelRow>, mut picked: ResMut<Picked>) {
-    if let Ok(row) = rows.get(used.entity) {
-        picked.0 = Some(row.0.clone());
-    }
-}
-
-/// The picked model moved, switched, or the whole order given back to the game. The chain
-/// follows at once, and the choice is kept with the settings.
-fn on_model_act(used: On<Activate>, acts: Query<&ModelAct>, gm: Res<Gm>, picked: Res<Picked>, mut settings: ResMut<Settings>, store: Res<crate::store::Store>) {
-    let Ok(act) = acts.get(used.entity) else { return };
-    let chain: Vec<llm::Model> = gm.dispatcher.with_pool(|pool| pool.chain().to_vec());
-    let choice = match (act, &picked.0) {
-        (ModelAct::Reset, _) => llm::Choice::default(),
-        (ModelAct::Up, Some(id)) => settings.gemini.moved(&chain, id, true),
-        (ModelAct::Down, Some(id)) => settings.gemini.moved(&chain, id, false),
-        (ModelAct::Switch, Some(id)) => settings.gemini.switched(&chain, id),
-        (_, None) => return,
-    };
-    if choice == settings.gemini {
-        return;
-    }
-    gm.dispatcher.set_choice(choice.clone());
-    settings.gemini = choice;
-    if let Err(e) = store.save_settings(&settings) {
-        error!("could not save settings: {e}");
-    }
-}
-
-fn add_from_input(gm: &Gm, book: &mut KeyBook, input: &mut EditableText) {
-    let typed = input.value().to_string();
-    // A duplicate stays in the field so the player can see what was refused.
-    if gm.add_key(book, &typed) {
-        input.clear();
-    }
-}
-
 /// What the last test of the game master came to, in words and in the colour of the news.
 fn test_text(test: &GmTest, now: u64, lang: Lang) -> (String, Rgba) {
     match test {
@@ -374,62 +73,204 @@ fn test_text(test: &GmTest, now: u64, lang: Lang) -> (String, Rgba) {
     }
 }
 
-fn show_test(gm: Res<Gm>, test: Res<GmTest>, lang: Res<Lang>, mut line: Query<(&mut Text, &mut TextColor), With<TestResult>>, fresh: Query<(), Added<TestResult>>) {
-    if !test.is_changed() && !lang.is_changed() && fresh.is_empty() {
-        return;
-    }
-    let (text, ink) = test_text(&test, gm.dispatcher.now(), *lang);
-    for (mut line, mut line_color) in &mut line {
-        line.0 = text.clone();
-        line_color.0 = color(ink);
-    }
+/// What a press on the Gemini screen asks for.
+#[derive(Clone, Copy)]
+enum KeyAction {
+    Add,
+    Remove(KeyId),
+    Recheck(KeyId),
+    TestGm,
+    /// Gemini runs the game again.
+    UseGemini,
 }
 
-fn on_activate(
-    used: On<Activate>,
-    buttons: Query<&KeyAction>,
-    gm: Res<Gm>,
-    (mut settings, store, mut desk, mut next): (ResMut<Settings>, Res<crate::store::Store>, ResMut<crate::provider::Desk>, ResMut<NextState<Screen>>),
-    mut book: ResMut<KeyBook>,
-    mut test: ResMut<GmTest>,
-    mut input: Query<&mut EditableText, With<KeyInput>>,
+/// What the buttons under the list do with the model that is picked.
+#[derive(Clone, Copy)]
+enum ModelAct {
+    Up,
+    Down,
+    Switch,
+    /// Back to the game's own order, with nothing switched off.
+    Reset,
+}
+
+/// The Gemini screen, drawn with egui: the master's tabs, the keys at the left and the
+/// models at the right, each with what it is for; a test and Back at the bottom.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn keys_screen(
+    mut egui: bevy_egui::EguiContexts,
+    (gm, mut book, mut test, lang): (Res<Gm>, ResMut<KeyBook>, ResMut<GmTest>, Res<Lang>),
+    (mut settings, store, mut desk, mut next, mut return_to): (ResMut<Settings>, Res<crate::store::Store>, ResMut<crate::provider::Desk>, ResMut<NextState<Screen>>, ResMut<ReturnTo>),
+    mut picked: Local<Option<String>>,
+    mut typed: Local<String>,
 ) {
-    let Ok(action) = buttons.get(used.entity) else { return };
-    match *action {
-        KeyAction::Add => {
-            if let Ok(mut input) = input.single_mut() {
-                add_from_input(&gm, &mut book, &mut input);
+    let lang = *lang;
+    let t = |text: T| text.text(lang);
+    let now = gm.dispatcher.now();
+    let survey = gm.dispatcher.survey();
+    let (lines, free, chain): (Vec<ModelLine>, Vec<Availability>, Vec<llm::Model>) = gm.dispatcher.with_pool(|pool| {
+        let lines = model_lines(pool.chain(), &survey);
+        let free = lines.iter().map(|line| pool.availability(now, &line.id)).collect();
+        (lines, free, pool.chain().to_vec())
+    });
+    // A model that is gone cannot stay picked.
+    if picked.as_ref().is_some_and(|id| !lines.iter().any(|line| line.id == *id)) {
+        *picked = None;
+    }
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let Some(mut ui) = kit::screen_ui(ctx, "keys") else { return };
+    let mut to_tab = None;
+    let mut act = None;
+    let mut model_act = None;
+    let mut back = false;
+    let mut testing = false;
+    let (said, said_tint) = test_text(&test, now, lang);
+    let sheet = Sheet { id: "keys", title: t(T::AiTitle), about: t(T::KeysAbout), max: vec2(480.0, 380.0), top: 0.0, fixed: true };
+    kit::sheet(
+        &mut ui,
+        sheet,
+        |ui| {
+            to_tab = crate::provider::tabs(ui, &settings, None, lang);
+            ui.horizontal(|row| {
+                let who = settings.active_provider().map_or("Gemini", |kind| kind.name());
+                row.label(RichText::new(format!("{} {who}", t(T::MasterNow))).color(c(WAX_DARK)));
+                if row.add(button(t(T::MasterUseGemini)).enabled(settings.active_provider().is_some(), t(T::GeminiAlready))).clicked() {
+                    act = Some(KeyAction::UseGemini);
+                }
+            });
+            ui.add_space(4.0);
+            ui.columns(2, |cols| {
+                // The keys: how to get one, the field to paste it in, and those there are.
+                let left = &mut cols[0];
+                left.add(egui::Label::new(t(T::KeysHelp)).wrap());
+                left.label(RichText::new(KEY_PAGE).color(c(WAX_DARK)));
+                left.horizontal(|row| {
+                    let field = row.add(egui::TextEdit::singleline(&mut *typed).desired_width((row.available_width() - 74.0).max(60.0)).char_limit(200).hint_text("AIza…"));
+                    let entered = field.lost_focus() && row.input(|i| i.key_pressed(Key::Enter));
+                    let ready = !typed.trim().is_empty();
+                    if row.add(button(t(T::Add)).enabled(ready, t(T::KeyTypeFirst))).clicked() || (entered && ready) {
+                        act = Some(KeyAction::Add);
+                    }
+                });
+                hint(left, t(T::KeysInputHint));
+                egui::ScrollArea::vertical().id_salt("key_list").max_height(90.0).show(left, |ui| {
+                    if book.entries.is_empty() {
+                        warning(ui, t(T::NoKeys));
+                    }
+                    for entry in &book.entries {
+                        let (status, tint) = health_text(&entry.health);
+                        ui.horizontal(|row| {
+                            row.label(masked(&entry.secret));
+                            row.label(RichText::new(t(status)).color(c(tint)));
+                            if entry.health == Health::Unreachable && row.add(button(t(T::Recheck))).clicked() {
+                                act = Some(KeyAction::Recheck(entry.id));
+                            }
+                            if row.add(button(t(T::Remove))).clicked() {
+                                act = Some(KeyAction::Remove(entry.id));
+                            }
+                        });
+                    }
+                });
+                // The models: the order they are asked in, and what each has left.
+                let right = &mut cols[1];
+                right.label(RichText::new(t(T::ModelsTitle)).color(c(WAX_DARK)));
+                hint(right, t(T::ModelsLegend));
+                egui::ScrollArea::vertical().id_salt("model_list").max_height(120.0).show(right, |ui| {
+                    if lines.is_empty() {
+                        hint(ui, t(T::ModelsUnknown));
+                    }
+                    for (line, availability) in lines.iter().zip(&free) {
+                        let (state, state_tint) = state_of(line, *availability, now, settings.lowest_tier, lang);
+                        let name_tint = if line.place.is_some() && line.tier <= settings.lowest_tier { INK } else { FADED };
+                        let label = line.place.map_or_else(|| format!(" · {}", line.id), |n| format!("{n:>2} {}", line.id));
+                        let chosen = picked.as_deref() == Some(line.id.as_str());
+                        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0), Sense::click());
+                        if chosen {
+                            ui.painter().rect_filled(rect, 0.0, c(BRASS_LIGHT));
+                        } else if response.hovered() {
+                            ui.painter().rect_filled(rect, 0.0, c(PARCHMENT_SHADE));
+                        }
+                        ui.painter().text(rect.left_center() + vec2(2.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(crate::ui::theme::BODY), c(name_tint));
+                        ui.painter().text(rect.right_center() - vec2(2.0, 0.0), egui::Align2::RIGHT_CENTER, state, egui::FontId::proportional(crate::ui::theme::BODY), c(state_tint));
+                        if response.clicked() {
+                            *picked = Some(line.id.clone());
+                        }
+                    }
+                });
+                right.horizontal_wrapped(|row| {
+                    let ready = picked.is_some();
+                    let why = t(T::PickModelFirst);
+                    for (label, then) in [(T::ModelUp, ModelAct::Up), (T::ModelDown, ModelAct::Down), (T::ModelSwitch, ModelAct::Switch)] {
+                        if row.add(button(t(label)).enabled(ready, why)).clicked() {
+                            model_act = Some(then);
+                        }
+                    }
+                    if row.add(button(t(T::ModelsReset))).clicked() {
+                        model_act = Some(ModelAct::Reset);
+                    }
+                });
+            });
+            // What the last test of the master came to.
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(&said).color(c(said_tint))).wrap());
+        },
+        |footer| {
+            if footer.add(button(t(T::Back)).key("Esc")).clicked() {
+                back = true;
+            }
+            if footer.add(button(t(T::TestGm))).on_hover_text(t(T::TestGmHint)).clicked() {
+                testing = true;
+            }
+        },
+    );
+    if testing {
+        act = Some(KeyAction::TestGm);
+    }
+    match act {
+        Some(KeyAction::Add) => {
+            // A duplicate stays in the field so the player can see what was refused.
+            if gm.add_key(&mut book, &typed) {
+                typed.clear();
             }
         }
-        KeyAction::Remove(id) => gm.remove_key(&mut book, id),
-        KeyAction::Recheck(id) => gm.recheck(&mut book, id),
-        KeyAction::TestGm => gm.test(&mut test, &settings),
-        KeyAction::Provider(kind) => {
-            desk.open_on = Some(kind);
-            next.set(Screen::Provider);
-        }
-        KeyAction::UseGemini => {
+        Some(KeyAction::Remove(id)) => gm.remove_key(&mut book, id),
+        Some(KeyAction::Recheck(id)) => gm.recheck(&mut book, id),
+        Some(KeyAction::TestGm) => gm.test(&mut test, &settings),
+        Some(KeyAction::UseGemini) => {
             settings.set_master(None);
             if let Err(e) = store.save_settings(&settings) {
                 error!("could not save settings: {e}");
             }
         }
+        None => {}
     }
-}
-
-fn submit_on_enter(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    focus: Res<InputFocus>,
-    gm: Res<Gm>,
-    mut book: ResMut<KeyBook>,
-    mut input: Query<(Entity, &mut EditableText), With<KeyInput>>,
-) {
-    if !keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
-        return;
+    // The picked model moved, switched, or the whole order given back to the game. The chain
+    // follows at once, and the choice is kept with the settings.
+    if let Some(model_act) = model_act {
+        let choice = match (model_act, picked.as_ref()) {
+            (ModelAct::Reset, _) => Some(llm::Choice::default()),
+            (ModelAct::Up, Some(id)) => Some(settings.gemini.moved(&chain, id, true)),
+            (ModelAct::Down, Some(id)) => Some(settings.gemini.moved(&chain, id, false)),
+            (ModelAct::Switch, Some(id)) => Some(settings.gemini.switched(&chain, id)),
+            (_, None) => None,
+        };
+        if let Some(choice) = choice.filter(|choice| *choice != settings.gemini) {
+            gm.dispatcher.set_choice(choice.clone());
+            settings.gemini = choice;
+            if let Err(e) = store.save_settings(&settings) {
+                error!("could not save settings: {e}");
+            }
+        }
     }
-    let Ok((entity, mut input)) = input.single_mut() else { return };
-    if focus.get() == Some(entity) {
-        add_from_input(&gm, &mut book, &mut input);
+    match to_tab {
+        Some(Some(kind)) => {
+            desk.open_on = Some(kind);
+            next.set(Screen::Provider);
+        }
+        Some(None) | None => {}
+    }
+    if back {
+        next.set(return_to.0.take().unwrap_or(Screen::Main));
     }
 }
 
@@ -437,11 +278,7 @@ pub struct KeysPlugin;
 
 impl Plugin for KeysPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Picked>().add_systems(OnEnter(Screen::Keys), spawn_keys)
-            .add_systems(Update, (submit_on_enter, redraw_keys, redraw_models, show_test, master_line).chain().run_if(in_state(Screen::Keys)))
-            .add_observer(on_pick)
-            .add_observer(on_model_act)
-            .add_observer(on_activate);
+        app.add_systems(bevy_egui::EguiPrimaryContextPass, keys_screen.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Keys)));
     }
 }
 
