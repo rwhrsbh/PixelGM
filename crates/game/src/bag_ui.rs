@@ -5,22 +5,20 @@
 //! outside the bag, it falls on the ground by the hero, for anyone to pick up. A right click
 //! uses a thing. A guest's moves are shown at once and confirmed by the host.
 
-use crate::art::Art;
 use crate::audio::{Play, Sfx};
 use crate::coop::{Intent, Session, player_name};
 use crate::i18n::{Lang, T};
 use crate::icons::{CELL, icon};
 use crate::play::{Game, Phase, Redraw, my_hero};
-use crate::screen::{UI_PIXEL, fit};
+use crate::screen::UI_PIXEL;
 use crate::store::Settings;
 use crate::theme::*;
-use crate::widgets::panel_backing;
 use bevy::prelude::*;
-use bevy::ui::FocusPolicy;
-use bevy::window::PrimaryWindow;
 use std::collections::HashMap;
 use world::bag::{BAG_H, BAG_W, Gear, Held, Slot, Spot, Used, gear_kind, gear_name, gear_size, worn};
 use world::{Item, World};
+
+pub mod draw;
 
 pub struct BagPlugin;
 
@@ -28,7 +26,10 @@ impl Plugin for BagPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BagState>()
             .init_resource::<Said>()
-            .add_systems(Update, (open, build, press, outside, hover, follow, highlight, quick_assign, quick_bar, quick_use).chain().run_if(in_state(crate::menu::Screen::Play)).run_if(resource_exists::<Game>));
+            .init_resource::<draw::Clicks>()
+            .init_resource::<draw::Pictures>()
+            .add_systems(Update, (open, press, outside, quick_assign, quick_use).chain().run_if(in_state(crate::menu::Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(bevy_egui::EguiPrimaryContextPass, (draw::draw, draw::quick_bar).in_set(crate::ui::UiSet::Screens).run_if(in_state(crate::menu::Screen::Play)).run_if(resource_exists::<Game>));
     }
 }
 
@@ -44,22 +45,12 @@ pub struct BagState {
     held: Option<Held>,
     /// What the cursor is over: a cell, or none.
     over: Option<(u8, u8)>,
-    tip: Vec<(String, Rgba)>,
-    built: String,
-    icons: HashMap<String, Handle<Image>>,
-    dolls: HashMap<String, Vec<Handle<Image>>>,
-    /// Whether a shop was open beside the bag when it was last drawn.
-    shop_open: bool,
 }
 
-#[derive(Component)]
-struct BagRoot;
-
-#[derive(Component)]
-struct BagContent;
-
-#[derive(Component, Clone, Copy)]
-enum Target {
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Target {
+    /// Nothing of the bag: a right click there only lets go of what is held.
+    Nothing,
     Cell(u8, u8),
     Slot(Slot),
     Loose(usize),
@@ -73,29 +64,6 @@ enum Target {
     AllyPack(usize),
     /// A thing in a companion's pack: taken out.
     AllyItem(usize, usize),
-}
-
-#[derive(Component)]
-struct HeldIcon;
-
-#[derive(Component)]
-struct Tip;
-
-#[derive(Component)]
-struct Shadow;
-
-/// The panel on the right half of the interface, and its parts, in pixels of the interface.
-const PANEL: (f32, f32, f32, f32) = (240.0, 2.0, 238.0, 252.0);
-const GRID: (f32, f32) = (23.0, 116.0);
-const DOLL: (f32, f32) = (50.0, 16.0);
-
-fn slot_box(slot: Slot) -> (f32, f32, u8, u8) {
-    match slot {
-        Slot::Main => (12.0, 20.0, 2, 4),
-        Slot::Spare => (190.0, 20.0, 2, 4),
-        Slot::Shield => (154.0, 20.0, 2, 2),
-        Slot::Body => (118.0, 20.0, 2, 3),
-    }
 }
 
 fn slot_label(slot: Slot) -> T {
@@ -117,40 +85,20 @@ fn my_heroes(world: &World, session: &Session, settings: &Settings) -> Vec<usize
     }
 }
 
-fn open(mut commands: Commands, phase: Res<Phase>, roots: Query<Entity, With<BagRoot>>, mut state: ResMut<BagState>, mut game: ResMut<Game>, session: Res<Session>, mut was: Local<bool>) {
+fn open(phase: Res<Phase>, mut state: ResMut<BagState>, mut game: ResMut<Game>, session: Res<Session>, mut was: Local<bool>) {
     let open = *phase == Phase::Bag;
     if open && !*was {
         if !session.is_client() && game.world.party.iter().any(|h| h.weapons.len() > 2) {
             game.world.tidy_gear();
         }
         game.world.ensure_bags();
-        commands.spawn((BagRoot, Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() }, GlobalZIndex(10), Pickable::IGNORE, FocusPolicy::Pass));
-        state.built.clear();
         state.held = None;
-    }
-    if !open {
-        for root in &roots {
-            commands.entity(root).despawn();
-        }
     }
     *was = open;
 }
 
 fn bag(world: &World, hero: usize) -> &[Item] {
     world.story.bags.get(hero).map_or(&[], |b| b.inventory.as_slice())
-}
-
-fn fingerprint(world: &World, state: &BagState, hero: Option<usize>, lang: Lang) -> String {
-    let gold = world.story.bags.get(state.hero).map_or(0, |b| b.gold);
-    let rest = fingerprint_things(world, state, hero, lang);
-    let with: Vec<(&str, Option<&str>, Option<&str>, Vec<(&str, u32)>)> = world.companions.iter().map(|c| (c.creature.name.as_str(), c.weapon.as_ref().map(|w| w.name.as_str()), c.armor.as_ref().map(|a| a.name.as_str()), c.pack.iter().map(|i| (i.name.as_str(), i.count)).collect())).collect();
-    format!("{gold}|{with:?}|{rest}")
-}
-
-fn fingerprint_things(world: &World, state: &BagState, hero: Option<usize>, lang: Lang) -> String {
-    let h = hero.unwrap_or(0);
-    let worn: Vec<_> = hero.and_then(|h| world.party.get(h)).map(|h| Slot::ALL.map(|s| worn(h, s))).into_iter().collect();
-    format!("{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}", bag(world, h), world.held_light(h), worn, hero, state.held, lang, hero.and_then(|h| world.party.get(h)).map(|h| (h.hp, h.max_hp, h.look)))
 }
 
 fn item_name(item: &Item, ru: bool) -> String {
@@ -225,10 +173,6 @@ pub fn item_lines(item: &Item, lang: Lang) -> Vec<(String, Rgba)> {
     lines
 }
 
-fn abs(left: f32, top: f32, width: f32, height: f32) -> Node {
-    Node { position_type: PositionType::Absolute, left: px(left), top: px(top), width: px(width), height: px(height), ..default() }
-}
-
 fn icon_key(item: &Item) -> String {
     format!("{}|{:?}|{:?}|{}", item.name, item.gear, item.size_cells, item.rows.len())
 }
@@ -253,200 +197,6 @@ pub fn picture(item: &Item, world: &World) -> crate::art::Pixels {
     }
     crate::scene::outline(&mut p, INK);
     p
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build(
-    mut commands: Commands,
-    phase: Res<Phase>,
-    game: Res<Game>,
-    session: Res<Session>,
-    settings: Res<Settings>,
-    lang: Res<Lang>,
-    art: Res<Art>,
-    fonts: Res<Fonts>,
-    roots: Query<Entity, With<BagRoot>>,
-    contents: Query<Entity, With<BagContent>>,
-    mut state: ResMut<BagState>,
-    mut images: ResMut<Assets<Image>>,
-    shopping: Res<crate::shop_ui::Shopping>,
-) {
-    if *phase != Phase::Bag {
-        return;
-    }
-    // A shop lies where the companions' panel would: one or the other.
-    let shopping = shopping.0.is_some();
-    if state.shop_open != shopping {
-        state.shop_open = shopping;
-        state.built.clear();
-    }
-    let Ok(root) = roots.single() else { return };
-    let world = &game.world;
-    let mine = my_heroes(world, &session, &settings);
-    if !mine.contains(&state.hero) {
-        state.hero = mine.first().copied().unwrap_or(0);
-    }
-    let hero_index = mine.contains(&state.hero).then_some(state.hero);
-    let print = fingerprint(world, &state, hero_index, *lang);
-    if print == state.built {
-        return;
-    }
-    state.built = print;
-    for old in &contents {
-        commands.entity(old).despawn();
-    }
-    let ru = *lang == Lang::Ru;
-    let h = hero_index.unwrap_or(0);
-    let mut icon_of = |item: &Item, state: &mut BagState| -> Handle<Image> { state.icons.entry(icon_key(item)).or_insert_with(|| images.add(picture(item, world).into_image())).clone() };
-    let held_item = match &state.held {
-        Some(Held::Item(i)) => Some(*i),
-        _ => None,
-    };
-    let held_slot = match &state.held {
-        Some(Held::Worn(_, slot)) => Some(*slot),
-        _ => None,
-    };
-    let cell = CELL as f32;
-    let placed: Vec<(usize, (u8, u8), (u8, u8), Handle<Image>)> = bag(world, h).iter().enumerate().filter_map(|(i, item)| item.at.map(|at| (i, at, item.size(), icon_of(item, &mut state)))).collect();
-    let hero = hero_index.and_then(|h| world.party.get(h));
-    let mut worn_icons: Vec<(Slot, Handle<Image>)> = hero
-        .map(|hero| {
-            Slot::ALL
-                .iter()
-                .filter_map(|slot| {
-                    worn(hero, *slot).map(|index| {
-                        // A thing of the master's own keeps its own picture while worn.
-                        let own = world.story.bags.get(h).and_then(|b| b.worn_as.iter().find(|i| i.gear.as_deref() == Some(index.as_str()))).cloned();
-                        let shown = own.unwrap_or(Item { name: gear_name(&index, false), gear: Some(index), count: 1, ..default() });
-                        (*slot, icon_of(&shown, &mut state))
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    // A light in the off hand shows where a shield would.
-    if let Some(light) = world.held_light(h).cloned() {
-        worn_icons.push((Slot::Shield, icon_of(&light, &mut state)));
-    }
-    // Those who travel with this player: what each was given to fight with and to wear.
-    #[allow(clippy::type_complexity)]
-    let with: Vec<(usize, String, Option<Handle<Image>>, Option<Handle<Image>>, Vec<(Handle<Image>, u32)>, u32)> = world
-        .companions_here()
-        .into_iter()
-        .map(|n| {
-            let c = &world.companions[n];
-            let pack = c.pack.iter().map(|i| (icon_of(i, &mut state), i.count)).collect();
-            (n, c.creature.name.clone(), c.weapon.as_ref().map(|w| icon_of(w, &mut state)), c.armor.as_ref().map(|a| icon_of(a, &mut state)), pack, c.pack_used())
-        })
-        .collect();
-    let doll = hero.map(|hero| {
-        let key = format!("{}|{}", crate::doll::key(hero), world.held_light(h).is_some());
-        state.dolls.entry(key).or_insert_with(|| crate::doll::frames_holding(hero, world.held_light(h).is_some()).into_iter().map(|f| images.add(f.into_image())).collect())[0].clone()
-    });
-    let loose: Vec<(usize, String)> = bag(world, h).iter().enumerate().filter(|(_, i)| i.at.is_none()).map(|(n, i)| (n, item_name(i, ru))).collect();
-
-    commands.entity(root).with_children(|root| {
-        if !with.is_empty() && !shopping {
-            let tall = 20.0 + with.len() as f32 * 104.0;
-            root.spawn((BagContent, Node { padding: UiRect::all(px(7)), flex_direction: FlexDirection::Column, row_gap: px(2), ..abs(PANEL.0 - 96.0, PANEL.1, 94.0, tall) })).with_children(|panel| {
-                panel.spawn(panel_backing(&art));
-                panel.spawn((Text::new(T::Companions.text(*lang)), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
-                for (n, name, weapon, armor, pack, used) in &with {
-                    let short: String = name.chars().take(13).collect();
-                    panel.spawn((Text::new(short), fonts.body(), TextColor(color(WAX_DARK)), TextLayout::no_wrap()));
-                    panel.spawn(Node { column_gap: px(3), ..default() }).with_children(|line| {
-                        for (hand, icon) in [(true, weapon), (false, armor)] {
-                            line.spawn((Node { width: px(20), height: px(20), border: UiRect::all(px(1)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, crate::widgets::Plate, Target::Ally(*n, hand), BackgroundColor(color(WOOD_DARK)), BorderColor::all(color(BRASS_DARK))))
-                                .with_children(|slot| {
-                                    if let Some(icon) = icon {
-                                        slot.spawn((Node { width: px(16), height: px(16), ..default() }, ImageNode::new(icon.clone()), FocusPolicy::Pass, Pickable::IGNORE));
-                                    }
-                                });
-                        }
-                    });
-                    // The pack: what it holds, and how much of its sixteen cells is taken.
-                    panel.spawn((Text::new(format!("{} {used}/{}", T::PackWord.text(*lang), world::model::PACK_CELLS)), fonts.body(), TextColor(color(FADED)), TextLayout::no_wrap()));
-                    panel
-                        .spawn((Node { width: px(80), height: px(44), flex_wrap: FlexWrap::Wrap, align_content: AlignContent::FlexStart, column_gap: px(1), row_gap: px(1), padding: UiRect::all(px(1)), ..default() }, crate::widgets::Plate, Target::AllyPack(*n), BackgroundColor(color(WOOD_DARK))))
-                        .with_children(|grid| {
-                            for (k, (icon, count)) in pack.iter().enumerate() {
-                                grid.spawn((Node { width: px(18), height: px(18), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, crate::widgets::Plate, Target::AllyItem(*n, k), BackgroundColor(color(WOOD_DEEP)))).with_children(|cell| {
-                                    cell.spawn((Node { width: px(16), height: px(16), ..default() }, ImageNode::new(icon.clone()), FocusPolicy::Pass, Pickable::IGNORE));
-                                    if *count > 1 {
-                                        cell.spawn((Node { position_type: PositionType::Absolute, right: px(0), bottom: px(-2), ..default() }, Text::new(count.to_string()), fonts.body(), TextColor(color(PARCHMENT)), Pickable::IGNORE));
-                                    }
-                                });
-                            }
-                        });
-                }
-            });
-        }
-        root.spawn((BagContent, abs(PANEL.0, PANEL.1, PANEL.2, PANEL.3))).with_children(|panel| {
-            panel.spawn(panel_backing(&art));
-            if let Some(hero) = hero {
-                let name = format!("{} · {} {} · {} {}/{}", hero.name, T::ArmorClass.text(*lang), hero.ac(), T::HitPoints.text(*lang), hero.hp, hero.max_hp);
-                panel.spawn((abs(10.0, 6.0, 200.0, 10.0), Text::new(name), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
-                let gold = world.story.bags.get(state.hero).map_or(0, |b| b.gold);
-                panel.spawn((Node { padding: UiRect::horizontal(px(3)), align_items: AlignItems::Center, ..abs(124.0, 96.0, 100.0, 12.0) }, crate::widgets::Plate, Target::Gold, BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
-                    b.spawn((Text::new(format!("{} {gold}", T::GoldCount.text(*lang))), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
-                });
-                if mine.len() > 1 {
-                    for (left, target, mark) in [(198.0, Target::PrevHero, "<"), (214.0, Target::NextHero, ">")] {
-                        panel.spawn((abs(left, 4.0, 14.0, 12.0), crate::widgets::Plate, target, BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
-                            b.spawn((Text::new(mark), fonts.body(), TextColor(color(INK))));
-                        });
-                    }
-                }
-            }
-            panel.spawn((abs(DOLL.0 - 4.0, DOLL.1 - 2.0, 64.0, 98.0), BackgroundColor(Color::srgba(0.2, 0.15, 0.1, 0.25))));
-            if let Some(doll) = doll {
-                panel.spawn((abs(DOLL.0, DOLL.1, 56.0, 84.0), ImageNode::new(doll), Pickable::IGNORE));
-            }
-            for slot in Slot::ALL {
-                let (left, top, w, hh) = slot_box(slot);
-                let holds = worn_icons.iter().find(|(s, _)| *s == slot).map(|(_, image)| image.clone());
-                panel
-                    .spawn((Node { border: UiRect::all(px(1)), ..abs(left, top, w as f32 * cell, hh as f32 * cell) }, crate::widgets::Plate, Target::Slot(slot), BackgroundColor(color(WOOD_DARK)), BorderColor::all(color(BRASS_DARK))))
-                    .with_children(|slot_node| {
-                        if let Some(image) = holds {
-                            let tint = if held_slot == Some(slot) { Color::srgba(1.0, 1.0, 1.0, 0.35) } else { Color::WHITE };
-                            slot_node
-                                .spawn((Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE, FocusPolicy::Pass))
-                                .with_children(|centre| {
-                                    centre.spawn((ImageNode { color: tint, ..ImageNode::new(image) }, Pickable::IGNORE, FocusPolicy::Pass));
-                                });
-                        }
-                    });
-            }
-            panel.spawn((abs(GRID.0 - 2.0, GRID.1 - 2.0, BAG_W as f32 * cell + 4.0, BAG_H as f32 * cell + 4.0), BackgroundColor(color(WOOD_DEEP))));
-            for y in 0..BAG_H {
-                for x in 0..BAG_W {
-                    let shade = if (x + y) % 2 == 0 { WOOD_DARK } else { [0x3c, 0x24, 0x17, 0xff] };
-                    panel.spawn((Node { border: UiRect::all(px(1)), ..abs(GRID.0 + x as f32 * cell, GRID.1 + y as f32 * cell, cell, cell) }, crate::widgets::Plate, Target::Cell(x, y), BackgroundColor(color(shade)), BorderColor::all(color(WOOD_DEEP))));
-                }
-            }
-            for (i, (x, y), (w, hh), image) in placed {
-                let (left, top) = (GRID.0 + x as f32 * cell, GRID.1 + y as f32 * cell);
-                let tint = if held_item == Some(i) { Color::srgba(1.0, 1.0, 1.0, 0.35) } else { Color::WHITE };
-                panel.spawn((Node { border: UiRect::all(px(1)), ..abs(left, top, w as f32 * cell, hh as f32 * cell) }, BackgroundColor(Color::srgba(0.25, 0.32, 0.55, 0.45)), BorderColor::all(Color::srgba(0.45, 0.55, 0.85, 0.7)), Pickable::IGNORE, FocusPolicy::Pass));
-                panel.spawn((abs(left, top, w as f32 * cell, hh as f32 * cell), ImageNode { color: tint, ..ImageNode::new(image) }, Pickable::IGNORE, FocusPolicy::Pass));
-            }
-            // Where the held thing would go: green to lie, yellow to swap, red where it cannot.
-            panel.spawn((Shadow, Node { border: UiRect::all(px(1)), display: Display::None, ..abs(0.0, 0.0, cell, cell) }, BackgroundColor(Color::NONE), BorderColor::all(Color::NONE), Pickable::IGNORE, FocusPolicy::Pass, GlobalZIndex(11)));
-            if !loose.is_empty() {
-                panel.spawn(Node { position_type: PositionType::Absolute, left: px(118.0), top: px(76.0), width: px(110.0), flex_wrap: FlexWrap::Wrap, column_gap: px(2), row_gap: px(2), ..default() }).with_children(|line| {
-                    line.spawn((Text::new(T::BagNoRoom.text(*lang)), fonts.body(), TextColor(color(WAX))));
-                    for (i, name) in loose.iter().take(3) {
-                        line.spawn((Node { padding: UiRect::axes(px(3), px(1)), ..default() }, crate::widgets::Plate, Target::Loose(*i), BackgroundColor(color(PARCHMENT_DARK)))).with_children(|b| {
-                            b.spawn((Text::new(name.chars().take(14).collect::<String>()), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
-                        });
-                    }
-                });
-            }
-        });
-        root.spawn((BagContent, Tip, Node { position_type: PositionType::Absolute, display: Display::None, padding: UiRect::all(px(4)), flex_direction: FlexDirection::Column, row_gap: px(1), max_width: px(170), ..default() }, BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.92)), BorderColor::all(color(BRASS_DARK)), Pickable::IGNORE, FocusPolicy::Pass, GlobalZIndex(13)));
-        root.spawn((BagContent, HeldIcon, Node { position_type: PositionType::Absolute, ..default() }, Pickable::IGNORE, FocusPolicy::Pass, GlobalZIndex(12)));
-    });
 }
 
 /// The cell a held thing of `size` would take with the cursor at its middle, kept in the bag.
@@ -477,9 +227,7 @@ fn carry(world: &mut World, session: &Session, bag_of: usize, held: &Held, to: S
 #[allow(clippy::too_many_arguments)]
 fn press(
     mut phase: ResMut<Phase>,
-    targets: Query<(&Target, &Interaction), Changed<Interaction>>,
-    all_targets: Query<(&Target, &Interaction)>,
-    mouse: Res<ButtonInput<MouseButton>>,
+    mut clicks: ResMut<draw::Clicks>,
     mut game: ResMut<Game>,
     session: Res<Session>,
     settings: Res<Settings>,
@@ -493,15 +241,14 @@ fn press(
         return;
     }
     let hero = state.hero;
+    let hits = std::mem::take(&mut clicks.hits);
     // A right click lets go of what is held, or uses what is under the cursor.
-    if mouse.just_pressed(MouseButton::Right) {
+    if let Some(under) = hits.iter().find(|(_, right)| *right).map(|(target, _)| *target) {
         if state.held.take().is_some() {
-            state.built.clear();
             sound.write(Play(Sfx::Back));
             return;
         }
-        let under = all_targets.iter().find(|(_, i)| **i != Interaction::None).map(|(t, _)| *t);
-        if let Some(Target::Cell(x, y)) = under
+        if let Target::Cell(x, y) = under
             && let Some(i) = game.world.story.bags.get(hero).and_then(|b| b.item_at((x, y)))
         {
             let name = bag(&game.world, hero)[i].name.clone();
@@ -520,7 +267,6 @@ fn press(
                         sound.write(Play(Sfx::Error));
                     }
                 }
-                state.built.clear();
                 return;
             }
             // With Alt held the player says what the thing is used for: the field opens, and
@@ -550,10 +296,7 @@ fn press(
         return;
     }
     let mine = my_heroes(&game.world, &session, &settings);
-    for (target, interaction) in &targets {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
+    for (target, _) in hits.iter().filter(|(_, right)| !right) {
         let world = &mut game.world;
         let to = match (*target, &state.held) {
             (Target::AllyPack(n), Some(Held::Item(i))) => {
@@ -565,10 +308,9 @@ fn press(
                     state.held = None;
                 }
                 sound.write(Play(if done { Sfx::Item } else { Sfx::Error }));
-                state.built.clear();
                 continue;
             }
-            (Target::AllyPack(_), _) => continue,
+            (Target::AllyPack(_), _) | (Target::Nothing, _) => continue,
             (Target::AllyItem(n, k), held) => {
                 // With a thing in hand it goes into the pack; with none, this one comes out.
                 let done = match held {
@@ -590,7 +332,6 @@ fn press(
                     state.held = None;
                 }
                 sound.write(Play(if done { Sfx::Item } else { Sfx::Error }));
-                state.built.clear();
                 continue;
             }
             (Target::Ally(n, hand), held) => {
@@ -614,7 +355,6 @@ fn press(
                     state.held = None;
                 }
                 sound.write(Play(if done { Sfx::Item } else { Sfx::Error }));
-                state.built.clear();
                 continue;
             }
             (Target::Gold, _) => {
@@ -630,7 +370,6 @@ fn press(
                 }
                 let done = world.drop_gold(hero, 10, cell);
                 sound.write(Play(if done { Sfx::Item } else { Sfx::Error }));
-                state.built.clear();
                 continue;
             }
             (Target::PrevHero | Target::NextHero, _) => {
@@ -698,45 +437,6 @@ fn quick_assign(phase: Res<Phase>, keyboard: Res<ButtonInput<KeyCode>>, mut game
     sound.write(Play(if name.is_empty() { Sfx::Back } else { Sfx::Item }));
 }
 
-#[derive(Component)]
-struct QuickBar;
-
-/// The things kept at hand, in the strip at the bottom: a picture, how many, and the key.
-#[allow(clippy::too_many_arguments)]
-fn quick_bar(mut commands: Commands, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut images: ResMut<Assets<Image>>, old: Query<Entity, With<QuickBar>>, mut shown: Local<String>) {
-    let world = &game.world;
-    let me = player_name(&settings);
-    let hero = crate::play::my_hero(world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
-    let slots: Vec<Option<&Item>> = (0..world::bag::QUICK_SLOTS).map(|slot| world.quick_item(hero, slot).and_then(|i| bag(world, hero).get(i))).collect();
-    let print = format!("{hero}|{:?}", slots.iter().map(|s| s.map(|i| (&i.name, i.count, i.rows.len()))).collect::<Vec<_>>());
-    if *shown == print && !old.is_empty() {
-        return;
-    }
-    *shown = print;
-    for entity in &old {
-        commands.entity(entity).despawn();
-    }
-    let height = crate::play::HUD_HEIGHT;
-    let bar = Node { position_type: PositionType::Absolute, left: px(4), bottom: px(1), height: px(height - 2.0), column_gap: px(2), align_items: AlignItems::Center, ..default() };
-    commands.spawn((QuickBar, DespawnOnExit(crate::menu::Screen::Play), bar, GlobalZIndex(9), Pickable::IGNORE)).with_children(|row| {
-        for (n, slot) in slots.iter().enumerate() {
-            row.spawn((Node { width: px(height - 2.0), height: px(height - 2.0), border: UiRect::all(px(1)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(color(WOOD_DEEP)), BorderColor::all(color(if slot.is_some() { BRASS } else { WOOD_DARK })), Pickable::IGNORE))
-                .with_children(|cell| match slot {
-                    Some(item) => {
-                        let image = images.add(picture(item, world).into_image());
-                        cell.spawn((Node { width: px(height - 4.0), height: px(height - 4.0), ..default() }, ImageNode::new(image), Pickable::IGNORE));
-                        if item.count > 1 {
-                            cell.spawn((Node { position_type: PositionType::Absolute, right: px(0), bottom: px(-2), ..default() }, Text::new(item.count.to_string()), fonts.body(), TextColor(color(PARCHMENT)), Pickable::IGNORE));
-                        }
-                    }
-                    None => {
-                        cell.spawn((Text::new((n + 1).to_string()), fonts.body(), TextColor(color(WOOD_LIGHT)), Pickable::IGNORE));
-                    }
-                });
-        }
-    });
-}
-
 /// F1-F6 while walking uses the thing kept under that key, as a right click in the bag would.
 #[allow(clippy::too_many_arguments)]
 fn quick_use(mut phase: ResMut<Phase>, keyboard: Res<ButtonInput<KeyCode>>, mut game: ResMut<Game>, session: Res<Session>, settings: Res<Settings>, mut sound: MessageWriter<Play>, mut said: ResMut<Said>, lang: Res<Lang>) {
@@ -766,19 +466,11 @@ fn quick_use(mut phase: ResMut<Phase>, keyboard: Res<ButtonInput<KeyCode>>, mut 
     }
 }
 
-/// The cursor on the grid of the interface, if it is over the window.
-fn cursor(window: &Window) -> Option<Vec2> {
-    let at = window.cursor_position()?;
-    let (scale, origin, _) = fit(window.physical_size());
-    Some((at * window.scale_factor() - origin.as_vec2()) / (scale * UI_PIXEL))
-}
-
 /// A click outside the bag with a thing in hand throws it on the ground by the hero.
 #[allow(clippy::too_many_arguments)]
 fn outside(
     phase: Res<Phase>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    window: Single<&Window, With<PrimaryWindow>>,
+    mut clicks: ResMut<draw::Clicks>,
     mut game: ResMut<Game>,
     session: Res<Session>,
     mut state: ResMut<BagState>,
@@ -787,11 +479,7 @@ fn outside(
     mut throws: MessageWriter<crate::fx::Thrown>,
     mut landing: ResMut<crate::fx::Landing>,
 ) {
-    if *phase != Phase::Bag || !mouse.just_pressed(MouseButton::Left) {
-        return;
-    }
-    let Some(at) = cursor(&window) else { return };
-    if at.x >= PANEL.0 || state.held.is_none() {
+    if !std::mem::take(&mut clicks.outside) || *phase != Phase::Bag || state.held.is_none() {
         return;
     }
     let hero = state.hero;
@@ -830,166 +518,4 @@ fn outside(
         redraw.0 = true;
         sound.write(Play(Sfx::Item));
     }
-}
-
-/// The tip by the cursor tells what it is over.
-#[allow(clippy::too_many_arguments)]
-fn hover(
-    phase: Res<Phase>,
-    targets: Query<(&Target, &Interaction)>,
-    game: Res<Game>,
-    lang: Res<Lang>,
-    fonts: Res<Fonts>,
-    mut state: ResMut<BagState>,
-    mut tips: Query<(Entity, &mut Node, &ComputedNode), With<Tip>>,
-    window: Single<&Window, With<PrimaryWindow>>,
-    mut commands: Commands,
-) {
-    if *phase != Phase::Bag {
-        return;
-    }
-    let world = &game.world;
-    let hero = state.hero;
-    let mut lines: Vec<(String, Rgba)> = Vec::new();
-    state.over = None;
-    for (target, interaction) in &targets {
-        if *interaction == Interaction::None {
-            continue;
-        }
-        match *target {
-            Target::Cell(x, y) => {
-                state.over = Some((x, y));
-                if state.held.is_none()
-                    && let Some(item) = world.story.bags.get(hero).and_then(|b| b.item_at((x, y))).and_then(|i| bag(world, hero).get(i))
-                {
-                    lines = item_lines(item, *lang);
-                }
-            }
-            Target::Loose(i) => {
-                if let Some(item) = bag(world, hero).get(i) {
-                    lines = item_lines(item, *lang);
-                }
-            }
-            Target::Slot(slot) if state.held.is_none() => {
-                lines.push((slot_label(slot).text(*lang).to_string(), FADED));
-                if let (Slot::Shield, Some(light)) = (slot, world.held_light(hero)) {
-                    lines.extend(item_lines(light, *lang));
-                } else if let Some(index) = world.party.get(hero).and_then(|h| worn(h, slot)) {
-                    // A thing of the master's own is called by its own name, with what it is.
-                    match world.story.bags.get(hero).and_then(|b| b.worn_as.iter().find(|i| i.gear.as_deref() == Some(index.as_str()))) {
-                        Some(own) => lines.extend(item_lines(own, *lang)),
-                        None => {
-                            lines.push((gear_name(&index, *lang == Lang::Ru), BRASS_LIGHT));
-                            lines.extend(gear_lines(&index, *lang));
-                        }
-                    }
-                } else {
-                    lines.push((T::BagEmptySlot.text(*lang).to_string(), FADED));
-                }
-            }
-            _ => {}
-        }
-    }
-    let Ok((entity, mut node, laid)) = tips.single_mut() else { return };
-    // Many words want a wider tip, so that it does not grow taller than the screen.
-    let letters: usize = lines.iter().map(|(text, _)| text.chars().count()).sum();
-    let width: f32 = if letters > 420 { 300.0 } else if letters > 180 { 230.0 } else { 170.0 };
-    if !lines.is_empty() && node.max_width != px(width) {
-        node.max_width = px(width);
-    }
-    if let Some(at) = cursor(&window) {
-        // Beside the cursor, and moved up or left by as much as it would leave the screen.
-        let size = laid.size() * laid.inverse_scale_factor();
-        let screen = crate::screen::UI.as_vec2();
-        let (wide, high) = (size.x.max(width.min(60.0)), size.y.max(20.0));
-        node.left = px((at.x + 10.0).min(screen.x - wide - 2.0).max(2.0));
-        // Clear of the strip along the bottom of the screen.
-        node.top = px((at.y + 8.0).min(screen.y - 20.0 - high).max(2.0));
-    }
-    let shown = if lines.is_empty() { Display::None } else { Display::Flex };
-    if node.display != shown {
-        node.display = shown;
-    }
-    if lines == state.tip {
-        return;
-    }
-    state.tip = lines.clone();
-    commands.entity(entity).despawn_children().with_children(|tip| {
-        for (text, tint) in &lines {
-            tip.spawn((Text::new(text.clone()), fonts.body(), TextColor(color(*tint))));
-        }
-    });
-}
-
-/// Where a held thing would go, outlined: green to lie, yellow to swap, red where it cannot.
-fn highlight(phase: Res<Phase>, state: Res<BagState>, game: Res<Game>, mut shadows: Query<(&mut Node, &mut BackgroundColor, &mut BorderColor), With<Shadow>>) {
-    let Ok((mut node, mut fill, mut border)) = shadows.single_mut() else { return };
-    let (Some(held), Some(cell), true) = (&state.held, state.over, *phase == Phase::Bag) else {
-        if node.display != Display::None {
-            node.display = Display::None;
-        }
-        return;
-    };
-    let world = &game.world;
-    let size = held_size(world, state.hero, held);
-    let at = corner_for(cell, size);
-    let ignore = match held {
-        Held::Item(i) => Some(*i),
-        _ => None,
-    };
-    let under = world.story.bags.get(state.hero).map_or(0, |b| b.overlapped(size, at, ignore).len());
-    let tone = match under {
-        0 => Color::srgba(0.3, 0.9, 0.35, 0.35),
-        1 => Color::srgba(0.95, 0.85, 0.3, 0.35),
-        _ => Color::srgba(0.95, 0.25, 0.2, 0.4),
-    };
-    let c = CELL as f32;
-    node.display = Display::Flex;
-    node.left = px(GRID.0 + at.0 as f32 * c);
-    node.top = px(GRID.1 + at.1 as f32 * c);
-    node.width = px(size.0 as f32 * c);
-    node.height = px(size.1 as f32 * c);
-    fill.0 = tone;
-    *border = BorderColor::all(tone.with_alpha(0.9));
-}
-
-/// The held thing follows the cursor, centred on it as in the old games.
-#[allow(clippy::too_many_arguments)]
-fn follow(
-    phase: Res<Phase>,
-    state: Res<BagState>,
-    game: Res<Game>,
-    window: Single<&Window, With<PrimaryWindow>>,
-    mut held: Query<(Entity, &mut Node), With<HeldIcon>>,
-    mut commands: Commands,
-    mut shown: Local<Option<(Entity, Option<Held>)>>,
-) {
-    if *phase != Phase::Bag {
-        *shown = None;
-        return;
-    }
-    let Ok((entity, mut node)) = held.single_mut() else { return };
-    if *shown != Some((entity, state.held.clone())) {
-        *shown = Some((entity, state.held.clone()));
-        commands.entity(entity).despawn_children();
-        let hero = state.hero;
-        let item = match &state.held {
-            Some(Held::Item(i)) => bag(&game.world, hero).get(*i).cloned(),
-            Some(Held::Worn(h, Slot::Shield)) if game.world.held_light(*h).is_some() => game.world.held_light(*h).cloned(),
-            Some(Held::Worn(h, slot)) => game.world.party.get(*h).and_then(|hero| worn(hero, *slot)).map(|g| Item { name: gear_name(&g, false), gear: Some(g), count: 1, ..default() }),
-            None => None,
-        };
-        if let Some(item) = item
-            && let Some(image) = state.icons.get(&icon_key(&item))
-        {
-            let (w, h) = item.size();
-            commands.entity(entity).with_children(|n| {
-                n.spawn((Node { width: px(w as f32 * CELL as f32), height: px(h as f32 * CELL as f32), left: px(-(w as f32) * CELL as f32 / 2.0), top: px(-(h as f32) * CELL as f32 / 2.0), ..default() }, ImageNode::new(image.clone()), Pickable::IGNORE, FocusPolicy::Pass));
-            });
-        }
-    }
-    let Some(at) = cursor(&window) else { return };
-    node.position_type = PositionType::Absolute;
-    node.left = px(at.x);
-    node.top = px(at.y);
 }

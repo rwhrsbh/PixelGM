@@ -50,7 +50,7 @@ pub fn hud(
     mut egui: EguiContexts,
     (game, phase, lang, session, settings, time): (Res<Game>, Res<Phase>, Res<Lang>, Res<Session>, Res<Settings>, Res<Time>),
     (mut table, mut toast, mut arrival, mut shown_place, mut notices): (ResMut<Table>, ResMut<Toast>, ResMut<Arrival>, ResMut<ShownPlace>, ResMut<Notices>),
-    (story, mut translator): (Res<crate::view::StoryPanel>, ResMut<Translator>),
+    (story, mut translator, shopping): (Res<crate::view::StoryPanel>, ResMut<Translator>, Res<crate::shop_ui::Shopping>),
     mut seen_bag: Local<Option<std::collections::BTreeMap<String, i64>>>,
     mut seen_goal: Local<Option<(String, Vec<(String, bool)>)>>,
 ) {
@@ -148,31 +148,41 @@ pub fn hud(
     };
 
     // Top left: where and when, the goal and the tasks, and what the table says.
-    egui::Area::new(egui::Id::new("hud_left")).order(egui::Order::Background).fixed_pos(map.min + vec2(4.0, 4.0)).interactable(false).show(ctx, |ui| {
-        ui.set_max_width(COLUMN_WIDTH.min(map.width() * 0.5));
-        ui.spacing_mut().item_spacing.y = 2.0;
-        let (day, hour, minute) = world.time();
-        let light = match world.daylight() {
-            "day" => "",
-            "dusk" => " ~",
-            _ => " *",
-        };
-        boxed(ui, RichText::new(format!("{place} · {} {day} · {hour:02}:{minute:02}{light}", t(T::DayWord))).color(c(PARCHMENT)));
-        if !goal.is_empty() {
-            boxed(ui, RichText::new(read(&goal)).color(c(BRASS_LIGHT)));
-            for (name, _) in tasks.iter().filter(|(_, done)| !done).take(3) {
-                boxed(ui, RichText::new(format!("· {}", read(name))).color(c(PARCHMENT_SHADE)));
+    // A shop takes the left of the screen: where and when wait until it closes.
+    let shop_open = *phase == Phase::Bag && shopping.0.is_some();
+    if !shop_open {
+        egui::Area::new(egui::Id::new("hud_left")).order(egui::Order::Background).fixed_pos(map.min + vec2(4.0, 4.0)).interactable(false).show(ctx, |ui| {
+            ui.set_max_width(COLUMN_WIDTH.min(map.width() * 0.5));
+            ui.spacing_mut().item_spacing.y = 2.0;
+            let (day, hour, minute) = world.time();
+            let light = match world.daylight() {
+                "day" => "",
+                "dusk" => " ~",
+                _ => " *",
+            };
+            boxed(ui, RichText::new(format!("{place} · {} {day} · {hour:02}:{minute:02}{light}", t(T::DayWord))).color(c(PARCHMENT)));
+            if !goal.is_empty() {
+                boxed(ui, RichText::new(read(&goal)).color(c(BRASS_LIGHT)));
+                for (name, _) in tasks.iter().filter(|(_, done)| !done).take(3) {
+                    boxed(ui, RichText::new(format!("· {}", read(name))).color(c(PARCHMENT_SHADE)));
+                }
             }
-        }
-        let fresh: Vec<&ChatLine> = table.chat.iter().filter(|l| l.age < CHAT_SECONDS).collect();
-        for line in &fresh[fresh.len().saturating_sub(CHAT_LINES)..] {
-            boxed(ui, RichText::new(format!("{}: {}", line.from, line.text)).color(c(PARCHMENT)));
-        }
-    });
+            let fresh: Vec<&ChatLine> = table.chat.iter().filter(|l| l.age < CHAT_SECONDS).collect();
+            for line in &fresh[fresh.len().saturating_sub(CHAT_LINES)..] {
+                boxed(ui, RichText::new(format!("{}: {}", line.from, line.text)).color(c(PARCHMENT)));
+            }
+        });
+    }
 
     // Top right: what has just happened, the oldest first, each for as long as it takes to read.
     let mut hovered = vec![false; notices.0.len()];
-    egui::Area::new(egui::Id::new("hud_notices")).order(egui::Order::Background).anchor(Align2::RIGHT_TOP, vec2(-(screen.right() - map.right()) - 4.0, map.top() + 4.0)).show(ctx, |ui| {
+    // With the bag open the lines stand left of it, and of a shop beside it.
+    let right = match *phase {
+        Phase::Bag if shopping.0.is_some() => crate::bag_ui::draw::panels(screen, true).1.left() - 6.0,
+        Phase::Bag => crate::bag_ui::draw::panels(screen, false).0.left() - 6.0,
+        _ => map.right(),
+    };
+    egui::Area::new(egui::Id::new("hud_notices")).order(egui::Order::Foreground).anchor(Align2::RIGHT_TOP, vec2(-(screen.right() - right) - 4.0, map.top() + 4.0)).show(ctx, |ui| {
         ui.set_max_width(NOTICE_WIDTH.min(map.width() * 0.45));
         ui.spacing_mut().item_spacing.y = 2.0;
         for (n, notice) in notices.0.iter().take(SHOWN_AT_ONCE).enumerate() {
@@ -204,7 +214,6 @@ pub fn hud(
         (None, None, None) if seat_state(world, &session, &me) == SeatState::Mine => format!("{}{}", t(T::HudHint), t(T::HudMaster)),
         (None, None, None) => t(T::HudHint).to_string(),
     };
-    let _ = &phase;
     egui::Area::new(egui::Id::new("hud_keys")).order(egui::Order::Background).anchor(Align2::RIGHT_BOTTOM, vec2(-6.0, -(strip - 9.0) / 2.0)).interactable(false).show(ctx, |ui| {
         ui.label(RichText::new(hint).color(c(PARCHMENT_SHADE)));
     });

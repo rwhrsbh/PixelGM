@@ -2,16 +2,17 @@
 //! at its own size, sorted onto tabs; one's own bag on the right. A click on a ware buys it;
 //! a right click on a thing of one's own sells it. What the cursor is over is told below.
 
-use crate::art::Art;
 use crate::audio::{Play, Sfx};
 use crate::coop::{Intent, Session, player_name};
 use crate::i18n::{Lang, T};
-use crate::icons::CELL;
 use crate::menu::Screen;
 use crate::play::{Game, Phase, my_hero};
 use crate::store::Settings;
 use crate::theme::*;
-use crate::widgets::{Activate, PixelButton, button, panel_backing, text_button};
+use crate::ui::egui::{self, Align, Color32, Layout, Pos2, Rect, RichText, Sense, Stroke, UiBuilder, vec2};
+use crate::ui::kit::{self, button, hint};
+use crate::ui::theme::c;
+use bevy_egui::EguiContexts;
 use bevy::prelude::*;
 use world::bag::{BAG_H, BAG_W, Gear, gear_kind};
 use world::shop::ShopTrouble;
@@ -58,20 +59,17 @@ impl Shelf {
     }
 }
 
-#[derive(Component)]
-struct ShopPanel;
-
-/// The words under the wares: what the cursor is over.
-#[derive(Component)]
-struct WareInfo;
-
-#[derive(Component, Clone, Copy)]
-enum ShopAct {
+/// A press in the shop.
+#[derive(Clone, Copy, Debug)]
+pub enum ShopAct {
     Buy(usize),
     Shelf(Shelf),
     Haggle,
     Leave,
 }
+
+#[derive(Event, Clone, Copy)]
+pub struct ShopPress(pub ShopAct);
 
 pub fn trouble_words(trouble: ShopTrouble, lang: Lang) -> String {
     match trouble {
@@ -93,141 +91,132 @@ fn laid_out(wares: &[(&world::Item, u32)], shelf: Shelf) -> Vec<(usize, (u8, u8)
     on_shelf.iter().zip(&grid.inventory).filter_map(|(n, item)| item.at.map(|at| (*n, at, item.size()))).collect()
 }
 
-const GRID_LEFT: f32 = 22.0;
-const GRID_TOP: f32 = 46.0;
-
-#[allow(clippy::too_many_arguments)]
-fn build(
-    mut commands: Commands,
-    phase: Res<Phase>,
-    game: Res<Game>,
-    mut shopping: ResMut<Shopping>,
-    mut shelf: ResMut<Shelf>,
-    deal: Res<Deal>,
-    lang: Res<Lang>,
-    art: Res<Art>,
-    fonts: Res<Fonts>,
-    session: Res<Session>,
-    settings: Res<Settings>,
-    old: Query<Entity, With<ShopPanel>>,
-    mut images: ResMut<Assets<Image>>,
-    mut shown: Local<String>,
-) {
-    // The shop is open for as long as the bag is.
+/// The shop closes with the bag.
+fn close(phase: Res<Phase>, mut shopping: ResMut<Shopping>) {
     if *phase != Phase::Bag && shopping.0.is_some() {
         shopping.0 = None;
     }
-    let world = &game.world;
-    let me = player_name(&settings);
-    let hero = my_hero(world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
-    let keeper = shopping.0.as_deref().and_then(|id| world.here().creatures.iter().find(|c| c.id == id));
-    let wares = shopping.0.as_deref().map(|id| world.wares(id)).unwrap_or_default();
-    let gold = world.story.bags.get(hero).map_or(0, |b| b.gold);
-    // A shelf with nothing on it is passed over for the first that has something.
-    if keeper.is_some() && !wares.iter().any(|(w, _)| Shelf::of(w) == *shelf) {
-        if let Some(full) = Shelf::ALL.into_iter().find(|s| wares.iter().any(|(w, _)| Shelf::of(w) == *s)) {
-            *shelf = full;
-        }
-    }
-    let print = match keeper {
-        Some(k) => format!("{}|{gold}|{}|{}|{:?}|{:?}|{:?}", k.id, k.haggled, deal.0, *lang, *shelf, wares.iter().map(|(w, p)| (&w.name, w.count, *p)).collect::<Vec<_>>()),
-        None => String::new(),
-    };
-    if *shown == print && (print.is_empty() || !old.is_empty()) {
-        return;
-    }
-    *shown = print;
-    for entity in &old {
-        commands.entity(entity).despawn();
-    }
-    let Some(keeper) = keeper else { return };
-    let ink = TextColor(color(INK));
-    let cell = CELL as f32;
-    let root = Node { position_type: PositionType::Absolute, left: px(2), top: px(2), width: px(236), height: px(252), ..default() };
-    commands.spawn((ShopPanel, DespawnOnExit(Screen::Play), root, GlobalZIndex(11))).with_children(|panel| {
-        panel.spawn(panel_backing(&art));
-        let at = |left: f32, top: f32, width: f32, height: f32| Node { position_type: PositionType::Absolute, left: px(left), top: px(top), width: px(width), height: px(height), ..default() };
-        panel.spawn((at(10.0, 6.0, 150.0, 12.0), Text::new(keeper.name.clone()), fonts.title(1), ink, TextLayout::no_wrap()));
-        panel.spawn((at(166.0, 8.0, 64.0, 10.0), Text::new(format!("{} {gold}", T::GoldCount.text(*lang))), fonts.body(), TextColor(color(WAX_DARK)), TextLayout::no_wrap()));
-        // The shelves: one tab each, those with nothing on them dimmed.
-        panel.spawn(Node { column_gap: px(2), ..at(10.0, 24.0, 220.0, 18.0) }).with_children(|tabs| {
-            for tab in Shelf::ALL {
-                let count = wares.iter().filter(|(w, _)| Shelf::of(w) == tab).count();
-                let label = if tab == *shelf { format!("[{}]", tab.label().text(*lang)) } else { tab.label().text(*lang).to_string() };
-                if count > 0 {
-                    text_button(tabs, &art, &fonts, label, ShopAct::Shelf(tab));
-                } else {
-                    tabs.spawn((Node { padding: UiRect::axes(px(5), px(3)), ..default() }, Text::new(label), fonts.body(), TextColor(color(FADED))));
-                }
-            }
-        });
-        // The grid, and the wares of this shelf on it, each at its own size.
-        panel.spawn((at(GRID_LEFT, GRID_TOP, BAG_W as f32 * cell, BAG_H as f32 * cell), BackgroundColor(color(WOOD_DEEP)))).with_children(|grid| {
-            for y in 0..BAG_H {
-                for x in 0..BAG_W {
-                    grid.spawn((Node { position_type: PositionType::Absolute, left: px(x as f32 * cell + 1.0), top: px(y as f32 * cell + 1.0), width: px(cell - 2.0), height: px(cell - 2.0), ..default() }, BackgroundColor(color(WOOD_DARK)), Pickable::IGNORE));
-                }
-            }
-            for (n, (x, y), (w, h)) in laid_out(&wares, *shelf) {
-                let (ware, price) = wares[n];
-                let picture = images.add(crate::bag_ui::picture(ware, world).into_image());
-                let afford = gold >= price;
-                grid.spawn((
-                    crate::widgets::Plate,
-                    PixelButton::plain(),
-                    crate::widgets::ReplyLine,
-                    ShopAct::Buy(n),
-                    Node { position_type: PositionType::Absolute, left: px(x as f32 * cell), top: px(y as f32 * cell), width: px(w as f32 * cell), height: px(h as f32 * cell), ..default() },
-                    BackgroundColor(Color::NONE),
-                ))
-                .with_children(|slot| {
-                    slot.spawn((Node { width: percent(100), height: percent(100), ..default() }, ImageNode { color: if afford { Color::WHITE } else { Color::srgba(1.0, 0.6, 0.6, 0.75) }, ..ImageNode::new(picture) }, Pickable::IGNORE));
-                    if ware.count > 1 {
-                        slot.spawn((Node { position_type: PositionType::Absolute, right: px(1), bottom: px(-1), ..default() }, Text::new(ware.count.to_string()), fonts.body(), TextColor(color(PARCHMENT)), Pickable::IGNORE));
-                    }
-                });
-            }
-        });
-        // What the cursor is over, or what the last deal came to.
-        let below = GRID_TOP + BAG_H as f32 * cell + 3.0;
-        panel.spawn((WareInfo, Node { overflow: Overflow::clip(), ..at(10.0, below, 218.0, 44.0) }, Text::new(if deal.0.is_empty() { T::ShopHint.text(*lang).to_string() } else { deal.0.clone() }), fonts.body(), TextColor(color(if deal.0.is_empty() { FADED } else { MOSS }))));
-        panel.spawn(Node { column_gap: px(4), ..at(10.0, 228.0, 220.0, 18.0) }).with_children(|line| {
-            button(line, &art, &fonts, T::Haggle, !keeper.haggled && world.shop_open(), ShopAct::Haggle);
-            button(line, &art, &fonts, T::Leave, true, ShopAct::Leave);
-            if !world.shop_open() {
-                line.spawn((Text::default(), T::ShopClosed, fonts.body(), TextColor(color(WAX))));
-            }
-        });
-    });
 }
 
-/// The ware under the cursor is told below the grid: its name, what it does, what it costs.
-fn tell(game: Res<Game>, shopping: Res<Shopping>, deal: Res<Deal>, lang: Res<Lang>, wares: Query<(&ShopAct, &Interaction)>, mut info: Query<(&mut Text, &mut TextColor), With<WareInfo>>) {
-    let Some(keeper) = shopping.0.as_deref() else { return };
-    let Ok((mut text, mut tint)) = info.single_mut() else { return };
-    let over = wares.iter().find_map(|(act, interaction)| match (act, interaction) {
-        (ShopAct::Buy(n), Interaction::Hovered | Interaction::Pressed) => Some(*n),
-        _ => None,
+/// The keeper's wares beside the bag, drawn with egui: the shelves as tabs, the wares on a
+/// grid each at its own size, what the cursor is over told under it, and the deal's buttons.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn draw(
+    mut egui: EguiContexts,
+    mut commands: Commands,
+    (game, shopping, deal, lang, session, settings): (Res<Game>, Res<Shopping>, Res<Deal>, Res<Lang>, Res<Session>, Res<Settings>),
+    mut shelf: ResMut<Shelf>,
+    (mut pictures, mut images): (ResMut<crate::bag_ui::draw::Pictures>, ResMut<Assets<Image>>),
+) {
+    let Some(id) = shopping.0.as_deref() else { return };
+    let world = &game.world;
+    let Some(keeper) = world.here().creatures.iter().find(|c| c.id == id) else { return };
+    let lang = *lang;
+    let t = |text: T| text.text(lang);
+    let me = player_name(&settings);
+    let hero = my_hero(world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
+    let wares = world.wares(id);
+    let gold = world.story.bags.get(hero).map_or(0, |b| b.gold);
+    // A shelf with nothing on it is passed over for the first that has something.
+    if !wares.iter().any(|(w, _)| Shelf::of(w) == *shelf)
+        && let Some(full) = Shelf::ALL.into_iter().find(|s| wares.iter().any(|(w, _)| Shelf::of(w) == *s))
+    {
+        *shelf = full;
+    }
+    let laid: Vec<(usize, (u8, u8), (u8, u8), (egui::TextureId, Vec2))> = laid_out(&wares, *shelf).into_iter().map(|(n, at, size)| (n, at, size, crate::bag_ui::draw::picture_id(&mut pictures, &mut egui, &mut images, wares[n].0, world))).collect();
+
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let Some(mut ui) = kit::screen_ui(ctx, "shop") else { return };
+    let (_, rect) = crate::bag_ui::draw::panels(ui.max_rect(), true);
+    let mut pressed: Vec<ShopAct> = Vec::new();
+    kit::plate(ui.painter(), rect, kit::Look::Parchment, true);
+    let inner = rect.shrink(10.0);
+    let mut head = ui.new_child(UiBuilder::new().id_salt("shop_head").max_rect(inner).layout(Layout::top_down(Align::Min)));
+    head.horizontal(|row| {
+        kit::title(row, keeper.name.as_str(), crate::ui::theme::SMALL_TITLE);
+        row.with_layout(Layout::right_to_left(Align::Center), |row| {
+            row.label(RichText::new(format!("{} {gold}", t(T::GoldCount))).color(c(WAX_DARK)));
+        });
     });
-    let listed = game.world.wares(keeper);
-    let (words, wanted) = match over.and_then(|n| listed.get(n)) {
-        Some((ware, price)) => {
-            let lines: Vec<String> = crate::bag_ui::item_lines(ware, *lang).into_iter().map(|(line, _)| line).filter(|line| !line.starts_with(T::Price.text(*lang)) && *line != T::BagUseHint.text(*lang)).collect();
-            (format!("{}\n{} {price}", lines.join(" · "), T::Price.text(*lang)), color(INK))
+    hint(&mut head, t(T::ShopHint));
+    head.horizontal_wrapped(|row| {
+        for tab in Shelf::ALL {
+            let count = wares.iter().filter(|(w, _)| Shelf::of(w) == tab).count();
+            let mut b = button(tab.label().text(lang)).enabled(count > 0, t(T::ShelfEmpty));
+            if tab == *shelf {
+                b = b.primary();
+            }
+            if row.add(b).clicked() {
+                pressed.push(ShopAct::Shelf(tab));
+            }
         }
-        None if deal.0.is_empty() => (T::ShopHint.text(*lang).to_string(), color(FADED)),
-        None => (deal.0.clone(), color(MOSS)),
-    };
-    if text.0 != words {
-        text.0 = words;
-        tint.0 = wanted;
+    });
+    let top = head.min_rect().bottom() + 6.0;
+    // The footer at the bottom first; the grid takes what room is left above the words
+    // about a ware.
+    let mut foot = ui.new_child(UiBuilder::new().id_salt("shop_foot").max_rect(inner).layout(Layout::bottom_up(Align::Min)));
+    foot.horizontal(|row| {
+        if row.add(button(t(T::Leave)).key("Esc")).clicked() {
+            pressed.push(ShopAct::Leave);
+        }
+        let open = world.shop_open();
+        let why = if open { t(T::HaggleDone) } else { t(T::ShopClosed) };
+        if row.add(button(t(T::Haggle)).enabled(!keeper.haggled && open, why)).clicked() {
+            pressed.push(ShopAct::Haggle);
+        }
+        if !open {
+            kit::warning(row, t(T::ShopClosed));
+        }
+    });
+    const INFO: f32 = 40.0;
+    let cell = crate::bag_ui::draw::cell_for(inner.width(), foot.min_rect().top() - top - INFO - 12.0, BAG_H as f32);
+    let grid = Rect::from_min_size(Pos2::new(inner.left(), top), vec2(BAG_W as f32 * cell, BAG_H as f32 * cell));
+    let painter = ui.painter().clone();
+    painter.rect_filled(grid.expand(2.0), 0.0, c(WOOD_DEEP));
+    for y in 0..BAG_H {
+        for x in 0..BAG_W {
+            painter.rect_filled(Rect::from_min_size(grid.min + vec2(x as f32 * cell, y as f32 * cell), vec2(cell, cell)).shrink(1.0), 0.0, c(WOOD_DARK));
+        }
+    }
+    let mut over = None;
+    for (n, (x, y), (w, h), (texture, _)) in &laid {
+        let (ware, price) = wares[*n];
+        let place = Rect::from_min_size(grid.min + vec2(*x as f32 * cell, *y as f32 * cell), vec2(*w as f32 * cell, *h as f32 * cell));
+        let response = ui.interact(place, egui::Id::new(("ware", *n)), Sense::click());
+        let afford = gold >= price;
+        if response.hovered() {
+            over = Some(*n);
+            painter.rect_stroke(place, 0.0, Stroke::new(1.0, c(BRASS_LIGHT)), egui::StrokeKind::Inside);
+        }
+        painter.image(*texture, place, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), if afford { Color32::WHITE } else { Color32::from_rgba_unmultiplied(0xff, 0x99, 0x99, 0xbf) });
+        if ware.count > 1 {
+            painter.text(place.right_bottom(), egui::Align2::RIGHT_BOTTOM, ware.count.to_string(), egui::FontId::proportional(9.0), c(PARCHMENT));
+        }
+        if response.clicked() {
+            pressed.push(ShopAct::Buy(*n));
+        }
+    }
+    // What the cursor is over, or what the last deal came to.
+    let mut info = ui.new_child(UiBuilder::new().id_salt("shop_info").max_rect(Rect::from_min_max(Pos2::new(inner.left(), grid.bottom() + 6.0), inner.max)).layout(Layout::top_down(Align::Min)));
+    match over.and_then(|n| wares.get(n)) {
+        Some((ware, price)) => {
+            let lines: Vec<String> = crate::bag_ui::item_lines(ware, lang).into_iter().map(|(line, _)| line).filter(|line| !line.starts_with(t(T::Price)) && *line != t(T::BagUseHint)).collect();
+            info.add(egui::Label::new(RichText::new(lines.join(" · ")).color(c(INK))).wrap());
+            info.label(RichText::new(format!("{} {price}", t(T::Price))).color(c(if gold >= *price { INK } else { WAX })));
+        }
+        None if !deal.0.is_empty() => {
+            info.label(RichText::new(&deal.0).color(c(MOSS)));
+        }
+        None => {}
+    }
+    for act in pressed {
+        commands.trigger(ShopPress(act));
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn on_activate(
-    used: On<Activate>,
-    acts: Query<&ShopAct>,
+    used: On<ShopPress>,
     mut game: Option<ResMut<Game>>,
     mut shopping: ResMut<Shopping>,
     mut shelf: ResMut<Shelf>,
@@ -238,7 +227,8 @@ fn on_activate(
     lang: Res<Lang>,
     mut sound: MessageWriter<Play>,
 ) {
-    let (Ok(act), Some(game)) = (acts.get(used.entity), game.as_mut()) else { return };
+    let act = &used.0;
+    let Some(game) = game.as_mut() else { return };
     let Some(keeper) = shopping.0.clone() else { return };
     let me = player_name(&settings);
     let hero = my_hero(&game.world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
@@ -293,7 +283,8 @@ impl Plugin for ShopPlugin {
         app.init_resource::<Shopping>()
             .init_resource::<Deal>()
             .init_resource::<Shelf>()
-            .add_systems(Update, (build, tell).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, close.run_if(in_state(Screen::Play)))
+            .add_systems(bevy_egui::EguiPrimaryContextPass, draw.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate);
     }
 }

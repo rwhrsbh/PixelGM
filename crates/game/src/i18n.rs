@@ -324,6 +324,16 @@ texts! {
     FightItems: "Предметы", "Items";
     SheetSize: "Размер", "Size";
     GoldCount: "Золото:", "Gold:";
+    BagAbout: "Щелчок — взять вещь, ещё щелчок — положить. Положенная на другую вещь меняется с ней местами.", "Click to pick a thing up, click again to put it down. Put on another thing, it takes that one's place.";
+    BagQuickHint: "F1–F6 над вещью — держать её под рукой; потом F1–F6 её применяют.", "F1–F6 over a thing keeps it at hand; later F1–F6 use it.";
+    GoldDropHint: "Щелчок — положить 10 монет на землю, чтобы другой их подобрал.", "Click to lay 10 coins on the ground for someone else to pick up.";
+    OtherHero: "Сумка другого героя", "Another hero's bag";
+    CompanionsAbout: "С вещью в руке: щелчок по руке или спине — отдать оружие или доспех, по ноше — положить. Без вещи — забрать.", "With a thing in hand: click a hand or back to give a weapon or armour, the pack to put it in. With none: take it back.";
+    CompanionHand: "Оружие", "Weapon";
+    CompanionBack: "Доспех", "Armour";
+    ShelfEmpty: "На этой полке ничего нет.", "Nothing lies on this shelf.";
+    HaggleDone: "Здесь уже торговались.", "You have already haggled here.";
+    CloseBag: "Закрыть", "Close";
     Companions: "Спутники", "Companions";
     PackWord: "Ноша", "Pack";
     Tired: "устал", "tired";
