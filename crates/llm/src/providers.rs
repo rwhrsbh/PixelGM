@@ -91,13 +91,27 @@ impl Provider {
 
     /// What a request carries besides the key: for OpenCode Go, the session, the way its own
     /// client says it, so that the prompt is cached and not paid for each time in full.
+    ///
+    /// Every other provider is sent the session as OpenCode's client sends it to all of
+    /// them: `x-session-affinity` and `X-Session-Id`, by which a service that keeps a cache
+    /// of the prompt (Cloudflare's among them) sends the requests of one session to where
+    /// that cache is. One that keeps none pays no heed.
     pub fn headers(&self) -> Vec<(&'static str, String)> {
+        let session = if self.session.trim().is_empty() { crate::opencode_go::session().to_string() } else { self.session.trim().to_string() };
         match self.kind {
-            Kind::OpenCodeGo => {
-                let session = if self.session.trim().is_empty() { crate::opencode_go::session().to_string() } else { self.session.trim().to_string() };
-                crate::opencode_go::headers(&session)
-            }
-            _ => Vec::new(),
+            Kind::OpenCodeGo => crate::opencode_go::headers(&session),
+            _ => vec![("x-session-affinity", session.clone()), ("X-Session-Id", session)],
+        }
+    }
+
+    /// The system's words as a message. Through OpenRouter they carry a mark that they are
+    /// to be cached: the models behind it that keep a cache only where they are told to
+    /// (Anthropic's, some of Google's) keep the master's rules, which every request begins
+    /// with; the rest cache by themselves and pass the mark over.
+    fn system_message(&self, system: &str) -> serde_json::Value {
+        match self.kind {
+            Kind::OpenRouter => serde_json::json!({ "role": "system", "content": [{ "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }] }),
+            _ => serde_json::json!({ "role": "system", "content": system }),
         }
     }
 
@@ -433,7 +447,7 @@ impl Rotation {
                     let body = |effort: &str| {
                         let mut body = serde_json::json!({
                             "model": model,
-                            "messages": [{ "role": "system", "content": system }, { "role": "user", "content": prompt }],
+                            "messages": [provider.system_message(system), { "role": "user", "content": prompt }],
                             "temperature": 0.9,
                             "stream": true,
                         });
@@ -857,7 +871,13 @@ mod tests {
         let (url, headers) = heard.0.lock().unwrap()[0].clone();
         assert_eq!(url, "https://opencode.ai/inference/go/openai/v1/chat/completions");
         assert!(headers.iter().any(|(n, v)| *n == "x-opencode-session" && v == "ses_abc"));
-        // Nobody else is sent OpenCode's headers.
-        assert!(nim(&["k"], &["m"]).headers().is_empty());
+        // Nobody else is sent OpenCode's own headers, but everyone the session.
+        let others = nim(&["k"], &["m"]).headers();
+        assert!(others.iter().all(|(n, _)| !n.starts_with("x-opencode")));
+        assert!(others.iter().any(|(n, _)| *n == "x-session-affinity"));
+        // Through OpenRouter the master's rules are marked to be cached.
+        let router = Provider { kind: Kind::OpenRouter, ..nim(&["k"], &["m"]) };
+        assert_eq!(router.system_message("rules")["content"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(nim(&["k"], &["m"]).system_message("rules")["content"], "rules");
     }
 }
