@@ -27,6 +27,8 @@ enum Choice {
     Fallback,
     Predraw,
     Initiative,
+    /// How long a player has for a turn in a fight at the table this player hosts.
+    TurnTimer,
     Music,
     Sound,
     Voice,
@@ -47,6 +49,7 @@ impl Choice {
             Choice::Fallback => T::SetFallback,
             Choice::Predraw => T::SetPredraw,
             Choice::Initiative => T::SetInitiative,
+            Choice::TurnTimer => T::SetTurnTimer,
             Choice::Music => T::SetMusic,
             Choice::Sound => T::SetSound,
             Choice::Voice => T::SetVoice,
@@ -67,6 +70,7 @@ impl Choice {
             Choice::Fallback => T::FallbackHint,
             Choice::Predraw => T::PredrawHint,
             Choice::Initiative => T::InitiativeHint,
+            Choice::TurnTimer => T::TurnTimerHint,
             Choice::Voice => T::VoiceHint,
             Choice::Fill => T::FillHint,
             Choice::OnlineMusic => T::OnlineMusicHint,
@@ -77,7 +81,7 @@ impl Choice {
     fn value(self, s: &Settings) -> Option<T> {
         Some(match self {
             // Seconds, shown by the button's own text instead.
-            Choice::FirstToken => return None,
+            Choice::FirstToken | Choice::TurnTimer => return None,
             Choice::Language => T::LanguageName,
             // The names of screens are the same in every language: shown by `shown`.
             Choice::Screen if s.screen > 0 => return None,
@@ -171,6 +175,12 @@ impl Choice {
             }
             Choice::FirstToken => s.first_token = next_first_token(s.first_token),
             Choice::Predraw => s.predraw = !s.predraw,
+            Choice::TurnTimer => s.turn_timer = match s.turn_timer {
+                0 => 30,
+                30 => 60,
+                60 => 120,
+                _ => 0,
+            },
             Choice::Initiative => {
                 s.initiative = match s.initiative {
                     Initiative::Off => Initiative::Rare,
@@ -211,7 +221,7 @@ fn first_token_text(settings: &Settings) -> String {
 
 /// The tabs of the screen, and the settings on each.
 const TABS: [(T, &[Choice]); 3] = [
-    (T::TabGame, &[Choice::Language, Choice::Initiative, Choice::Predraw]),
+    (T::TabGame, &[Choice::Language, Choice::Initiative, Choice::Predraw, Choice::TurnTimer]),
     (T::TabScreen, &[Choice::Screen, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill]),
     (T::TabSound, &[Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice]),
 ];
@@ -250,6 +260,9 @@ pub enum SettingsAct {
 impl Choice {
     /// What the setting shows for these settings. A language is named in itself.
     fn shown(self, s: &Settings, lang: Lang) -> String {
+        if self == Choice::TurnTimer {
+            return if s.turn_timer == 0 { T::TimerOff.text(lang).to_string() } else { format!("{} {}", s.turn_timer, T::Seconds.text(lang)) };
+        }
         if self == Choice::Screen && s.screen > 0 {
             return ["Full HD", "2K", "4K"][s.screen.min(3) as usize - 1].to_string();
         }
@@ -468,7 +481,7 @@ mod tests {
             let mut s = Settings::default();
             let before = s.clone();
             choice.advance(&mut s);
-            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.first_token != s.first_token, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade, before.window_size != s.window_size, before.fill != s.fill, before.online_music != s.online_music, before.screen != s.screen, before.ui_size != s.ui_size];
+            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.first_token != s.first_token, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade, before.window_size != s.window_size, before.fill != s.fill, before.online_music != s.online_music, before.screen != s.screen, before.ui_size != s.ui_size, before.turn_timer != s.turn_timer];
             assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{choice:?}");
         }
     }
@@ -489,7 +502,7 @@ mod tests {
     #[test]
     fn every_setting_is_on_a_tab_or_the_masters_screen_and_says_what_it_does() {
         let shown = all();
-        for choice in [Choice::Language, Choice::Screen, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw, Choice::Initiative] {
+        for choice in [Choice::TurnTimer, Choice::Language, Choice::Screen, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw, Choice::Initiative] {
             assert!(shown.contains(&choice), "{choice:?} is on no tab");
             assert!(!choice.hint().text(Lang::Ru).is_empty(), "{choice:?}");
         }

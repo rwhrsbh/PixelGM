@@ -34,6 +34,7 @@ pub fn sheet(
     mut egui: EguiContexts,
     mut commands: Commands,
     (phase, game, view, lang, session, settings): (Res<Phase>, Res<Game>, Res<FightView>, Res<Lang>, Res<Session>, Res<Settings>),
+    table: Res<crate::coop::Table>,
     mut slot: ResMut<crate::view::StoryPanel>,
     mut field: ResMut<StuntField>,
     mut was_writing: Local<bool>,
@@ -44,6 +45,7 @@ pub fn sheet(
         return;
     }
     let world = &game.world;
+    let roster_timer = table.roster.turn_timer;
     let lang = *lang;
     let ru = lang == Lang::Ru;
     let t = |text: T| text.text(lang);
@@ -162,7 +164,15 @@ pub fn sheet(
             "",
             |ui| {
                 log(ui);
-                ui.label(RichText::new(turn).color(c(WAX_DARK)));
+                ui.horizontal(|row| {
+                    row.label(RichText::new(turn).color(c(WAX_DARK)));
+                    // The time a player has for the turn, at a shared table that sets one.
+                    let timer = if session.is_host() { settings.turn_timer } else { roster_timer };
+                    if timer > 0 && actor.side == Side::Party && !playing {
+                        let left = (timer as f32 - view.turn_age).max(0.0).ceil() as u32;
+                        row.label(RichText::new(format!("· {} {left} {}", t(T::TurnLeft), t(T::Seconds))).color(c(if left <= 10 { WAX } else { WAX_DARK })));
+                    }
+                });
                 if view.asking {
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new().size(9.0).color(c(BRASS_DARK)));

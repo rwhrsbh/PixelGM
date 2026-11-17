@@ -60,6 +60,10 @@ pub struct FightView {
     /// A blow chosen while others acted: the weapon, struck at the nearest foe in reach
     /// when this player's hero comes to act.
     prepared: Option<usize>,
+    /// Whose turn it is (the actor and the round) and how long it has lasted, for the time
+    /// a player has for a turn.
+    turn_of: (String, u32),
+    turn_age: f32,
 }
 
 #[derive(Component)]
@@ -358,7 +362,8 @@ fn act(intent: FightIntent, world: &mut World, view: &mut FightView, session: &S
 /// Shows waiting events one at a time and, when there is nothing to show, moves the fight
 /// on: a monster takes its turn, or the fight is found to be over. Only the host (or a solo
 /// player) moves the fight on; guests are told.
-fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: ResMut<FightView>, mut redraw: ResMut<Redraw>, lang: Res<Lang>, session: Res<Session>, mut fx: ResMut<Fx>, mut was_over: Local<bool>) {
+#[allow(clippy::too_many_arguments)]
+fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: ResMut<FightView>, mut redraw: ResMut<Redraw>, lang: Res<Lang>, session: Res<Session>, settings: Res<Settings>, mut fx: ResMut<Fx>, mut was_over: Local<bool>) {
     // The end of a fight has a sound of its own, on every machine that watched it.
     if let (Some(summary), false) = (&view.over, *was_over) {
         fx.cues.push(if summary.won { Sfx::Victory } else { Sfx::Defeat });
@@ -368,6 +373,16 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
         return;
     }
     let world = &mut game.world;
+    // The clock of the turn: started afresh whenever another comes to act.
+    if let Some(fight) = world.fight.as_ref() {
+        let now = (fight.actor().id.clone(), fight.round);
+        if view.turn_of != now {
+            view.turn_of = now;
+            view.turn_age = 0.0;
+        } else if view.queue.is_empty() {
+            view.turn_age += time.delta_secs();
+        }
+    }
     if !view.queue.is_empty() {
         view.until_next -= time.delta_secs();
         if view.until_next > 0.0 {
@@ -402,9 +417,20 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
         redraw.0 = true;
         return;
     }
-    // A hero whose player has left the table does not hold the fight up.
+    // A hero whose player has left the table does not hold the fight up, nor one whose
+    // player let the time for a turn run out: that hero dodges, and the turn passes.
     let abandoned = world.acting_owner().is_some_and(|owner| !world.present.is_empty() && !world.present.iter().any(|p| p == owner));
-    let events = if abandoned { world.fight_act(&world::FightIntent::EndTurn) } else { world.fight_monster_turn() };
+    let timer = settings.turn_timer;
+    let late = session.is_host() && timer > 0 && fight.actor().side == Side::Party && view.turn_age > timer as f32;
+    let events = if late {
+        let mut events = if fight.actor().action_left { world.fight_act(&world::FightIntent::Dodge) } else { Vec::new() };
+        events.extend(world.fight_act(&world::FightIntent::EndTurn));
+        events
+    } else if abandoned {
+        world.fight_act(&world::FightIntent::EndTurn)
+    } else {
+        world.fight_monster_turn()
+    };
     if !events.is_empty() {
         session.broadcast(&Down::FightEvents(events.clone()));
         view.queue.extend(events);

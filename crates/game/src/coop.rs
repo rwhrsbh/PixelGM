@@ -247,6 +247,9 @@ pub struct Roster {
     /// Whether friends across the internet can come in by the code: none while the router
     /// is being asked.
     pub internet: Option<bool>,
+    /// Seconds for a turn in a fight here; 0 for no limit.
+    #[serde(default)]
+    pub turn_timer: u16,
 }
 
 /// How often where everybody is goes over the wire: twenty times a second, so another
@@ -1023,7 +1026,7 @@ fn roster(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, game:
         codes.push((format!("{} {ip}", T::NetInternet.text(settings.lang)), net::code::encode(std::net::SocketAddrV4::new(*ip, port))));
     }
     let internet = opened.map(|o| o.is_ok());
-    let roster = Roster { steam: matches!(hosting.net.lobby(), Some(Ok(_))), codes, world: world.clone(), playing: game.is_some(), internet, seats };
+    let roster = Roster { steam: matches!(hosting.net.lobby(), Some(Ok(_))), codes, world: world.clone(), playing: game.is_some(), internet, turn_timer: settings.turn_timer, seats };
     if let Some(beacon) = &hosting.beacon {
         let taken = roster.seats.len() as u8;
         beacon.update(|info| {
