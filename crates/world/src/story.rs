@@ -940,11 +940,17 @@ impl World {
                     }
                 }
                 Effect::Take { name, from } => {
-                    // The named hero's bag first, then the one who acted, then any of those here.
-                    let first = bag_of(from);
-                    let order: Vec<usize> = std::iter::once(first).chain((0..self.story.bags.len()).filter(|b| with_us.get(*b).copied().unwrap_or(false))).collect();
+                    // Only from the bags of those whose deed this answers: what another player's
+                    // hero carries is theirs, and is used only once they drop it for the others.
+                    let named = bag_of(from);
+                    // With no heroes made yet, what was found waits in the first bag.
+                    let order: Vec<usize> = if doers.is_empty() { vec![named] } else { std::iter::once(named).filter(|b| doers.contains(b)).chain(doers.iter().copied()).collect() };
                     if !order.into_iter().any(|b| self.story.bags.get_mut(b).is_some_and(|bag| bag.take(name))) {
-                        notes.push(format!("take: the party has no '{name}'"));
+                        let owner = (0..self.story.bags.len()).find(|b| with_us.get(*b).copied().unwrap_or(false) && self.story.bags[*b].inventory.iter().any(|i| i.name.to_lowercase().contains(&name.to_lowercase())));
+                        match owner.and_then(|b| self.party.get(b)) {
+                            Some(hero) => notes.push(format!("take: '{name}' is carried by {}, whose player did not give it up", hero.name)),
+                            None => notes.push(format!("take: the party has no '{name}'")),
+                        }
                     }
                 }
                 Effect::Describe { id, description } => {

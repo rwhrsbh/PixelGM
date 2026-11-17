@@ -178,7 +178,7 @@ fn three_at_the_lake() -> World {
 }
 
 #[test]
-fn logs_cut_by_one_player_are_used_from_that_players_bag_by_another() {
+fn another_players_logs_are_theirs_until_they_drop_them() {
     let mut w = three_at_the_lake();
     // Bob cuts the tree: the logs are his.
     w.acting = Some(1);
@@ -189,21 +189,37 @@ fn logs_cut_by_one_player_are_used_from_that_players_bag_by_another() {
     }));
     let logs = |w: &World, hero: usize| w.story.bags[hero].inventory.iter().filter(|i| i.name == "Logs").count();
     assert_eq!((logs(&w, 0), logs(&w, 1), logs(&w, 2)), (0, 1, 1), "into the bag of the one who cut");
-    // The master is told who carries them: Bob, here. Carl, far off, is not listed.
-    let asked = crate::prompt::turn(&w, "Ann's hero: we lay Bob's logs across", None);
-    let carries: Vec<&str> = asked.lines().filter(|l| l.contains("Logs")).collect();
-    assert!(carries.iter().any(|l| l.contains("Bob's hero")) && !asked.contains("Carl's hero"), "{carries:?}");
+    // The master is told who carries them and that they are not Ann's to use.
+    let asked = crate::prompt::turn(&w, "Ann's hero: I lay the logs across", None);
+    assert!(asked.lines().any(|l| l.contains("Bob's hero") && l.contains("Logs")) && !asked.contains("Carl's hero"));
+    assert!(crate::prompt::play_prompt(&w).contains("Each hero uses only what is in their OWN bag"));
 
-    // Ann lays the bridge with the logs Bob carries: they leave Bob's bag, not Carl's far off.
+    // Ann tries to lay Bob's logs: they stay in Bob's bag, whatever the master wrote.
     w.acting = Some(0);
     w.actors = vec![0];
-    let (_, notes) = answer(&mut w, "Ann's hero: we lay Bob's logs across", serde_json::json!({
-        "narration": "Together you lay the logs.",
+    let bridge = serde_json::json!({
+        "narration": "You lay the logs.",
         "tiles": [{ "id": "log_bridge", "name": "Log bridge", "walkable": true, "rows": sixteen('3') }],
-        "effects": [{ "op": "tile", "x": 8, "y": 8, "tile": "log_bridge", "to": [13, 8] }, { "op": "take", "name": "Logs" }]
-    }));
+        "effects": [{ "op": "take", "name": "Logs", "from": "Bob's hero" }]
+    });
+    let (_, notes) = answer(&mut w, "Ann's hero: I lay Bob's logs across", bridge.clone());
+    assert!(notes.iter().any(|n| n.contains("carried by Bob's hero")), "{notes:?}");
+    assert_eq!((logs(&w, 0), logs(&w, 1), logs(&w, 2)), (0, 1, 1), "Bob's logs are not Ann's to use");
+
+    // Bob drops them himself; Ann picks them up and lays them: now they are gone.
+    let at = w.story.bags[1].inventory.iter().position(|i| i.name == "Logs").unwrap();
+    assert!(w.drop_item(1, at, (4, 8)));
+    let n = w.lying_at(0, "Logs", (4, 8)).unwrap();
+    assert!(w.pick_up(0, n));
+    let (_, notes) = answer(&mut w, "Ann's hero: I lay the logs across", bridge);
     assert!(notes.is_empty(), "{notes:?}");
-    assert_eq!((logs(&w, 0), logs(&w, 1), logs(&w, 2)), (0, 0, 1), "Bob's logs are used; Carl's stay with Carl");
+    assert_eq!((logs(&w, 0), logs(&w, 1), logs(&w, 2)), (0, 0, 1));
+
+    // Both acting together may use what either of them carries.
+    w.story.bags[1].receive(serde_json::from_value(serde_json::json!({ "name": "Rope", "description": "", "count": 1 })).unwrap());
+    w.actors = vec![0, 1];
+    let (_, notes) = answer(&mut w, "Ann's hero and Bob's hero: we tie the logs with Bob's rope", serde_json::json!({ "narration": "Tied.", "effects": [{ "op": "take", "name": "Rope" }] }));
+    assert!(notes.is_empty(), "{notes:?}");
 }
 
 #[test]
