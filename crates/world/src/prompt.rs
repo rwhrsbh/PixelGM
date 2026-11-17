@@ -667,7 +667,7 @@ pub fn chapter_upto(world: &World, upto: usize) -> String {
     let mut older = world.clone();
     older.story.log.truncate(upto);
     format!(
-        "{}\nThe story above has grown long. Write it up as one chapter so that nothing which matters later is lost: who was met and what they want, what was learned, what was gained and lost, what was promised, what was left unfinished, in the order it happened. Be detailed; this chapter replaces the story above. Then list as \"facts\" anything that must hold true for the rest of the campaign and is not yet among the facts.\n\nAnswer with this JSON object:\n{{\"chapter\": \"…\", \"facts\": [\"…\"]}}",
+        "{}\nThe story above has grown long. Write it up as one chapter so that nothing which matters later is lost: who was met and what they want, what was learned, what was gained and lost, what was promised, what was left unfinished, in the order it happened — and which hero did, said, got and promised what, by name, for at a table of several each player's hero has a story of its own. Be detailed; this chapter replaces the story above. Then list as \"facts\" anything that must hold true for the rest of the campaign and is not yet among the facts.\n\nAnswer with this JSON object:\n{{\"chapter\": \"…\", \"facts\": [\"…\"]}}",
         situation(&older, 0..)
     )
 }
@@ -678,7 +678,7 @@ pub fn merge_chapters(world: &World, count: usize) -> String {
     let count = count.min(world.story.chapters.len());
     let chapters: Vec<String> = world.story.chapters[..count].iter().enumerate().map(|(n, c)| format!("CHAPTER {}:\n{c}", n + 1)).collect();
     format!(
-        "World: {}. {}\n\nFACTS:\n{}\n\nThese are the oldest chapters of the campaign so far:\n\n{}\n\nWrite them up as ONE chapter that keeps everything which matters later — who was met and what they want, what was learned, gained, lost and promised, what is unfinished — in the order it happened, as detailed as it needs to be but shorter than all of them together. Then list as \"facts\" anything that must hold true for the rest of the campaign and is not yet among the facts.\n\nAnswer with this JSON object:\n{{\"chapter\": \"…\", \"facts\": [\"…\"]}}",
+        "World: {}. {}\n\nFACTS:\n{}\n\nThese are the oldest chapters of the campaign so far:\n\n{}\n\nWrite them up as ONE chapter that keeps everything which matters later — who was met and what they want, what was learned, gained, lost and promised, what is unfinished, and which hero did and got what, by name — in the order it happened, as detailed as it needs to be but shorter than all of them together. Then list as \"facts\" anything that must hold true for the rest of the campaign and is not yet among the facts.\n\nAnswer with this JSON object:\n{{\"chapter\": \"…\", \"facts\": [\"…\"]}}",
         world.title,
         world.summary,
         world.story.facts.join("\n"),
