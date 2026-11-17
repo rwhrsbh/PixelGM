@@ -224,7 +224,7 @@ fn apply_start(args: Res<StartArgs>, mut next: ResMut<NextState<Screen>>, mut se
     }
     let started = match (&args.0.host, &args.0.join) {
         (Some(port), _) => Some(crate::coop::host(None, &crate::coop::player_name(&settings), Some(*port))),
-        (None, Some(address)) => Some(crate::coop::join(address, &crate::coop::player_name(&settings), settings.player_id)),
+        (None, Some(address)) => Some(crate::coop::join(address, &crate::coop::player_name(&settings), settings.player_id, 0)),
         _ => None,
     };
     match started {

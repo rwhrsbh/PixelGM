@@ -146,6 +146,9 @@ pub enum Up {
         /// Who this player is, whatever the name: one who comes back gets the same seat.
         #[serde(default)]
         player: u64,
+        /// The last thing told to this player that it read, after a drop; 0 when new.
+        #[serde(default)]
+        last_seq: u64,
     },
     /// Ready to begin, or no longer.
     Ready(bool),
@@ -180,6 +183,9 @@ pub enum Down {
     Full,
     /// The first words of what was told in a place this player is not in.
     News { place: String, text: String },
+    /// Something told to this player, numbered in the player's own stream: one that comes
+    /// back after a drop names the last it read, and is sent what it missed.
+    Feed { seq: u64, message: Box<Down> },
     /// Someone in a place says something aloud: the place, who, the words.
     Bubble { place: String, who: String, text: String },
     /// The whole world, sent on joining and whenever it changes. `id` names its saves.
@@ -252,6 +258,32 @@ pub struct Roster {
     pub turn_timer: u16,
 }
 
+/// What was told to a player after the last thing they read, in order, to send again.
+fn missed_since(hosting: &Hosting, player: u64, last_seq: u64) -> Vec<Down> {
+    hosting.feeds.get(&player).map(|(_, kept)| kept.iter().filter(|(seq, _)| *seq > last_seq).filter_map(|(_, json)| serde_json::from_str(json).ok()).collect()).unwrap_or_default()
+}
+
+/// What came, with the numbered things taken out of their wrapping: each is read once and
+/// in order, and one already read (sent again after a drop) is left out.
+fn unwrap_feed(events: Vec<ClientEvent<Down>>, seen: &mut u64) -> Vec<ClientEvent<Down>> {
+    events
+        .into_iter()
+        .filter_map(|event| match event {
+            ClientEvent::Message(Down::Feed { seq, message }) => {
+                if seq <= *seen {
+                    return None;
+                }
+                *seen = seq;
+                Some(ClientEvent::Message(*message))
+            }
+            other => Some(other),
+        })
+        .collect()
+}
+
+/// How many things told to a player are kept to send again after a drop.
+const FEED_KEPT: usize = 200;
+
 /// How often where everybody is goes over the wire: twenty times a second, so another
 /// player's figure walks smoothly between the words of where it is.
 const POSITIONS_EVERY: f32 = 0.05;
@@ -269,6 +301,9 @@ pub struct Hosting {
     beacon: Option<net::beacon::Beacon>,
     /// The port held open on the home router for friends across the internet.
     upnp: Option<net::upnp::Upnp>,
+    /// What was told to each player, by who they are: the last number given, and the
+    /// latest things told, kept to be sent again after a drop.
+    feeds: HashMap<u64, (u64, VecDeque<(u64, String)>)>,
     names: HashMap<PeerId, String>,
     tokens: HashMap<PeerId, (f32, f32, (i32, i32))>,
     /// The world as last sent to each guest, to tell when it has changed. Each guest is
@@ -320,19 +355,20 @@ fn rejoin(time: Res<Time>, mut session: ResMut<Session>, mut table: ResMut<Table
         table.status = Some(T::LobbyLost);
         return;
     }
-    let (name, player) = (player_name(&settings), settings.player_id);
+    let (name, player, seen) = (player_name(&settings), settings.player_id, table.feed_seen);
+    let Some(rejoin) = &mut table.rejoin else { return };
     match rejoin.way.clone() {
         Way::Address(address) => {
             let slot: Arc<Mutex<Option<std::io::Result<Session>>>> = Arc::default();
             rejoin.trying = Some(slot.clone());
             std::thread::spawn(move || {
-                let result = join(&address, &name, player);
+                let result = join(&address, &name, player, seen);
                 *slot.lock().unwrap() = Some(result);
             });
         }
         Way::Steam(lobby) => {
             if let Some(steam) = &link.steam {
-                *session = join_steam(steam, lobby, &name, player);
+                *session = join_steam(steam, lobby, &name, player, seen);
             }
         }
     }
@@ -406,6 +442,27 @@ impl Session {
         hosting.names.iter().find(|(_, name)| name.as_str() == player).is_some_and(|(peer, _)| hosting.net.send(*peer, message))
     }
 
+    /// Tells one guest something that must reach them: numbered in their own stream and kept,
+    /// so that after a drop it is sent again. `false` unless this is the host and the guest
+    /// is there now; kept all the same for when they come back.
+    pub fn tell(&self, player: &str, message: Down) -> bool {
+        let Session::Host(hosting) = self else { return false };
+        let mut hosting = hosting.lock().unwrap();
+        let peer = hosting.names.iter().find(|(_, name)| name.as_str() == player).map(|(peer, _)| *peer);
+        let Some(id) = peer.and_then(|p| hosting.ids.get(&p).copied()).filter(|id| *id != 0) else {
+            return peer.is_some_and(|p| hosting.net.send(p, &message));
+        };
+        let feed = hosting.feeds.entry(id).or_insert_with(|| (0, VecDeque::new()));
+        feed.0 += 1;
+        let seq = feed.0;
+        let numbered = Down::Feed { seq, message: Box::new(message) };
+        feed.1.push_back((seq, serde_json::to_string(&numbered).unwrap_or_default()));
+        while feed.1.len() > FEED_KEPT {
+            feed.1.pop_front();
+        }
+        peer.is_some_and(|p| hosting.net.send(p, &numbered))
+    }
+
     /// Says something to the other players only; the game master does not hear it.
     pub fn chat(&self, table: &mut Table, me: &str, text: &str) {
         match self {
@@ -477,6 +534,8 @@ pub struct Table {
     pub inbox: Vec<(String, Intent)>,
     /// A line for the player about the connection, shown on the lobby screen.
     pub status: Option<T>,
+    /// The last numbered thing this guest read from the host.
+    pub feed_seen: u64,
     /// The cells the story is walking this guest's hero along, the next one first.
     pub led: Vec<(usize, usize)>,
     /// The line to the host dropped and the table is being tried again.
@@ -624,18 +683,18 @@ pub fn invite_friends(link: &SteamLink, session: &Session) {
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 
 fn fresh_hosting(net: Host<Up, Down>, beacon: Option<net::beacon::Beacon>) -> Session {
-    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
+    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, feeds: HashMap::new(), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
 }
 
 /// Joins a friend's Steam lobby.
-pub fn join_steam(steam: &net::Steam, lobby: u64, name: &str, player: u64) -> Session {
+pub fn join_steam(steam: &net::Steam, lobby: u64, name: &str, player: u64, last_seq: u64) -> Session {
     let net = Client::connect_steam(steam, lobby);
-    net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player });
+    net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player, last_seq });
     Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Steam(lobby) }))
 }
 
 /// Joins a table by its code or its address, with or without a port.
-pub fn join(typed: &str, name: &str, player: u64) -> std::io::Result<Session> {
+pub fn join(typed: &str, name: &str, player: u64, last_seq: u64) -> std::io::Result<Session> {
     let typed = typed.trim();
     let address = if net::code::looks_like_code(typed) {
         match net::code::decode(typed) {
@@ -648,7 +707,7 @@ pub fn join(typed: &str, name: &str, player: u64) -> std::io::Result<Session> {
         format!("{typed}:{DEFAULT_PORT}")
     };
     let net = Client::connect(&address)?;
-    net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player });
+    net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player, last_seq });
     Ok(Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Address(address) })))
 }
 
@@ -806,7 +865,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                     pass_on(&mut hosting, &master.relay, id, Trouble::Network);
                 }
             }
-            HostEvent::Message(peer, Up::Hello { name, version, player }) => {
+            HostEvent::Message(peer, Up::Hello { name, version, player, last_seq }) => {
                 if version != PROTOCOL {
                     hosting.net.send(peer, &Down::WrongVersion);
                     hosting.net.kick(peer);
@@ -842,6 +901,10 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                 hosting.net.send(peer, &Down::Welcome { name: unique.clone() });
                 hosting.names.insert(peer, unique);
                 hosting.ids.insert(peer, player);
+                // What was told while this player was away is sent again, in order.
+                for message in missed_since(&hosting, player, last_seq) {
+                    hosting.net.send(peer, &message);
+                }
                 // The world itself follows from the pump below, as seen from this guest's place.
             }
             HostEvent::Message(peer, Up::Ready(ready)) => {
@@ -1148,6 +1211,7 @@ fn client_pump(
         }
         _ => return,
     };
+    let events = unwrap_feed(events, &mut table.feed_seen);
     for event in events {
         let me = player_name(&settings);
         match event {
@@ -1187,6 +1251,8 @@ fn client_pump(
             }
             ClientEvent::Message(Down::Roster(roster)) => table.roster = roster,
             ClientEvent::Message(Down::News { place, text }) => table.notices.push(format!("{place}: {text}")),
+            // Unwrapped above: a feed in a feed is nothing.
+            ClientEvent::Message(Down::Feed { .. }) => {}
             ClientEvent::Message(Down::Kicked | Down::Full) => {
                 // Not a dropped line: there is no coming back by trying again.
                 table.status = Some(T::LobbyKicked);
@@ -1342,7 +1408,7 @@ fn steam_invites(time: Res<Time>, link: Res<SteamLink>, mut session: ResMut<Sess
     let Some(lobby) = steam.asked_into() else { return };
     info!("invited through Steam into lobby {lobby}");
     settings.player_name = steam.name();
-    *session = join_steam(steam, lobby, &steam.name(), settings.player_id);
+    *session = join_steam(steam, lobby, &steam.name(), settings.player_id, 0);
     next.set(Screen::Lobby);
 }
 
@@ -1417,7 +1483,7 @@ mod tests {
     #[test]
     fn an_address_without_a_port_gets_the_usual_one() {
         // Nothing listens there: what matters is that the address was understood.
-        let error = join("127.0.0.1:1", "Ann", 7).err().expect("nobody is listening");
+        let error = join("127.0.0.1:1", "Ann", 7, 0).err().expect("nobody is listening");
         assert_ne!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
@@ -1426,10 +1492,49 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let code = net::code::encode(std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port));
-        assert!(join(&code, "Ann", 7).is_ok());
+        assert!(join(&code, "Ann", 7, 0).is_ok());
         let mut typo: Vec<char> = code.chars().collect();
         typo[0] = if typo[0] == 'Z' { 'Y' } else { 'Z' };
         let typo: String = typo.into_iter().collect();
-        assert_eq!(join(&typo, "Ann", 7).err().map(|e| e.kind()), Some(std::io::ErrorKind::InvalidInput));
+        assert_eq!(join(&typo, "Ann", 7, 0).err().map(|e| e.kind()), Some(std::io::ErrorKind::InvalidInput));
+    }
+
+    #[test]
+    fn what_was_told_while_a_player_was_away_is_sent_again_once() {
+        let table = host(None, "Host", Some(0)).unwrap();
+        let Session::Host(hosting) = &table else { unreachable!() };
+        let port = hosting.lock().unwrap().net.port();
+        let guest: Client<Up, Down> = Client::connect(&format!("127.0.0.1:{port}")).unwrap();
+        // The guest is seated as the Hello would seat it.
+        let peer = loop {
+            if let Some(HostEvent::Joined(peer)) = hosting.lock().unwrap().net.poll().into_iter().next() {
+                break peer;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        hosting.lock().unwrap().names.insert(peer, "Ann".into());
+        hosting.lock().unwrap().ids.insert(peer, 7);
+        let turn = |text: &str| Down::Told(Turn { narration: text.into(), options: Vec::new() });
+        assert!(table.tell("Ann", turn("one")));
+        assert!(table.tell("Ann", turn("two")));
+        // Read both as they came.
+        let mut seen = 0;
+        let mut read = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while read.len() < 2 && std::time::Instant::now() < deadline {
+            read.extend(unwrap_feed(guest.poll(), &mut seen));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(seen, 2);
+        // The line drops after the first: the second is sent again, and only the second.
+        let again = missed_since(&hosting.lock().unwrap(), 7, 1);
+        assert_eq!(again.len(), 1);
+        let mut seen_once = 1;
+        let resent: Vec<ClientEvent<Down>> = again.into_iter().map(ClientEvent::Message).collect();
+        let shown = unwrap_feed(resent, &mut seen_once);
+        assert!(matches!(&shown[..], [ClientEvent::Message(Down::Told(t))] if t.narration == "two"));
+        // What was read already is not read twice.
+        let twice: Vec<ClientEvent<Down>> = missed_since(&hosting.lock().unwrap(), 7, 0).into_iter().map(ClientEvent::Message).collect();
+        assert_eq!(unwrap_feed(twice, &mut seen).len(), 0);
     }
 }

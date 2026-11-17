@@ -1871,9 +1871,9 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     let where_ = game.world.place_name(&place).to_string();
     for player in session.players() {
         if game.world.place_of(&player) == place {
-            session.send_to(&player, &Down::Told(turn.clone()));
+            session.tell(&player, Down::Told(turn.clone()));
         } else if !gist.is_empty() {
-            session.send_to(&player, &Down::News { place: where_.clone(), text: gist.clone() });
+            session.tell(&player, Down::News { place: where_.clone(), text: gist.clone() });
         }
     }
     // News from far off goes to the corner, not to the table's talk.
@@ -2475,7 +2475,7 @@ fn follow(label: &str, outcome: &str, game: &Game, settings: &Settings, session:
     let told = Turn { narration: outcome.to_string(), options: Vec::new() };
     for player in session.players() {
         if game.world.place_of(&player) == game.world.current {
-            session.send_to(&player, &Down::Told(told.clone()));
+            session.tell(&player, Down::Told(told.clone()));
         }
     }
     table.wants.lock().unwrap().push(Want { player: player_name(settings), said: label.to_string(), near: None, follows: true });
@@ -3379,7 +3379,7 @@ fn whisper(desk: &mut Desk, whispers: &[Whisper]) {
             .or_else(|| world.present.iter().find(|p| p.to_lowercase() == wanted).cloned());
         match owner {
             Some(owner) if !owner.is_empty() && owner != me => {
-                desk.session.send_to(&owner, &Down::Whisper(said.text.trim().to_string()));
+                desk.session.tell(&owner, Down::Whisper(said.text.trim().to_string()));
             }
             // The host's own, a hero nobody owns, or a name nobody answers to.
             _ => desk.table.unread.push_back(Turn { narration: format!("{} {}", T::WhisperMark.text(desk.settings.lang), said.text.trim()), options: Vec::new() }),
