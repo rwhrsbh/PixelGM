@@ -386,6 +386,11 @@ struct GroundLayer;
 #[derive(Component)]
 struct DarkLayer;
 
+/// How many things the master is asked to draw in one request, and how long it is left
+/// alone after it could not.
+const THINGS_AT_ONCE: usize = 6;
+const THINGS_REST: f32 = 300.0;
+
 /// Work the master does without being asked: drawing places ahead, events, chapters.
 #[derive(Resource, Default)]
 struct Background {
@@ -402,6 +407,11 @@ struct Background {
     feats_rest: f32,
     /// Heroes whose picture has been asked for in this sitting, by name: each is asked once.
     portraits_asked: Vec<String>,
+    /// Things the master was asked to draw in this sitting, by name, and whether it is
+    /// drawing some now; after a refusal it is left alone for a while.
+    things_tried: Vec<String>,
+    things_asked: bool,
+    things_rest: f32,
     /// Sounds, and a die to throw, asked for by code that has only this at hand.
     cues: Vec<Sfx>,
     die: Option<u32>,
@@ -2064,6 +2074,25 @@ fn receive(
                 game.world.focus_fight(&home);
                 redraw.0 = true;
             }
+            Answer::Things(drawn) => {
+                background.things_asked = false;
+                match drawn {
+                    Ok(drawn) => {
+                        let count = game.world.draw_things(&drawn);
+                        info!("the master drew {count} things");
+                        if count > 0 {
+                            redraw.0 = true;
+                            autosave(&store, &game);
+                        }
+                    }
+                    Err(trouble) => {
+                        info!("no things were drawn: {trouble:?}");
+                        background.things_rest = THINGS_REST;
+                        // Asked again after the rest.
+                        background.things_tried.clear();
+                    }
+                }
+            }
             Answer::Portrait { hero, rows } => {
                 if let Ok(rows) = rows
                     && game.world.set_portrait(hero, &rows)
@@ -2295,6 +2324,17 @@ fn background_work(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, g
     background.ahead_rest = (background.ahead_rest - dt).max(0.0);
     background.chapter_rest = (background.chapter_rest - dt).max(0.0);
     background.feats_rest = (background.feats_rest - dt).max(0.0);
+    background.things_rest = (background.things_rest - dt).max(0.0);
+    // Everything that comes into the world without the master's picture is drawn by the
+    // master, a handful at a time, whatever the screen is doing.
+    if !background.things_asked && background.things_rest == 0.0 {
+        let things = game.world.undrawn_things(&background.things_tried, THINGS_AT_ONCE);
+        if !things.is_empty() {
+            background.things_asked = true;
+            background.things_tried.extend(things.iter().map(|t| t.name.clone()));
+            master.ask(&gm, &store, &settings, Ask::Things { world: Box::new(game.world.clone()), things });
+        }
+    }
     if *phase != Phase::Walking {
         return;
     }
@@ -3364,6 +3404,17 @@ fn guests(
             Intent::OpenChest { prop, how } => {
                 let hero = game.world.owners.iter().position(|o| *o == player).unwrap_or(0);
                 game.world.open_chest(hero, &prop, how, &mut Rng::from_clock()).map(|result| outcome_of(chest_words(&result, settings.lang)))
+            }
+            Intent::Turn { index, name } => {
+                if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
+                    let bag = game.world.story.bags.get(hero).map(|b| b.inventory.as_slice()).unwrap_or_default();
+                    let index = if bag.get(index).is_some_and(|i| i.name == name) { Some(index) } else { bag.iter().position(|i| i.name == name) };
+                    if let Some(index) = index {
+                        game.world.turn_item(hero, index);
+                        redraw.0 = true;
+                    }
+                }
+                None
             }
             Intent::PickUp { n, name, cell } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {

@@ -252,6 +252,9 @@ impl GenRequest {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
     pub prompt_tokens: u32,
+    /// Of the prompt, how much the provider had cached from earlier requests: paid at a
+    /// fraction of the price.
+    pub cached_tokens: u32,
     pub output_tokens: u32,
     pub thought_tokens: u32,
 }
@@ -341,7 +344,7 @@ pub fn parse_generate(response: &HttpResponse) -> Result<Reply, Failure> {
     Ok(Reply {
         text,
         finish,
-        usage: Usage { prompt_tokens: count("promptTokenCount"), output_tokens: count("candidatesTokenCount"), thought_tokens: count("thoughtsTokenCount") },
+        usage: Usage { prompt_tokens: count("promptTokenCount"), cached_tokens: count("cachedContentTokenCount"), output_tokens: count("candidatesTokenCount"), thought_tokens: count("thoughtsTokenCount") },
     })
 }
 
@@ -517,7 +520,7 @@ mod tests {
         );
         assert_eq!(
             parse_generate(&r),
-            Ok(Reply { text: "{\"a\":1}".into(), finish: Some("STOP".into()), usage: Usage { prompt_tokens: 96, output_tokens: 150, thought_tokens: 596 } })
+            Ok(Reply { text: "{\"a\":1}".into(), finish: Some("STOP".into()), usage: Usage { prompt_tokens: 96, cached_tokens: 0, output_tokens: 150, thought_tokens: 596 } })
         );
     }
 

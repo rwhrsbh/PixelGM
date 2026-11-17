@@ -526,6 +526,21 @@ pub fn portrait(world: &World, hero: usize) -> String {
     )
 }
 
+/// Things that came into the world without a picture of the master's: each is drawn to
+/// fill the cells it takes in the bag.
+pub fn draw_things(world: &World, things: &[crate::bag::Undrawn]) -> String {
+    let list: Vec<String> = things
+        .iter()
+        .map(|t| format!("- \"{}\"{}{}: {} by {} cells", t.name, if t.kind.is_empty() { String::new() } else { format!(" ({})", t.kind) }, if t.description.trim().is_empty() { String::new() } else { format!(" — {}", t.description.trim()) }, t.size.0, t.size.1))
+        .collect();
+    format!(
+        "World: {}. {}\n\nThese things are carried, lie about or are sold here, and have no picture yet. Draw each as an icon for the bag, recognisable at a glance, in this world's palette: 16 rows of 16 palette characters for every cell of its size ('0' transparent), so a thing 1 by 2 cells is 16 across and 32 down, filling most of its cells, outlined in colour 1. A long thing (a spear, a staff, a sword) stands upright. You may correct the size where it is plainly wrong (a potion 1 by 1, a dagger 1 by 2, a sword 1 by 3, a bow or armour 2 by 3, a spear 1 by 4).\n\n{}\n\nAnswer with this JSON object, one entry for every thing, with its name exactly as given:\n{{\"things\": [{{\"name\": \"…\", \"size\": [1, 2], \"rows\": [\"…\"]}}]}}",
+        world.title,
+        world.summary,
+        list.join("\n")
+    )
+}
+
 /// A player who reads another language than the world is told in asks for a translation.
 pub fn translate(texts: &[String], language: &str) -> String {
     let list = serde_json::to_string(texts).unwrap_or_default();

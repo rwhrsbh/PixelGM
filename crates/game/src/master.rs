@@ -58,6 +58,11 @@ pub enum Ask {
         texts: Vec<String>,
         language: String,
     },
+    /// Draw the things that came into the world without a picture.
+    Things {
+        world: Box<World>,
+        things: Vec<world::bag::Undrawn>,
+    },
     /// Draw a hero as the player described it.
     Portrait {
         world: Box<World>,
@@ -106,6 +111,7 @@ pub enum Answer {
     /// What a hero tried in the fight of `place`.
     Stunt { place: String, spell: Option<(String, u8)>, draft: Result<Box<StuntDraft>, Trouble> },
     Portrait { hero: usize, rows: Result<Vec<String>, Trouble> },
+    Things(Result<Vec<world::bag::ThingPicture>, Trouble>),
     Translated { texts: Vec<String>, translated: Result<Vec<String>, Trouble> },
 }
 
@@ -345,7 +351,18 @@ impl Call {
             }
             let (text, model) = match self.gm.dispatcher.generate_in(&request, self.lowest, self.cheap) {
                 Ok((reply, model)) => {
-                    info!("the master answered: {} in {:.1} s, {} characters for a prompt of {}", model.id, started.elapsed().as_secs_f32(), reply.text.chars().count(), prompt.chars().count());
+                    let u = reply.usage;
+                    info!(
+                        "the master answered: {} in {:.1} s, {} characters for a prompt of {}; tokens: {} in ({} from the cache), {} out, {} thinking",
+                        model.id,
+                        started.elapsed().as_secs_f32(),
+                        reply.text.chars().count(),
+                        prompt.chars().count(),
+                        u.prompt_tokens,
+                        u.cached_tokens,
+                        u.output_tokens,
+                        u.thought_tokens
+                    );
                     (reply.text, model.id)
                 }
                 // The host's own keys are missing or spent: the guests' keys are next.
@@ -403,7 +420,7 @@ impl Master {
 
     pub fn ask(&self, gm: &Gm, store: &Store, settings: &Settings, ask: Ask) {
         // Work nobody is waiting for uses only the best tier and is not retried.
-        let unhurried = matches!(ask, Ask::Location { ahead: true, .. } | Ask::Event { .. } | Ask::Portrait { .. });
+        let unhurried = matches!(ask, Ask::Location { ahead: true, .. } | Ask::Event { .. } | Ask::Portrait { .. } | Ask::Things { .. });
         // Small talk is asked of the cheap models, once.
         let cheap = matches!(ask, Ask::Chatter { .. });
         let call = Call {
@@ -432,6 +449,7 @@ impl Master {
                 Ask::Feats { hero, secret, .. } => format!("abilities for hero {hero}{}", if *secret { " (secret)" } else { "" }),
                 Ask::Stunt { .. } => "a stunt in a fight".to_string(),
                 Ask::Portrait { hero, .. } => format!("a portrait of hero {hero}"),
+                Ask::Things { things, .. } => format!("pictures of {} things", things.len()),
                 Ask::Translate { texts, language } => format!("{} texts into {language}", texts.len()),
                 Ask::Invent { .. } => "a creature for a library".to_string(),
             },
@@ -532,6 +550,14 @@ impl Master {
                     // A list of another length cannot be matched to what was sent.
                     let translated = draft.and_then(|d| if d.texts.len() == texts.len() { Ok(d.texts) } else { Err(Trouble::Unreadable(format!("{} translations for {} texts", d.texts.len(), texts.len()))) });
                     Answer::Translated { texts, translated }
+                }
+                Ask::Things { world, things } => {
+                    let draft: Result<world::bag::ThingsDraft, Trouble> = if fake {
+                        faked(fake::things(&things.iter().map(|t| (t.name.clone(), t.size)).collect::<Vec<_>>()))
+                    } else {
+                        call.read(prompt::system_prompt(&world.language), &prompt::draw_things(&world, &things))
+                    };
+                    Answer::Things(draft.map(|d| d.things))
                 }
                 Ask::Portrait { world, hero } => {
                     let draft: Result<PortraitDraft, Trouble> = if fake { faked(fake::portrait()) } else { call.read(prompt::system_prompt(&world.language), &prompt::portrait(&world, hero)) };

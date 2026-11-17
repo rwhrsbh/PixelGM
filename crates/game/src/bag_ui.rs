@@ -174,11 +174,15 @@ pub fn item_lines(item: &Item, lang: Lang) -> Vec<(String, Rgba)> {
 }
 
 fn icon_key(item: &Item) -> String {
-    format!("{}|{:?}|{:?}|{}", item.name, item.gear, item.size_cells, item.rows.len())
+    format!("{}|{:?}|{:?}|{}|{}", item.name, item.gear, item.size_cells, item.rows.len(), item.turned)
 }
 
 /// The picture of a thing: the master's own, when it drew one, or the game's.
 pub fn picture(item: &Item, world: &World) -> crate::art::Pixels {
+    // Laid on its side: drawn standing, then turned.
+    if item.turned {
+        return picture(&Item { turned: false, ..item.clone() }, world).turned();
+    }
     if item.rows.is_empty() {
         return icon(item);
     }
@@ -242,6 +246,22 @@ fn press(
     }
     let hero = state.hero;
     let hits = std::mem::take(&mut clicks.hits);
+    // R lays the thing in hand, or the one under the cursor, on its side, or stands it up.
+    if keyboard.just_pressed(KeyCode::KeyR) {
+        let target = match &state.held {
+            Some(Held::Item(i)) => Some(*i),
+            _ => state.over.and_then(|cell| game.world.story.bags.get(hero).and_then(|b| b.item_at(cell))),
+        };
+        if let Some(i) = target {
+            let name = bag(&game.world, hero).get(i).map(|item| item.name.clone()).unwrap_or_default();
+            if game.world.turn_item(hero, i) {
+                sound.write(Play(Sfx::Click));
+                if session.is_client() {
+                    session.intend(Intent::Turn { index: i, name });
+                }
+            }
+        }
+    }
     // A right click lets go of what is held, or uses what is under the cursor.
     if let Some(under) = hits.iter().find(|(_, right)| *right).map(|(target, _)| *target) {
         if state.held.take().is_some() {

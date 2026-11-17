@@ -354,7 +354,7 @@ texts! {
     FightItems: "Предметы", "Items";
     SheetSize: "Размер", "Size";
     GoldCount: "Золото:", "Gold:";
-    BagAbout: "Щелчок — взять вещь, ещё щелчок — положить. Положенная на другую вещь меняется с ней местами.", "Click to pick a thing up, click again to put it down. Put on another thing, it takes that one's place.";
+    BagAbout: "Щелчок — взять вещь, ещё щелчок — положить. Положенная на другую вещь меняется с ней местами. R — повернуть.", "Click to pick a thing up, click again to put it down. Put on another thing, it takes that one's place. R turns it.";
     BagQuickHint: "F1–F6 над вещью — держать её под рукой; потом F1–F6 её применяют.", "F1–F6 over a thing keeps it at hand; later F1–F6 use it.";
     GoldDropHint: "Щелчок — положить 10 монет на землю, чтобы другой их подобрал.", "Click to lay 10 coins on the ground for someone else to pick up.";
     OtherHero: "Сумка другого героя", "Another hero's bag";
