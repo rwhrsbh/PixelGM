@@ -421,6 +421,10 @@ pub struct World {
     /// when the answer is to nobody in particular, and then it means all who are there.
     #[serde(skip)]
     pub actors: Vec<usize>,
+    /// The other languages read at the table besides the world's, by English name: the
+    /// master writes the story in them too.
+    #[serde(skip)]
+    pub table_languages: Vec<String>,
     /// The main quest and the side tasks.
     #[serde(default)]
     pub quest: Quest,

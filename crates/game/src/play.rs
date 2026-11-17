@@ -190,6 +190,24 @@ fn relocate(mut game: ResMut<Game>, session: Res<Session>, settings: Res<Setting
 }
 
 /// The outcome of a choice is shown only while its continuation is awaited.
+/// The languages read at the table, kept in the world for the master: the host's own and
+/// each guest's, besides the world's. What this machine's player reads is kept too.
+fn languages(settings: Res<Settings>, session: Res<Session>, mut game: ResMut<Game>, mut table: ResMut<Table>) {
+    let mine = crate::master::language_name(settings.lang);
+    if table.reads != mine {
+        table.reads = mine.to_string();
+    }
+    if session.is_client() {
+        return;
+    }
+    let mut wanted: Vec<String> = std::iter::once(mine.to_string()).chain(session.guest_languages()).filter(|l| *l != game.world.language).collect();
+    wanted.sort();
+    wanted.dedup();
+    if game.world.table_languages != wanted {
+        game.world.table_languages = wanted;
+    }
+}
+
 fn forget_going_on(phase: Res<Phase>, mut table: ResMut<Table>) {
     if table.going_on.is_some() && !matches!(*phase, Phase::Asking { .. }) {
         table.going_on = None;
@@ -1365,7 +1383,7 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
                     if let Some(what) = world.wander(&mut rng) {
                         info!("dev wander: {what:?}");
                         match what {
-                            world::living::Wandered::Find(text) | world::living::Wandered::Came(text) => table.unread.push_back(Turn { narration: text, options: Vec::new() }),
+                            world::living::Wandered::Find(text) | world::living::Wandered::Came(text) => table.unread.push_back(Turn::of(text)),
                             world::living::Wandered::Ambush(comer, cell) => table.ambush = Some((comer, cell)),
                         }
                         break;
@@ -1427,9 +1445,13 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         return;
     }
     // Something for everyone to read comes before walking on, once nothing else is open.
+    // Another player's telling waits for a walk: it does not end one's own waiting.
+    let free = *phase == Phase::Walking || table.unread.front().is_some_and(|t| !t.theirs);
     if matches!(*phase, Phase::Walking | Phase::Asking { .. })
+        && free
         && let Some(turn) = table.unread.pop_front()
     {
+        table.fold_next = Some(turn.theirs);
         *phase = Phase::Reading { turn };
         return;
     }
@@ -1594,16 +1616,39 @@ pub fn show(turn: Turn, phase: &mut Phase, table: &mut Table) {
     }
     // It does not take the place of a thing being looked at, a die about to be rolled or
     // words being typed: those wait, and it is read after them.
+    // Another player's deed told in this place does not take the screen: it is added
+    // folded, and the corner says so.
+    if turn.theirs {
+        table.notices.push(format!("✉ {}", gist(&turn.narration)));
+    }
     match phase {
-        Phase::Walking | Phase::Asking { .. } => *phase = Phase::Reading { turn },
+        Phase::Walking => {
+            table.fold_next = Some(turn.theirs);
+            *phase = Phase::Reading { turn };
+        }
+        // One waiting on the master for their own deed goes on waiting.
+        Phase::Asking { .. } if turn.theirs => table.unread.push_back(turn),
+        Phase::Asking { .. } => {
+            table.fold_next = Some(false);
+            *phase = Phase::Reading { turn };
+        }
         // Read on from the same panel: the new part follows what is being read, and its
         // choices take the place of the old ones.
         Phase::Reading { turn: reading } => {
+            if reading.language != turn.language {
+                // Parts in two languages: the whole is read as written in the world's.
+                reading.language.clear();
+            }
             reading.narration = format!("{}\n\n{}", reading.narration.trim_end(), turn.narration.trim());
             if !turn.options.is_empty() {
                 reading.options = turn.options;
             }
+            // One's own part opens the panel; another's leaves it as it is.
+            if !turn.theirs {
+                table.fold_next = Some(false);
+            }
         }
+        _ if turn.theirs => table.unread.push_back(turn),
         // Something else is open (the bag, a sheet, the journal, a fight): the telling waits
         // for it to close, and the corner says there is one.
         _ => {
@@ -1886,9 +1931,16 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     // Those elsewhere read a line of it in the chat, so everyone knows what the others are up to.
     let gist = gist(&turn.narration);
     let where_ = game.world.place_name(&place).to_string();
+    // Whose deed it answers: they read it at once, the others there find it added folded.
+    // What answers nobody (an event, an arrival) concerns everyone there.
+    let authors: Vec<String> = game.world.actors.iter().filter_map(|&hero| game.world.owners.get(hero).cloned()).collect();
+    let theirs = |player: &str| !authors.is_empty() && !authors.iter().any(|a| a == player);
     for player in session.players() {
         if game.world.place_of(&player) == place {
-            session.tell(&player, Down::Told(turn.clone()));
+            // In the reader's language, when the master wrote it in that one too.
+            let mut seen = turn.read_in(&session.language_of(&player).unwrap_or_default());
+            seen.theirs = theirs(&player);
+            session.tell(&player, Down::Told(seen));
         } else if !gist.is_empty() {
             session.tell(&player, Down::News { place: where_.clone(), text: gist.clone() });
         }
@@ -1902,7 +1954,7 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     if !turn.options.is_empty() {
         table.options.insert(place, turn.options.clone());
     }
-    Phase::Reading { turn }
+    Phase::Reading { turn: turn.read_in(&table.reads) }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1945,7 +1997,7 @@ fn receive(
                             // A secret skill is told to the whole table as it is earned.
                             Some(skill) => {
                                 let line = game.world.party.get(hero).and_then(|h| h.feats.last()).map(|f| crate::hero::feat_line(f, settings.lang)).unwrap_or(skill);
-                                let turn = Turn { narration: format!("★ {name}: {} — {line}", T::SecretSkill.text(settings.lang)), options: Vec::new() };
+                                let turn = Turn { narration: format!("★ {name}: {} — {line}", T::SecretSkill.text(settings.lang)), ..Turn::default() };
                                 let mut desk = Desk { game: &mut game, table: &mut table, phase: &mut phase, redraw: &mut redraw, background: &mut background, session: &session, settings: &settings, store: &store, gm: &gm, master: &master };
                                 let draft = TurnDraft { narration: turn.narration, ..TurnDraft::default() };
                                 finish(&mut desk, "", &draft);
@@ -2389,7 +2441,13 @@ struct Extra {
 pub struct Folded(pub bool);
 
 /// A new telling opens unfolded; H folds and unfolds it.
-fn fold_keys(keyboard: Res<ButtonInput<KeyCode>>, phase: Res<Phase>, mut folded: ResMut<Folded>) {
+fn fold_keys(keyboard: Res<ButtonInput<KeyCode>>, phase: Res<Phase>, mut folded: ResMut<Folded>, mut table: ResMut<Table>) {
+    // Another player's telling comes in folded; one's own opens.
+    if matches!(*phase, Phase::Reading { .. })
+        && let Some(fold) = table.fold_next.take()
+    {
+        folded.0 = fold;
+    }
     if !matches!(*phase, Phase::Reading { .. }) {
         if folded.0 {
             folded.0 = false;
@@ -2415,7 +2473,8 @@ fn translated(sheet: Sheet, other_tongue: bool, translator: &mut Translator) -> 
     match sheet {
         Sheet::Looking { name, description, actions, chest, shop } => Sheet::Looking { name: read(&name), description: read(&description), actions: actions.iter().map(|a| read(a)).collect(), chest, shop },
         Sheet::Reading(turn) => Sheet::Reading(Turn {
-            narration: read(&turn.narration),
+            // Written in the reader's language by the master already: nothing to translate.
+            narration: if turn.language.is_empty() { read(&turn.narration) } else { turn.narration.clone() },
             options: turn
                 .options
                 .into_iter()
@@ -2424,6 +2483,7 @@ fn translated(sheet: Sheet, other_tongue: bool, translator: &mut Translator) -> 
                     option
                 })
                 .collect(),
+            ..turn
         }),
         Sheet::Journal { quests, carried, lines } => Sheet::Journal { quests: quests.iter().map(|q| read(q)).collect(), carried, lines: lines.into_iter().map(|(speaker, text)| (speaker, read(&text))).collect() },
         other => other,
@@ -2503,7 +2563,7 @@ fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store,
 /// A choice was taken and its outcome told: the master is asked what follows it. The
 /// guests in the place read the outcome now, whenever the master's answer comes.
 fn follow(label: &str, outcome: &str, game: &Game, settings: &Settings, session: &Session, table: &Table) -> Phase {
-    let told = Turn { narration: outcome.to_string(), options: Vec::new() };
+    let told = Turn::of(outcome.to_string());
     for player in session.players() {
         if game.world.place_of(&player) == game.world.current {
             session.tell(&player, Down::Told(told.clone()));
@@ -2534,7 +2594,12 @@ fn asked_words(world: &World, acts: &[table::Act], named: bool) -> String {
             let mut text = String::from("several characters act at the same moment, and it is one scene — tell what comes of each of them, by name:");
             for (n, act) in many.iter().enumerate() {
                 let beside = act.near.as_deref().map(|id| format!(" (standing next to \"{id}\")")).unwrap_or_default();
-                text.push_str(&format!("\n{}. {}{beside}", n + 1, act_line(world, act, true)));
+                // Each stands where they stand: "this wall" is the one in front of them.
+                let stance = match world.others.iter().find(|t| t.name == act.player) {
+                    Some(token) => world::prompt::stance(world, world::Player { x: token.x, y: token.y }.cell(), token.facing),
+                    None => world::prompt::stance(world, world.player.cell(), world.facing),
+                };
+                text.push_str(&format!("\n{}. {}{beside} [{stance}]", n + 1, act_line(world, act, true)));
             }
             text
         }
@@ -2547,7 +2612,7 @@ fn tell_refusal(player: &str, why: &str, me: &str, session: &Session, phase: &mu
         if matches!(*phase, Phase::Asking { .. }) {
             *phase = Phase::Walking;
         }
-        show(Turn { narration: why.to_string(), options: Vec::new() }, phase, table);
+        show(Turn::of(why.to_string()), phase, table);
     } else {
         session.send_to(player, &Down::Trouble(why.to_string()));
     }
@@ -2633,7 +2698,7 @@ fn on_activate(
     // This observer hears every button in the game; outside a game there is nothing to act on.
     let Some(mut game) = game else { return };
     let action = &used.action;
-    let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
+    let outcome_of = |text: String| Turn::of(text);
     if let PlayAction::Report = *action {
         *phase = Phase::Walking;
         match store.collect_report(&game.world_id, Some(&game.world)) {
@@ -2740,7 +2805,7 @@ fn on_activate(
                         }
                         let came = match game.world.wander(&mut rng) {
                             Some(world::living::Wandered::Came(told)) => {
-                                table.unread.push_back(Turn { narration: told, options: Vec::new() });
+                                table.unread.push_back(Turn::of(told));
                                 true
                             }
                             Some(world::living::Wandered::Ambush(comer, cell)) => {
@@ -2885,7 +2950,7 @@ fn on_activate(
                         approach.0 = Some(Walking { path, option: option.clone(), index, turn: turn.clone() });
                         *phase = Phase::Walking;
                     }
-                    None => *phase = Phase::Reading { turn: Turn { narration: format!("{}\n\n{}", turn.narration, T::CannotReach.text(settings.lang)), options: turn.options.clone() } },
+                    None => *phase = Phase::Reading { turn: Turn { narration: format!("{}\n\n{}", turn.narration, T::CannotReach.text(settings.lang)), options: turn.options.clone(), ..turn.clone() } },
                 }
             }
         }
@@ -2960,12 +3025,12 @@ fn run_clock(time: Res<Time>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, 
             Some(world::living::Wandered::Find(text)) => {
                 game.set_changed();
                 game.world.story.say(Speaker::Master, &text);
-                show(Turn { narration: text, options: Vec::new() }, &mut phase, &mut table);
+                show(Turn::of(text), &mut phase, &mut table);
             }
             Some(world::living::Wandered::Came(told)) => {
                 game.set_changed();
                 redraw.0 = true;
-                show(Turn { narration: told, options: Vec::new() }, &mut phase, &mut table);
+                show(Turn::of(told), &mut phase, &mut table);
             }
             Some(world::living::Wandered::Ambush(comer, cell)) => {
                 table.ambush = Some((comer, cell));
@@ -3048,7 +3113,7 @@ fn guests(
     settings: Res<Settings>,
     master: Res<Master>,
 ) {
-    let outcome_of = |text: String| Turn { narration: text, options: Vec::new() };
+    let outcome_of = |text: String| Turn::of(text);
     for (player, intent) in std::mem::take(&mut table.inbox) {
         // What a guest does to the world happens where that guest stands.
         let home = matches!(intent, Intent::Do { .. } | Intent::Choose { .. } | Intent::Roll | Intent::Say { .. } | Intent::Gm(_) | Intent::OpenChest { .. }).then(|| enter_scene(&mut game, &mut table, &player));
@@ -3347,6 +3412,7 @@ fn enter_scene(game: &mut Game, table: &mut Table, player: &str) -> (String, wor
     table.elsewhere = place != game.world.current;
     // The master is told what is in front of the one who acts, not of the host.
     if let Some(token) = game.world.others.iter().find(|t| t.name == player) {
+        table.host_facing.get_or_insert(game.world.facing);
         game.world.facing = token.facing;
     }
     game.world.enter(&place, at)
@@ -3356,6 +3422,10 @@ fn leave_scene(game: &mut Game, table: &mut Table, home: Option<(String, world::
     if let Some(home) = home {
         game.world.leave(home);
         table.elsewhere = false;
+        // The host looks the way it did before.
+        if let Some(facing) = table.host_facing.take() {
+            game.world.facing = facing;
+        }
     }
 }
 
@@ -3401,8 +3471,15 @@ fn finish(desk: &mut Desk, said: &str, draft: &TurnDraft) {
         return;
     }
     let waiting = matches!(*desk.phase, Phase::Asking { .. } | Phase::Judging);
-    match carry_out(desk, said, draft) {
-        Some(turn) if waiting => *desk.phase = Phase::Reading { turn },
+    // Whether it answers another player's deed and not the host's own.
+    let me = player_name(desk.settings);
+    let world = &desk.game.world;
+    let theirs = !world.actors.is_empty() && !world.actors.iter().any(|&hero| world.owners.get(hero).is_some_and(|o| *o == me));
+    match carry_out(desk, said, draft).map(|turn| Turn { theirs, ..turn }) {
+        Some(turn) if waiting && !theirs => {
+            desk.table.fold_next = Some(false);
+            *desk.phase = Phase::Reading { turn };
+        }
         Some(turn) => show(turn, desk.phase, desk.table),
         None if waiting => *desk.phase = Phase::Walking,
         None => {}
@@ -3426,7 +3503,7 @@ fn whisper(desk: &mut Desk, whispers: &[Whisper]) {
                 desk.session.tell(&owner, Down::Whisper(said.text.trim().to_string()));
             }
             // The host's own, a hero nobody owns, or a name nobody answers to.
-            _ => desk.table.unread.push_back(Turn { narration: format!("{} {}", T::WhisperMark.text(desk.settings.lang), said.text.trim()), options: Vec::new() }),
+            _ => desk.table.unread.push_back(Turn { narration: format!("{} {}", T::WhisperMark.text(desk.settings.lang), said.text.trim()), ..Turn::default() }),
         }
     }
 }
@@ -3761,7 +3838,7 @@ impl Plugin for PlayPlugin {
                 Update,
                 (keys, walk, approach_work, led, advance, receive, guests, master_queue, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, veil).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
-            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, forget_going_on, notice, relocate, redress).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (languages, fold_keys, roofs, exit_markers, exits_seen, bag_work, forget_going_on, notice, relocate, redress).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
             .add_observer(on_master_activate)
             .init_resource::<sheets::Fields>()
@@ -3787,9 +3864,59 @@ mod tests {
         world::build_world(&draft, "play", "English").unwrap().0
     }
 
+    /// A guest who breaks the wall in front of their hero: the master is asked with that
+    /// guest's cell and the way that guest faces, and the wall that falls is that very cell.
+    #[test]
+    fn a_guest_breaking_the_wall_in_front_is_asked_and_answered_where_the_guest_stands() {
+        let mut world = world();
+        let here = world.current.clone();
+        let place = &world.locations[&here];
+        let walkable = |x: i32, y: i32| (0..place.size().0 as i32).contains(&x) && (0..place.size().1 as i32).contains(&y) && !place.blocked(x, y, &world.tiles);
+        // A free cell with a wall just east of it, away from the host.
+        let host = world.player.cell();
+        let (gx, gy) = (0..place.size().1 as i32)
+            .flat_map(|y| (0..place.size().0 as i32).map(move |x| (x, y)))
+            .find(|&(x, y)| walkable(x, y) && (x, y) != host && !walkable(x + 1, y) && (x + 1) < place.size().0 as i32 - 1 && place.tile_id(x as usize + 1, y as usize).is_some())
+            .expect("a wall beside a free cell");
+        let wall = place.tile_id(gx as usize + 1, gy as usize).unwrap().to_string();
+        let floor = place.tile_id(gx as usize, gy as usize).unwrap().to_string();
+        world.owners = vec!["Ann".into()];
+        world.present = vec!["Ann".into(), "Bob".into()];
+        world.facing = (0, 1);
+        let at = world::Player::in_cell(gx as usize, gy as usize);
+        world.others.push(world::Token { name: "Bob".into(), x: at.x, y: at.y, place: here.clone(), facing: (1, 0), vx: 0.0, vy: 0.0 });
+        let mut game = Game { world, world_id: "w".into() };
+        let mut table = Table::default();
+
+        // Asked: what the master reads.
+        let home = enter_scene(&mut game, &mut table, "Bob");
+        let asked = world::prompt::turn(&game.world, "Bob: I break the wall in front of me", None);
+        leave_scene(&mut game, &mut table, Some(home));
+        let shown: Vec<&str> = asked.lines().filter(|l| l.starts_with("The party stands") || l.starts_with("The hero faces") || l.starts_with("AROUND") || l.contains("The party now does")).collect();
+        eprintln!("{}", shown.join("\n"));
+        assert!(asked.contains(&format!("The party stands at ({gx}, {gy})")), "the guest's cell, not the host's");
+        assert!(asked.contains(&format!("The hero faces east. IN FRONT of the hero: ({}, {gy}) {wall}, solid", gx + 1)), "{asked}");
+        assert_eq!(game.world.facing, (0, 1), "the host still faces the way it did");
+        assert_eq!(game.world.player.cell(), host);
+        // Among several who act at once, each line carries where its hero stands and looks.
+        let stance = world::prompt::stance(&game.world, (gx, gy), (1, 0));
+        eprintln!("{stance}");
+        assert_eq!(stance, format!("stands at ({gx}, {gy}), faces east; IN FRONT: ({}, {gy}) {wall}, solid", gx + 1));
+
+        // Answered: the wall at that cell becomes floor, wherever the host stands.
+        let answer = format!(r#"{{"narration": "The wall gives way.", "effects": [{{"op": "tile", "x": {}, "y": {gy}, "tile": "{floor}"}}]}}"#, gx + 1);
+        let draft: TurnDraft = serde_json::from_str(&answer).unwrap();
+        let home = enter_scene(&mut game, &mut table, "Bob");
+        game.world.take_turn("Bob: I break the wall in front of me", &draft);
+        leave_scene(&mut game, &mut table, Some(home));
+        let place = &game.world.locations[&here];
+        assert!(!place.blocked(gx + 1, gy, &game.world.tiles), "the wall in front of the guest is gone");
+        assert_eq!(game.world.facing, (0, 1));
+    }
+
     #[test]
     fn a_telling_arrives_whatever_the_player_has_open() {
-        let told = |text: &str| Turn { narration: text.to_string(), options: Vec::new() };
+        let told = |text: &str| Turn::of(text.to_string());
         let mut table = Table::default();
         // Walking: it is read at once.
         let mut phase = Phase::Walking;

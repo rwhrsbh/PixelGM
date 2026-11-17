@@ -29,6 +29,8 @@ pub struct TurnDraft {
     /// Whether the narration has blows beginning between the party and someone who can
     /// fight back.
     pub fight: bool,
+    /// The narration in the other languages read at the table, by language name.
+    pub told_in: std::collections::BTreeMap<String, String>,
 }
 
 /// Every effect in an answer, however deep: the turn's own, those of its choices, and those
@@ -235,6 +237,37 @@ impl CreatureCard {
 pub struct Turn {
     pub narration: String,
     pub options: Vec<Action>,
+    /// The narration in the other languages read at the table, by language name, when the
+    /// master wrote it in them.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub told_in: std::collections::BTreeMap<String, String>,
+    /// The language `narration` is in, when it is not the world's: it needs no translation
+    /// for a player who reads it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub language: String,
+    /// Another player's deed answered in the place the reader is in: added to the story
+    /// folded, without taking the reader's screen. One's own, and what concerns everyone
+    /// there, opens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub theirs: bool,
+}
+
+impl Turn {
+    pub fn of(narration: impl Into<String>) -> Self {
+        Self { narration: narration.into(), ..Self::default() }
+    }
+
+    /// The turn as a reader of `language` gets it: in that language when the master wrote
+    /// it so.
+    pub fn read_in(&self, language: &str) -> Turn {
+        let mut turn = self.clone();
+        if let Some(text) = self.told_in.get(language).filter(|t| !t.trim().is_empty()) {
+            turn.narration = text.clone();
+            turn.language = language.to_string();
+        }
+        turn.told_in.clear();
+        turn
+    }
 }
 
 /// What the master wrote when asked to put the older story into a chapter.
@@ -326,7 +359,8 @@ impl World {
                 }
             }
         }
-        (Turn { narration: draft.narration.trim().to_string(), options }, notes)
+        let told_in = draft.told_in.iter().filter(|(language, text)| **language != self.language && !text.trim().is_empty()).map(|(l, t)| (l.clone(), t.trim().to_string())).collect();
+        (Turn { narration: draft.narration.trim().to_string(), options, told_in, ..Turn::default() }, notes)
     }
 
     /// Carries out one of the choices the master offered with a turn.
@@ -427,7 +461,7 @@ mod tests {
         let mut w = world();
         let draft: TurnDraft = serde_json::from_value(serde_json::json!({ "narration": "Nothing much.", "effects": [{ "op": "teleport" }], "options": [{ "label": "", "outcome": "x" }] })).unwrap();
         let (turn, notes) = w.take_turn("I look around", &draft);
-        assert_eq!(turn, Turn { narration: "Nothing much.".into(), options: vec![] });
+        assert_eq!(turn, Turn::of("Nothing much."));
         assert_eq!(notes.len(), 1);
         let _ = Effect::Fact { text: String::new() };
     }

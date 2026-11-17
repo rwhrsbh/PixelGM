@@ -166,7 +166,7 @@ pub fn play_prompt(world: &World) -> String {
 
 You answer with ONE JSON object and nothing else: no prose, no code fence.
 
-LANGUAGE. Everything the players read is written in {language}. Every "id" is short English snake_case.
+LANGUAGE. Everything the players read is written in {language}. Every "id" is short English snake_case.{others}
 
 THE TABLE. All players and all characters are adults. {violence} {sex}
 
@@ -176,8 +176,53 @@ TELLING. Speak to the players as "you". Two to five sentences: concrete, sensory
 
 A picture, when you need a new sprite, is a list of rows of palette index characters (0 transparent, 1-9, a-v), 16x16 or 32x32, outlined in colour 1.{book}"##,
         language = world.language,
+        others = other_languages(world),
         book = book_note(world),
     )
+}
+
+/// What the master is told of the other languages read at the table: the telling is
+/// written in each of them too, so nobody waits for a translation.
+fn other_languages(world: &World) -> String {
+    let others: Vec<&str> = world.table_languages.iter().map(String::as_str).filter(|l| !l.is_empty() && *l != world.language).collect();
+    if others.is_empty() {
+        return String::new();
+    }
+    let shape: Vec<String> = others.iter().map(|l| format!("\"{l}\": \"…\"")).collect();
+    format!(
+        " Some players at this table read {}: in every answer that has a \"narration\", add \"told_in\": {{{}}}, the same narration written in each of them, as well told. Everything else stays in {}.",
+        others.join(" and "),
+        shape.join(", "),
+        world.language
+    )
+}
+
+const WAYS: [(&str, i32, i32); 4] = [("north", 0, -1), ("east", 1, 0), ("south", 0, 1), ("west", -1, 0)];
+
+/// A cell of the place being looked at, as the master is told it: where, what ground,
+/// whether solid, what is on it.
+fn cell_words(world: &World, cx: i32, cy: i32) -> String {
+    let here = world.here();
+    let (here_w, here_h) = here.size();
+    if !(0..here_w as i32).contains(&cx) || !(0..here_h as i32).contains(&cy) {
+        return "the edge of the map".to_string();
+    }
+    let (ux, uy) = (cx as usize, cy as usize);
+    let tile = here.tile_id(ux, uy).unwrap_or("nothing");
+    let solid = if world.tiles.get(tile).is_some_and(|t| t.walkable) { "" } else { ", solid" };
+    let thing = here.props.iter().find(|p| (p.x, p.y) == (ux, uy)).map(|p| p.id.as_str()).or_else(|| here.creatures.iter().find(|c| (c.x, c.y) == (ux, uy)).map(|c| c.id.as_str()));
+    let exit = here.exit_at(ux, uy).map(|e| format!(", the way out to {}", e.to)).unwrap_or_default();
+    format!("({cx}, {cy}) {tile}{solid}{}{exit}", thing.map(|t| format!(", with {t} on it")).unwrap_or_default())
+}
+
+/// Where one of several who act at once stands and what is in front of them, for a line
+/// of their own: "this wall" in their words is that cell.
+pub fn stance(world: &World, cell: (i32, i32), facing: (i32, i32)) -> String {
+    let (x, y) = cell;
+    match WAYS.iter().find(|(_, dx, dy)| (*dx, *dy) == facing) {
+        Some((name, dx, dy)) => format!("stands at ({x}, {y}), faces {name}; IN FRONT: {}", cell_words(world, x + dx, y + dy)),
+        None => format!("stands at ({x}, {y})"),
+    }
 }
 
 fn attitude_word(attitude: Attitude) -> &'static str {
@@ -289,18 +334,8 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     let (here_w, here_h) = here.size();
     let _ = writeln!(text, "The party stands at ({x}, {y}). This place is {here_w} cells across and {here_h} down.");
     // What is around, by name: "this wall", "in front of me", "here" are these very cells.
-    let cell_words = |cx: i32, cy: i32| -> String {
-        if !(0..here_w as i32).contains(&cx) || !(0..here_h as i32).contains(&cy) {
-            return "the edge of the map".to_string();
-        }
-        let (ux, uy) = (cx as usize, cy as usize);
-        let tile = here.tile_id(ux, uy).unwrap_or("nothing");
-        let solid = if world.tiles.get(tile).is_some_and(|t| t.walkable) { "" } else { ", solid" };
-        let thing = here.props.iter().find(|p| (p.x, p.y) == (ux, uy)).map(|p| p.id.as_str()).or_else(|| here.creatures.iter().find(|c| (c.x, c.y) == (ux, uy)).map(|c| c.id.as_str()));
-        let exit = here.exit_at(ux, uy).map(|e| format!(", the way out to {}", e.to)).unwrap_or_default();
-        format!("({cx}, {cy}) {tile}{solid}{}{exit}", thing.map(|t| format!(", with {t} on it")).unwrap_or_default())
-    };
-    let ways = [("north", 0, -1), ("east", 1, 0), ("south", 0, 1), ("west", -1, 0)];
+    let cell_words = |cx: i32, cy: i32| cell_words(world, cx, cy);
+    let ways = WAYS;
     if let Some((name, dx, dy)) = ways.iter().find(|(_, dx, dy)| (*dx, *dy) == world.facing) {
         let _ = writeln!(text, "The hero faces {name}. IN FRONT of the hero: {}; one further: {}.", cell_words(x + dx, y + dy), cell_words(x + dx * 2, y + dy * 2));
     }
@@ -741,6 +776,25 @@ mod tests {
         w.sex = false;
         let closed = play_prompt(&w);
         assert!(closed.contains("off the page") && closed.contains("fade to black") && !closed.contains("explicit"));
+    }
+
+    #[test]
+    fn a_table_that_reads_several_languages_is_told_in_each() {
+        let mut w = test_world();
+        assert!(!play_prompt(&w).contains("told_in"), "one language: nothing more is asked");
+        w.table_languages = vec!["Russian".into(), "English".into()];
+        let prompt = play_prompt(&w);
+        assert!(prompt.contains("read English") && prompt.contains("\"told_in\": {\"English\": \"…\"}"), "{prompt}");
+        assert!(!prompt.contains("read Russian"), "the world's own language is not asked twice");
+        // What the master wrote comes back to each reader in their language.
+        let draft: crate::TurnDraft = serde_json::from_str(r#"{"narration": "Дверь скрипит.", "told_in": {"English": "The door creaks.", "Russian": "x"}}"#).unwrap();
+        let (turn, _) = w.take_turn("open the door", &draft);
+        assert_eq!(turn.told_in.keys().collect::<Vec<_>>(), ["English"]);
+        let english = turn.read_in("English");
+        assert_eq!((english.narration.as_str(), english.language.as_str()), ("The door creaks.", "English"));
+        let russian = turn.read_in("Russian");
+        assert_eq!((russian.narration.as_str(), russian.language.as_str()), ("Дверь скрипит.", ""));
+        assert!(russian.told_in.is_empty(), "a reader gets one language, not all");
     }
 
     #[test]

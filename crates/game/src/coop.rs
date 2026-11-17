@@ -154,6 +154,9 @@ pub enum Up {
     Ready(bool),
     /// The world as this guest has it went wrong: the whole of it again, please.
     Resync,
+    /// The language this player reads, by its English name: the master may write the story
+    /// in it too.
+    Language(String),
     Position {
         x: f32,
         y: f32,
@@ -386,6 +389,8 @@ pub struct Hosting {
     since_positions: f32,
     /// Requests handed to guests, with the guests already tried; the last one is working on it.
     relayed: HashMap<u64, (Relayed, Vec<PeerId>)>,
+    /// The language each guest reads, as it said.
+    languages: HashMap<PeerId, String>,
 }
 
 /// How many times a dropped table is tried again, a few seconds apart, before giving up.
@@ -462,6 +467,8 @@ pub struct Joined {
     since_position: f32,
     /// Answers to the host's relayed requests, from the threads that fetched them.
     served: Arc<Mutex<Vec<(u64, Served)>>>,
+    /// The language last said to the host: said again when the player changes it.
+    language_said: String,
 }
 
 /// How this instance takes part: alone, hosting, or as a guest in somebody's game.
@@ -552,6 +559,24 @@ impl Session {
         }
     }
 
+    /// The language a guest reads, if it said.
+    pub fn language_of(&self, player: &str) -> Option<String> {
+        let Session::Host(hosting) = self else { return None };
+        let hosting = hosting.lock().unwrap();
+        let peer = hosting.names.iter().find(|(_, name)| name.as_str() == player).map(|(peer, _)| *peer)?;
+        hosting.languages.get(&peer).cloned()
+    }
+
+    /// The languages the guests at the table read.
+    pub fn guest_languages(&self) -> Vec<String> {
+        let Session::Host(hosting) = self else { return Vec::new() };
+        let hosting = hosting.lock().unwrap();
+        let mut languages: Vec<String> = hosting.names.keys().filter_map(|peer| hosting.languages.get(peer).cloned()).collect();
+        languages.sort();
+        languages.dedup();
+        languages
+    }
+
     pub fn players(&self) -> Vec<String> {
         match self {
             Session::Host(hosting) => {
@@ -581,6 +606,12 @@ pub struct Table {
     pub bubbles: Vec<(String, String)>,
     /// What other players have just set about, a line each, shown in the corner for a while.
     pub notices: Vec<String>,
+    /// The way the host faced before the world was looked at through a guest's eyes.
+    pub host_facing: Option<(i32, i32)>,
+    /// How the telling just put up should open: folded (another player's) or not.
+    pub fold_next: Option<bool>,
+    /// The language the player at this machine reads, by English name.
+    pub reads: String,
     /// The outcome of a choice, shown while the master works out what follows it.
     pub going_on: Option<String>,
     /// The keys are spent and the table is deciding what to do.
@@ -758,14 +789,14 @@ pub fn invite_friends(link: &SteamLink, session: &Session) {
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 
 fn fresh_hosting(net: Host<Up, Down>, beacon: Option<net::beacon::Beacon>) -> Session {
-    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, parts: HashMap::new(), feeds: HashMap::new(), host_last: (0.0, 0.0), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
+    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, parts: HashMap::new(), feeds: HashMap::new(), host_last: (0.0, 0.0), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new(), languages: HashMap::new() }))
 }
 
 /// Joins a friend's Steam lobby.
 pub fn join_steam(steam: &net::Steam, lobby: u64, name: &str, player: u64, last_seq: u64) -> Session {
     let net = Client::connect_steam(steam, lobby);
     net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player, last_seq });
-    Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Steam(lobby), last_sent: (0.0, 0.0) }))
+    Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Steam(lobby), last_sent: (0.0, 0.0), language_said: String::new() }))
 }
 
 /// Joins a table by its code or its address, with or without a port.
@@ -783,7 +814,7 @@ pub fn join(typed: &str, name: &str, player: u64, last_seq: u64) -> std::io::Res
     };
     let net = Client::connect(&address)?;
     net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player, last_seq });
-    Ok(Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Address(address), last_sent: (0.0, 0.0) })))
+    Ok(Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Address(address), last_sent: (0.0, 0.0), language_said: String::new() })))
 }
 
 /// The world as a guest should receive it: no tokens of other players in it (they travel
@@ -985,6 +1016,9 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
             }
             HostEvent::Message(peer, Up::Ready(ready)) => {
                 hosting.ready.insert(peer, ready);
+            }
+            HostEvent::Message(peer, Up::Language(language)) => {
+                hosting.languages.insert(peer, language.chars().take(40).collect());
             }
             HostEvent::Message(peer, Up::Resync) => {
                 hosting.parts.remove(&peer);
@@ -1317,6 +1351,11 @@ fn client_pump(
                 joined.since_position = 0.0;
                 joined.net.send_fast(&Up::Position { x, y, facing: game.world.facing, vx, vy });
             }
+            let language = crate::master::language_name(settings.lang);
+            if joined.language_said != language {
+                joined.net.send(&Up::Language(language.to_string()));
+                joined.language_said = language.to_string();
+            }
             for (id, result) in std::mem::take(&mut *joined.served.lock().unwrap()) {
                 joined.net.send(&Up::Answer { id, result });
             }
@@ -1401,7 +1440,7 @@ fn client_pump(
                 }
                 // Said to the player in words: nothing they did ends without them.
                 if !why.trim().is_empty() {
-                    play::show(Turn { narration: why, options: Vec::new() }, &mut phase, &mut table);
+                    play::show(Turn::of(why), &mut phase, &mut table);
                 }
             }
             ClientEvent::Message(Down::Drawing(to)) => {
@@ -1454,7 +1493,7 @@ fn client_pump(
                 table.judging = view;
             }
             ClientEvent::Message(Down::Whisper(text)) => {
-                let turn = Turn { narration: format!("{} {text}", T::WhisperMark.text(settings.lang)), options: Vec::new() };
+                let turn = Turn { narration: format!("{} {text}", T::WhisperMark.text(settings.lang)), ..Turn::default() };
                 play::show(turn, &mut phase, &mut table);
             }
             ClientEvent::Message(Down::Card(card)) => table.keep_card(&store, card, settings.lang),
@@ -1649,7 +1688,7 @@ mod tests {
         };
         hosting.lock().unwrap().names.insert(peer, "Ann".into());
         hosting.lock().unwrap().ids.insert(peer, 7);
-        let turn = |text: &str| Down::Told(Turn { narration: text.into(), options: Vec::new() });
+        let turn = |text: &str| Down::Told(Turn::of(text));
         assert!(table.tell("Ann", turn("one")));
         assert!(table.tell("Ann", turn("two")));
         // Read both as they came.
