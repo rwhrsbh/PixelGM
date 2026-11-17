@@ -25,6 +25,11 @@ const APP_ID: u32 = 480;
 /// ends can even live in one process.
 const TO_HOST: u32 = 0;
 const TO_GUEST: u32 = 1;
+/// The same, for what may be lost but must not wait: where everybody is.
+const FAST_TO_HOST: u32 = 2;
+const FAST_TO_GUEST: u32 = 3;
+/// The most a message sent without making sure it arrives may carry.
+const FAST_MOST: usize = 1100;
 /// Well under Steam's limit for one reliable message.
 const CHUNK: usize = 200 * 1024;
 const TICK: Duration = Duration::from_millis(5);
@@ -262,6 +267,13 @@ fn send_chunk(messages: &Messages, to: SteamId, channel: u32, chunk: &[u8]) {
 }
 
 fn send_frame(messages: &Messages, to: SteamId, channel: u32, frame: &[u8]) {
+    let (frame, fast) = crate::unmark(frame);
+    // What may be lost goes on its own channel, at once and unsure, when it is small.
+    if fast && frame.len() <= FAST_MOST {
+        let fast_channel = if channel == TO_HOST { FAST_TO_HOST } else { FAST_TO_GUEST };
+        let _ = messages.send_message_to_user(NetworkingIdentity::new_steam_id(to), SendFlags::UNRELIABLE_NO_NAGLE | SendFlags::AUTO_RESTART_BROKEN_SESSION, frame, fast_channel);
+        return;
+    }
     for chunk in chunks(frame) {
         send_chunk(messages, to, channel, &chunk);
     }
@@ -382,6 +394,16 @@ fn host_thread<C: DeserializeOwned>(steam: Steam, to_game: Sender<HostEvent<C>>,
                 }
             }
         }
+        // What came fast is whole in one message, from a guest already seated.
+        for message in messages.receive_messages_on_channel(FAST_TO_HOST, 64) {
+            let Some(guest) = message.identity_peer().steam_id().and_then(|from| guests.get_mut(&from)) else { continue };
+            guest.heard = Instant::now();
+            if let Ok(read) = serde_json::from_slice(message.data())
+                && to_game.send(HostEvent::Message(guest.id, read)).is_err()
+            {
+                break 'serving;
+            }
+        }
         let mut dropped = std::mem::take(&mut *gone.lock().unwrap());
         let still_here = heartbeat.due();
         for (steam_id, guest) in &guests {
@@ -497,6 +519,15 @@ fn guest_thread<H: DeserializeOwned>(steam: &Steam, lobby: LobbyId, to_game: &Se
                     matchmaking.leave_lobby(lobby);
                     return;
                 }
+            }
+        }
+        for message in messages.receive_messages_on_channel(FAST_TO_GUEST, 64) {
+            if message.identity_peer().steam_id() != Some(owner) {
+                continue;
+            }
+            heard = Instant::now();
+            if let Ok(read) = serde_json::from_slice(message.data()) {
+                let _ = to_game.send(ClientEvent::Message(read));
             }
         }
         if heard.elapsed() > SILENCE_LIMIT || departed.lock().unwrap().contains(&owner) {

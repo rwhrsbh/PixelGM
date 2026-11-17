@@ -1044,7 +1044,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
         hosting.host_last = (x, y);
         hosting.since_positions = 0.0;
         tokens.push(Token { name: player_name(&settings), x, y, place: game.world.current.clone(), facing: game.world.facing, vx, vy });
-        hosting.net.broadcast(&Down::Positions(tokens));
+        hosting.net.broadcast_fast(&Down::Positions(tokens));
     }
     hosting.since_world += time.delta_secs();
     if hosting.since_world >= 0.25 {
@@ -1217,7 +1217,7 @@ fn client_pump(
                 let (vx, vy) = ((x - joined.last_sent.0) / joined.since_position.max(0.001), (y - joined.last_sent.1) / joined.since_position.max(0.001));
                 joined.last_sent = (x, y);
                 joined.since_position = 0.0;
-                joined.net.send(&Up::Position { x, y, facing: game.world.facing, vx, vy });
+                joined.net.send_fast(&Up::Position { x, y, facing: game.world.facing, vx, vy });
             }
             for (id, result) in std::mem::take(&mut *joined.served.lock().unwrap()) {
                 joined.net.send(&Up::Answer { id, result });

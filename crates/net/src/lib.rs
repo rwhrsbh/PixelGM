@@ -65,11 +65,32 @@ fn pump<M: DeserializeOwned>(mut stream: TcpStream, mut deliver: impl FnMut(M) -
 }
 
 /// Writes queued frames to a stream on its own thread, so a slow peer never stalls the game.
+/// The first byte of a frame that may be lost but must not wait: where everybody is. Steam
+/// sends it on a channel of its own without making sure it arrives; over TCP it goes as any
+/// frame, the mark taken off.
+pub(crate) const FAST: u8 = 0x01;
+
+/// A frame marked to go fast.
+fn fast_frame(json: Vec<u8>) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(json.len() + 1);
+    frame.push(FAST);
+    frame.extend(json);
+    frame
+}
+
+/// The frame without its mark, and whether it had one.
+pub(crate) fn unmark(frame: &[u8]) -> (&[u8], bool) {
+    match frame.split_first() {
+        Some((&FAST, rest)) => (rest, true),
+        _ => (frame, false),
+    }
+}
+
 fn writer(mut stream: TcpStream) -> Sender<Vec<u8>> {
     let (queue, frames) = channel::<Vec<u8>>();
     std::thread::spawn(move || {
         for frame in frames {
-            if write_frame(&mut stream, &frame).is_err() {
+            if write_frame(&mut stream, unmark(&frame).0).is_err() {
                 break;
             }
         }
@@ -200,6 +221,17 @@ impl<C: DeserializeOwned + Send + 'static, H: Serialize> Host<C, H> {
         }
     }
 
+    /// Queues a message for every player that may be lost but must not wait behind larger
+    /// ones: where everybody is.
+    pub fn broadcast_fast(&self, message: &H) {
+        if let Ok(json) = serde_json::to_vec(message) {
+            let frame = fast_frame(json);
+            for queue in self.peers.lock().unwrap().values() {
+                let _ = queue.send(frame.clone());
+            }
+        }
+    }
+
     /// Drops a player.
     pub fn kick(&self, peer: PeerId) {
         self.peers.lock().unwrap().remove(&peer);
@@ -240,6 +272,11 @@ impl<C: Serialize, H: DeserializeOwned + Send + 'static> Client<C, H> {
 
     pub fn send(&self, message: &C) -> bool {
         serde_json::to_vec(message).is_ok_and(|frame| self.queue.send(frame).is_ok())
+    }
+
+    /// Queues a message that may be lost but must not wait behind larger ones.
+    pub fn send_fast(&self, message: &C) -> bool {
+        serde_json::to_vec(message).is_ok_and(|json| self.queue.send(fast_frame(json)).is_ok())
     }
 }
 
@@ -357,5 +394,17 @@ mod tests {
         let huge = (MAX_FRAME as u32 + 1).to_le_bytes();
         assert!(read_frame(&mut huge.as_slice()).is_err());
         assert!(read_frame(&mut [5u8, 0, 0, 0, b'h'].as_slice()).is_err(), "a frame cut short");
+    }
+
+    #[test]
+    fn a_fast_message_goes_over_tcp_like_any_other() {
+        let (host, client) = pair();
+        gather(|| host.poll(), |e| !e.is_empty());
+        host.broadcast_fast(&Down::Welcome(3));
+        assert_eq!(gather(|| client.poll(), |e| !e.is_empty()), [ClientEvent::Message(Down::Welcome(3))]);
+        assert!(client.send_fast(&Up::Hello("Ann".into())));
+        assert_eq!(gather(|| host.poll(), |e| !e.is_empty()), [HostEvent::Message(1, Up::Hello("Ann".into()))]);
+        assert_eq!(unmark(&[FAST, b'{']), (&b"{"[..], true));
+        assert_eq!(unmark(b"{}"), (&b"{}"[..], false));
     }
 }
