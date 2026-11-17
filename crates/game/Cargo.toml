@@ -13,7 +13,7 @@ net = { path = "../net" }
 table = { path = "../table" }
 serde.workspace = true
 serde_json.workspace = true
-ureq = "2"
+ureq = { version = "2", features = ["native-certs"] }
 bevy_egui = { version = "0.43", default-features = false, features = ["render", "bevy_ui", "default_fonts", "manage_clipboard", "picking"] }
 
 [target.'cfg(windows)'.dependencies]

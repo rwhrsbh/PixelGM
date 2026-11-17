@@ -139,11 +139,13 @@ pub fn overlay(
             inner.add(egui::Label::new(egui::RichText::new(text).color(c(crate::theme::FADED))).truncate());
         }
         Sheet::Folded => {
-            kit::sheet_at(&mut ui, "story_folded", story_rect, "", |ui| hint(ui, t(T::FoldedHint)), |footer| {
-                if footer.add(button(t(T::Unfold)).key("H")).clicked() {
-                    folded.0 = false;
-                }
-            });
+            // One line: the button, and beside it what the strip is.
+            kit::plate(ui.painter(), story_rect, kit::Look::Parchment, true);
+            let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(story_rect.shrink2(egui::vec2(8.0, 3.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            if inner.add(button(t(T::Unfold)).key("H")).clicked() {
+                folded.0 = false;
+            }
+            hint(&mut inner, t(T::FoldedHint));
             if no_typing && ui.input(|i| i.key_pressed(Key::Enter)) {
                 folded.0 = false;
             }

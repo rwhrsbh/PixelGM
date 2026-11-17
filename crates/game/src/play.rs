@@ -1732,7 +1732,13 @@ fn settle(draft: Result<Box<LocationDraft>, Trouble>, id: &str, from: &str, game
 /// The name of a thing here, when the party stands too far from it to deal with it.
 fn far_from(world: &World, id: &str) -> Option<String> {
     let here = world.here();
-    let (cell, name) = here.props.iter().find(|p| p.id == id).map(|p| ((p.x, p.y), p.name.clone())).or_else(|| here.creatures.iter().find(|c| c.id == id).map(|c| ((c.x, c.y), c.name.clone())))?;
+    // Another hero, too: a thing is handed over only side by side.
+    let hero = || {
+        let h = world.party.iter().position(|h| world::build::slug(&h.name) == id)?;
+        let (x, y) = world.hero_cell(h);
+        Some(((x.max(0) as usize, y.max(0) as usize), world.party[h].name.clone()))
+    };
+    let (cell, name) = here.props.iter().find(|p| p.id == id).map(|p| ((p.x, p.y), p.name.clone())).or_else(|| here.creatures.iter().find(|c| c.id == id).map(|c| ((c.x, c.y), c.name.clone()))).or_else(hero)?;
     let centre = ((cell.0 as f32 + 0.5) * TILE as f32, (cell.1 as f32 + 0.5) * TILE as f32);
     let (px, py) = (world.player.x + world::walk::FEET.0, world.player.y + world::walk::FEET.1);
     let distance = ((centre.0 - px).powi(2) + (centre.1 - py).powi(2)).sqrt();
@@ -2961,8 +2967,13 @@ fn on_activate(
             let me = player_name(&settings);
             let solo = matches!(*session, Session::Solo);
             if let Some(option) = turn.options.get(index).filter(|o| mine_to_take(o, &game.world, &me, solo)) {
-                // The outcome happens at once; the master is asked what follows it.
+                // The outcome happens at once, and it is this player's hero's; the master is
+                // asked what follows it.
+                let hero = my_hero(&game.world, &me, solo);
+                game.world.acting = hero;
+                game.world.actors = if solo { Vec::new() } else { hero.into_iter().collect() };
                 let outcome = game.world.choose(option);
+                game.world.actors.clear();
                 redraw.0 = true;
                 autosave(&store, &game);
                 if let Some(offered) = table.options.get_mut(&game.world.current) {
@@ -3133,6 +3144,14 @@ fn guests(
                 let theirs = table.options.get(&place).and_then(|offered| offered.iter().find(|o| o.label == label)).filter(|o| !mine_to_take(o, &game.world, &player, false)).and_then(|o| o.for_hero.clone());
                 if let Some(hero) = theirs {
                     session.send_to(&player, &Down::Trouble(format!("{} {hero}.", T::OfferForOther.text(settings.lang))));
+                    leave_scene(&mut game, &mut table, home);
+                    continue;
+                }
+                // One that needs the guest beside something or somebody waits until they are.
+                let far = table.options.get(&place).and_then(|offered| offered.iter().find(|o| o.label == label)).and_then(|o| o.near.as_deref()).and_then(|id| far_from(&game.world, id));
+                if let Some(name) = far {
+                    session.send_to(&player, &Down::Trouble(format!("{} {name}.", T::WalkUpTo.text(settings.lang))));
+                    leave_scene(&mut game, &mut table, home);
                     continue;
                 }
                 match table.options.get_mut(&place).and_then(|offered| take_offer(offered, index, &label)) {
@@ -3426,6 +3445,11 @@ fn enter_scene(game: &mut Game, table: &mut Table, player: &str) -> (String, wor
         table.host_facing.get_or_insert(game.world.facing);
         game.world.facing = token.facing;
     }
+    // What is done now is that guest's hero's: what it hands over or gets is its own.
+    if let Some(hero) = game.world.owners.iter().position(|o| o == player) {
+        game.world.acting = Some(hero);
+        game.world.actors = vec![hero];
+    }
     game.world.enter(&place, at)
 }
 
@@ -3437,6 +3461,7 @@ fn leave_scene(game: &mut Game, table: &mut Table, home: Option<(String, world::
         if let Some(facing) = table.host_facing.take() {
             game.world.facing = facing;
         }
+        game.world.actors.clear();
     }
 }
 
