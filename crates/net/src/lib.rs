@@ -6,6 +6,8 @@
 //! direct connection by address and for several instances on one machine in tests. The
 //! same frames travel through Steam for players who are Steam friends (`steam`).
 
+pub mod beacon;
+pub mod code;
 pub mod steam;
 pub use steam::bring_overlay;
 pub use steam::Steam;
@@ -17,7 +19,7 @@ use std::io::{self, Read, Write};
 use std::marker::PhantomData;
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 /// A frame larger than this is a broken or hostile peer, not a message.
@@ -90,34 +92,75 @@ pub struct Host<C, H> {
     port: u16,
     /// A Steam host's lobby; stays empty for a host listening on a port.
     lobby: steam::LobbyState,
+    /// Held while the host is kept: the threads that serve it end when it is dropped.
+    _alive: Arc<()>,
     _sends: PhantomData<H>,
+}
+
+/// Where a table listens first, and the last port tried when those before it are taken.
+pub const FIRST_PORT: u16 = 47_800;
+pub const LAST_PORT: u16 = 47_809;
+
+/// Peers who came over TCP are numbered from here, so as not to meet Steam's.
+pub(crate) const TCP_PEERS: PeerId = 1 << 20;
+
+/// Accepts players on `listener` until the host is dropped.
+pub(crate) fn accept<C: DeserializeOwned + Send + 'static>(listener: TcpListener, to_game: Sender<HostEvent<C>>, known: Arc<Mutex<HashMap<PeerId, Sender<Vec<u8>>>>>, alive: Weak<()>, first: PeerId) {
+    let _ = listener.set_nonblocking(true);
+    let mut id = first - 1;
+    while alive.upgrade().is_some() {
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Err(_) => continue,
+        };
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_nodelay(true);
+        let Ok(reading) = stream.try_clone() else { continue };
+        id += 1;
+        known.lock().unwrap().insert(id, writer(stream));
+        if to_game.send(HostEvent::Joined(id)).is_err() {
+            break;
+        }
+        let (to_game, known, peer) = (to_game.clone(), known.clone(), id);
+        std::thread::spawn(move || {
+            pump(reading, |message| to_game.send(HostEvent::Message(peer, message)).is_ok());
+            known.lock().unwrap().remove(&peer);
+            let _ = to_game.send(HostEvent::Left(peer));
+        });
+    }
+}
+
+/// The first port from `FIRST_PORT` to `LAST_PORT` nobody holds, bound on every address.
+pub fn free_listener() -> io::Result<TcpListener> {
+    let mut last = io::Error::new(io::ErrorKind::AddrInUse, "every port of the game is taken");
+    for port in FIRST_PORT..=LAST_PORT {
+        match TcpListener::bind(("0.0.0.0", port)) {
+            Ok(listener) => return Ok(listener),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 impl<C: DeserializeOwned + Send + 'static, H: Serialize> Host<C, H> {
     /// Starts listening. Port 0 asks the system for any free port; `port()` says which.
     pub fn listen(address: impl ToSocketAddrs) -> io::Result<Self> {
-        let listener = TcpListener::bind(address)?;
+        Self::serve(TcpListener::bind(address)?)
+    }
+
+    /// Serves players on a listener already bound.
+    pub fn serve(listener: TcpListener) -> io::Result<Self> {
         let port = listener.local_addr()?.port();
         let (to_game, events) = channel();
         let peers: Arc<Mutex<HashMap<PeerId, Sender<Vec<u8>>>>> = Arc::default();
-        let known = peers.clone();
-        std::thread::spawn(move || {
-            for (id, stream) in (1..).zip(listener.incoming().flatten()) {
-                let _ = stream.set_nodelay(true);
-                let Ok(reading) = stream.try_clone() else { continue };
-                known.lock().unwrap().insert(id, writer(stream));
-                if to_game.send(HostEvent::Joined(id)).is_err() {
-                    break;
-                }
-                let (to_game, known) = (to_game.clone(), known.clone());
-                std::thread::spawn(move || {
-                    pump(reading, |message| to_game.send(HostEvent::Message(id, message)).is_ok());
-                    known.lock().unwrap().remove(&id);
-                    let _ = to_game.send(HostEvent::Left(id));
-                });
-            }
-        });
-        Ok(Self { events, peers, port, lobby: Arc::default(), _sends: PhantomData })
+        let alive = Arc::new(());
+        let (known, weak) = (peers.clone(), Arc::downgrade(&alive));
+        std::thread::spawn(move || accept(listener, to_game, known, weak, 1));
+        Ok(Self { events, peers, port, lobby: Arc::default(), _alive: alive, _sends: PhantomData })
     }
 
     pub fn port(&self) -> u16 {
