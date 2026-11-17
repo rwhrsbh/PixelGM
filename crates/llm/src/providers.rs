@@ -880,4 +880,37 @@ mod tests {
         assert_eq!(router.system_message("rules")["content"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(nim(&["k"], &["m"]).system_message("rules")["content"], "rules");
     }
+
+    #[test]
+    fn opencode_go_goes_over_the_wire_with_its_session_and_name() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = Vec::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                head.push(line.trim().to_string());
+            }
+            let answer = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+            let mut stream = stream;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{answer}", answer.len()).unwrap();
+            head
+        });
+        let go = Provider { kind: Kind::OpenCodeGo, url: format!("http://127.0.0.1:{port}/inference/go/openai/v1"), session: "ses_wire".into(), ..nim(&["secret"], &["kimi-k3"]) };
+        let (text, _) = Rotation::default().complete(&[go], "system", "prompt", &Network).unwrap();
+        assert_eq!(text, "ok");
+        let head: Vec<String> = server.join().unwrap().into_iter().map(|l| l.to_lowercase()).collect();
+        assert!(head[0].starts_with("post /inference/go/openai/v1/chat/completions"), "{}", head[0]);
+        for wanted in ["x-opencode-session: ses_wire", "x-opencode-session-id: ses_wire", "x-session-affinity: ses_wire", "x-session-id: ses_wire", "x-opencode-project: global", "x-opencode-client: opencode", "authorization: bearer secret"] {
+            assert!(head.iter().any(|l| l == wanted), "{wanted} missing from {head:?}");
+        }
+        assert!(head.iter().any(|l| l.starts_with("user-agent: opencode/latest/") && l.ends_with("/opencode")), "{head:?}");
+    }
 }
