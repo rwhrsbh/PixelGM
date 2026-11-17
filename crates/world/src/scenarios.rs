@@ -451,3 +451,32 @@ fn chapters_that_pile_up_are_written_up_into_one() {
     write_up(&mut w, room);
     assert!(w.story.chapters.len() < 80);
 }
+
+#[test]
+fn after_the_story_is_written_up_the_master_still_sees_where_everyone_stands_and_who_spoke() {
+    let mut w = three_at_the_lake();
+    w.others = vec![token("Bob", (4, 8), "lake")];
+    w.facing = (1, 0);
+    w.story.remember("The ferryman owes Brak a favour.");
+    for n in 0..400 {
+        w.story.say(crate::Speaker::Player, &format!("Bob's hero: I skim stone number {n} across the lake."));
+        w.story.say(crate::Speaker::Master, &format!("Stone {n} skips and sinks."));
+    }
+    w.story.say(crate::Speaker::Player, "Brak: I ask Bob where he learned that.");
+    let base = crate::prompt::tokens(&crate::prompt::play_prompt(&w)) + crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
+    write_up(&mut w, base / 3 + 3_000);
+    let asked = crate::prompt::turn(&w, "Brak: I look at the water in front of me", None);
+    for wanted in [
+        "The party stands at (3, 8)",
+        "The hero faces east. IN FRONT of the hero: (4, 8)",
+        "AROUND the party:",
+        "- the hero Bob's hero at (4, 8): beside the party",
+        "Brak: I ask Bob where he learned that.",
+        "The ferryman owes Brak a favour.",
+        "Bob's hero, human fighter",
+        "«Brak: I look at the water in front of me»",
+    ] {
+        assert!(asked.contains(wanted), "{wanted:?} is gone from the request after the story was written up");
+    }
+    assert!(w.story.chapters.len() >= 1);
+}
