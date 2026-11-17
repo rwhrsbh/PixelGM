@@ -61,8 +61,6 @@ pub struct Args {
     pub hidden: bool,
     /// Let a rule-based stand-in answer for the game master: no network, no quota.
     pub fake_gm: bool,
-    /// Write every press of the mouse into the log, with what took it.
-    pub trace_input: bool,
     /// Host a game on this port from the start.
     pub host: Option<u16>,
     /// Join the game at this address from the start.
@@ -210,7 +208,6 @@ impl Args {
                 "--sound" => out.sound = value == "true",
                 "--hidden" => out.hidden = value == "true",
                 "--fake-gm" => out.fake_gm = value == "true",
-                "--trace-input" => out.trace_input = value == "true",
                 "--host" => out.host = value.parse().ok(),
                 "--join" => out.join = Some(value),
                 "--name" => out.name = Some(value),
@@ -354,7 +351,7 @@ pub struct ShotPlugin(pub Args);
 
 impl Plugin for ShotPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(StartArgs(self.0.clone())).insert_resource(crate::widgets::TraceInput(self.0.trace_input)).init_resource::<Warp>().add_systems(Startup, apply_start).add_systems(First, play_script);
+        app.insert_resource(StartArgs(self.0.clone())).init_resource::<Warp>().add_systems(Startup, apply_start).add_systems(First, play_script);
     }
 }
 

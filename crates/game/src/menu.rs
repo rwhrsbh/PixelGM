@@ -3,7 +3,6 @@
 
 use crate::art::{Art, CANDLE_SIZE};
 use crate::store::Store;
-use crate::widgets::{Activate, panel_backing, panel_node};
 use bevy::prelude::*;
 
 #[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -28,14 +27,6 @@ pub enum Screen {
     Play,
 }
 
-/// What a navigation button does when used.
-#[derive(Component, Clone, Copy, PartialEq)]
-pub enum Nav {
-    /// Back to where this screen was opened from; the main menu unless something else is
-    /// recorded in `ReturnTo`.
-    Back,
-}
-
 /// Set by a screen that opens another one and wants to be returned to: the key screen opened
 /// from a running game goes back to the game, not to the main menu.
 #[derive(Resource, Default)]
@@ -44,22 +35,6 @@ pub struct ReturnTo(pub Option<Screen>);
 /// The table and candles behind the menus. Hidden while a game is on screen.
 #[derive(Component)]
 pub struct Backdrop;
-
-/// A full-canvas column that lives exactly as long as its screen.
-pub fn screen_root(screen: Screen) -> impl Bundle {
-    (
-        DespawnOnExit(screen),
-        Node { width: percent(100), height: percent(100), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..default() },
-    )
-}
-
-/// Spawns a parchment sheet and lets `content` fill it.
-pub fn spawn_panel(parent: &mut ChildSpawnerCommands, art: &Art, node: Node, content: impl FnOnce(&mut ChildSpawnerCommands)) {
-    parent.spawn(panel_node(node)).with_children(|sheet| {
-        sheet.spawn(panel_backing(art));
-        content(sheet);
-    });
-}
 
 #[derive(Component)]
 struct Candle {
@@ -144,13 +119,6 @@ fn main_menu(mut egui: bevy_egui::EguiContexts, store: Res<Store>, settings: Res
     }
 }
 
-fn on_activate(used: On<Activate>, buttons: Query<&Nav>, mut return_to: ResMut<ReturnTo>, mut next: ResMut<NextState<Screen>>) {
-    let Ok(nav) = buttons.get(used.entity) else { return };
-    match nav {
-        Nav::Back => next.set(return_to.0.take().unwrap_or(Screen::Main)),
-    }
-}
-
 /// Escape, or the right-hand button of a gamepad, leaves a menu screen the same way its Back
 /// button does. The play screen and the wait for a new world handle Escape themselves.
 fn escape_goes_back(
@@ -174,7 +142,6 @@ impl Plugin for MenuPlugin {
             .init_resource::<ReturnTo>()
             .add_systems(Startup, spawn_backdrop)
             .add_systems(bevy_egui::EguiPrimaryContextPass, main_menu.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Main)))
-            .add_systems(Update, (flicker, breathe, escape_goes_back))
-            .add_observer(on_activate);
+            .add_systems(Update, (flicker, breathe, escape_goes_back));
     }
 }

@@ -52,8 +52,6 @@ pub struct Fx {
     wince: f32,
     floats: Vec<(Vec2, String, Color)>,
     bursts: Vec<(Vec2, Color, u32)>,
-    /// The text being written out, and how many letters of it are there.
-    typed: (String, f32),
     throw: Option<Throw>,
     seed: u32,
     /// Where each actor was last shown, so that a move is walked rather than jumped.
@@ -69,7 +67,6 @@ const GLIDE_SPEED: f32 = 190.0;
 const FLASH_SECONDS: f32 = 0.16;
 const FLOAT_SECONDS: f32 = 0.9;
 const WINCE_SECONDS: f32 = 0.3;
-const LETTERS_PER_SECOND: f32 = 110.0;
 const DIE_TUMBLE: f32 = 0.6;
 const DIE_SHOWN: f32 = 1.5;
 
@@ -298,49 +295,6 @@ fn dust(time: Res<Time>, pose: Option<Res<HeroPose>>, phase: Option<Res<Phase>>,
     }
 }
 
-/// Text that is written out letter by letter. A press of anything writes the rest at once.
-#[derive(Component)]
-pub struct Typed(pub String);
-
-fn typewriter(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>, mut fx: ResMut<Fx>, mut texts: Query<(&Typed, &mut Text)>, fresh: Query<(), Added<Typed>>) {
-    for (typed, mut text) in &mut texts {
-        if fx.typed.0 != typed.0 {
-            // A press that opened the sheet must not also finish its text.
-            fx.typed = (typed.0.clone(), 0.0);
-        } else if fresh.is_empty() && (keyboard.get_just_pressed().next().is_some() || mouse.get_just_pressed().next().is_some()) {
-            fx.typed.1 = f32::MAX;
-        }
-        fx.typed.1 += LETTERS_PER_SECOND * time.delta_secs();
-        let letters = fx.typed.1 as usize;
-        let shown: String = typed.0.chars().take(letters).collect();
-        if text.0 != shown {
-            text.0 = shown;
-        }
-    }
-}
-
-/// A sheet that has just appeared slides up into place.
-#[derive(Component, Default)]
-pub struct PopIn(pub f32);
-
-fn pop_in(time: Res<Time>, mut sheets: Query<(&mut PopIn, &mut Node)>) {
-    for (mut pop, mut node) in &mut sheets {
-        if pop.0 >= 0.12 && node.top == px(0) {
-            continue;
-        }
-        pop.0 += time.delta_secs();
-        let offset = match pop.0 {
-            t if t < 0.04 => 6,
-            t if t < 0.08 => 3,
-            t if t < 0.12 => 1,
-            _ => 0,
-        };
-        if node.top != px(offset) {
-            node.top = px(offset);
-        }
-    }
-}
-
 #[derive(Component)]
 struct DieView;
 
@@ -482,7 +436,7 @@ pub struct FxPlugin;
 
 impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Fx>().init_resource::<Landing>().add_message::<Thrown>().add_systems(Update, (throw_things, hide_landing)).add_systems(Startup, spawn_wince).add_systems(Update, (dust, spawn, actors, floats, specks, shake, wince, typewriter, pop_in, die).chain());
+        app.init_resource::<Fx>().init_resource::<Landing>().add_message::<Thrown>().add_systems(Update, (throw_things, hide_landing)).add_systems(Startup, spawn_wince).add_systems(Update, (dust, spawn, actors, floats, specks, shake, wince, die).chain());
     }
 }
 

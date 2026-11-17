@@ -1,9 +1,6 @@
 // A build given to players opens no console window beside the game; what it has to say
 // goes to the log file. A build made for working on the game keeps the console.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-// Interaction is what every control here is styled by; the engine marks it for removal
-// and the interface's own controls (docs/REWORK.md, section 11) take its place.
-#![allow(deprecated)]
 
 mod art;
 mod audio;
@@ -19,7 +16,6 @@ mod keys;
 mod logfile;
 mod master;
 mod menu;
-mod nav;
 mod newgame;
 mod play;
 mod post;
@@ -43,7 +39,6 @@ mod voice;
 mod shop_ui;
 mod ui;
 mod view;
-mod widgets;
 
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
@@ -77,8 +72,6 @@ fn main() -> AppExit {
     .add_plugins((
         screen::ScreenPlugin,
         i18n::I18nPlugin,
-        widgets::WidgetsPlugin,
-        nav::NavPlugin,
         gm::GmPlugin,
         menu::MenuPlugin,
         keys::KeysPlugin,
