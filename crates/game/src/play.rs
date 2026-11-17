@@ -2718,7 +2718,7 @@ fn on_activate(
         }
         (PlayAction::Keys, _) => {
             // The game stays in memory; the key screen's Back button comes back here.
-            return_to.0 = Some(Screen::Play);
+            return_to.push(Screen::Play);
             // The keys of whoever is the master now: a provider's, or Gemini's.
             next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
         }

@@ -571,7 +571,7 @@ fn keys_vote(
         }
         Some(true) => {
             vote.entering = true;
-            return_to.0 = Some(*screen.get());
+            return_to.push(*screen.get());
             next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
         }
         None => {}
@@ -1227,7 +1227,7 @@ fn lobby_screen(
         },
     );
     if back {
-        next.set(return_to.0.take().unwrap_or(Screen::Main));
+        next.set(return_to.back());
         return;
     }
     if acts.is_empty() {

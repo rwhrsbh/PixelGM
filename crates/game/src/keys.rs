@@ -6,7 +6,7 @@ use crate::i18n::{Lang, T, wait_text};
 use crate::menu::{ReturnTo, Screen};
 use crate::store::Settings;
 use crate::theme::*;
-use crate::ui::egui::{self, Key, RichText, Sense, vec2};
+use crate::ui::egui::{self, RichText, vec2};
 use crate::ui::kit::{self, Sheet, button, hint, warning};
 use crate::ui::theme::c;
 use bevy::prelude::*;
@@ -73,37 +73,16 @@ fn test_text(test: &GmTest, now: u64, lang: Lang) -> (String, Rgba) {
     }
 }
 
-/// What a press on the Gemini screen asks for.
-#[derive(Clone, Copy)]
-enum KeyAction {
-    Add,
-    Remove(KeyId),
-    Recheck(KeyId),
-    TestGm,
-    /// Gemini runs the game again.
-    UseGemini,
-}
-
-/// What the buttons under the list do with the model that is picked.
-#[derive(Clone, Copy)]
-enum ModelAct {
-    Up,
-    Down,
-    Switch,
-    /// Back to the game's own order, with nothing switched off.
-    Reset,
-}
-
-/// The Gemini screen, drawn with egui: the master's tabs, the keys at the left and the
-/// models at the right, each with what it is for; a test and Back at the bottom.
+/// The Gemini screen, drawn with egui in the order every master's screen has: whether it
+/// runs the game, its keys, its models in the order they are asked, how it answers.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn keys_screen(
     mut egui: bevy_egui::EguiContexts,
     (gm, mut book, mut test, lang): (Res<Gm>, ResMut<KeyBook>, ResMut<GmTest>, Res<Lang>),
     (mut settings, store, mut desk, mut next, mut return_to): (ResMut<Settings>, Res<crate::store::Store>, ResMut<crate::provider::Desk>, ResMut<NextState<Screen>>, ResMut<ReturnTo>),
-    mut picked: Local<Option<String>>,
     mut typed: Local<String>,
 ) {
+    use crate::provider::parts::{self, KeyPress, ModelPress};
     let lang = *lang;
     let t = |text: T| text.text(lang);
     let now = gm.dispatcher.now();
@@ -113,103 +92,61 @@ fn keys_screen(
         let free = lines.iter().map(|line| pool.availability(now, &line.id)).collect();
         (lines, free, pool.chain().to_vec())
     });
-    // A model that is gone cannot stay picked.
-    if picked.as_ref().is_some_and(|id| !lines.iter().any(|line| line.id == *id)) {
-        *picked = None;
-    }
     let Ok(ctx) = egui.ctx_mut() else { return };
     let Some(mut ui) = kit::screen_ui(ctx, "keys") else { return };
     let mut to_tab = None;
-    let mut act = None;
-    let mut model_act = None;
+    let mut make_master = false;
+    let mut add_key = false;
+    let mut key_press: Option<(KeyId, KeyPress)> = None;
+    let mut model_press: Option<(String, ModelPress)> = None;
+    let mut reset = false;
+    let mut answer_changed = false;
+    let mut edited = settings.clone();
     let mut back = false;
     let mut testing = false;
     let (said, said_tint) = test_text(&test, now, lang);
-    let sheet = Sheet { id: "keys", title: t(T::AiTitle), about: t(T::KeysAbout), max: vec2(480.0, 380.0), top: 0.0, fixed: true };
+    let runs = settings.active_provider().is_none();
+    let in_chain = chain.len();
+    let sheet = Sheet { id: "keys", title: t(T::AiTitle), about: t(T::KeysAbout), max: vec2(480.0, 470.0), top: 0.0, fixed: true };
     kit::sheet(
         &mut ui,
         sheet,
         |ui| {
             to_tab = crate::provider::tabs(ui, &settings, None, lang);
-            ui.horizontal(|row| {
-                let who = settings.active_provider().map_or("Gemini", |kind| kind.name());
-                row.label(RichText::new(format!("{} {who}", t(T::MasterNow))).color(c(WAX_DARK)));
-                if row.add(button(t(T::MasterUseGemini)).enabled(settings.active_provider().is_some(), t(T::GeminiAlready))).clicked() {
-                    act = Some(KeyAction::UseGemini);
+            make_master = parts::status(ui, runs, lang);
+            parts::section(ui, T::SectionKeys, lang);
+            ui.add(egui::Label::new(t(T::KeysHelp)).wrap());
+            ui.label(RichText::new(KEY_PAGE).color(c(WAX_DARK)));
+            if book.entries.is_empty() {
+                warning(ui, t(T::NoKeys));
+            }
+            for entry in &book.entries {
+                let (status, tint) = health_text(&entry.health);
+                if let Some(press) = parts::key_row(ui, &masked(&entry.secret), Some((t(status), tint)), entry.health == Health::Unreachable, lang) {
+                    key_press = Some((entry.id, press));
                 }
-            });
-            ui.add_space(4.0);
-            ui.columns(2, |cols| {
-                // The keys: how to get one, the field to paste it in, and those there are.
-                let left = &mut cols[0];
-                left.add(egui::Label::new(t(T::KeysHelp)).wrap());
-                left.label(RichText::new(KEY_PAGE).color(c(WAX_DARK)));
-                left.horizontal(|row| {
-                    let field = row.add(egui::TextEdit::singleline(&mut *typed).desired_width((row.available_width() - 74.0).max(60.0)).char_limit(200).hint_text("AIza…"));
-                    let entered = field.lost_focus() && row.input(|i| i.key_pressed(Key::Enter));
-                    let ready = !typed.trim().is_empty();
-                    if row.add(button(t(T::Add)).enabled(ready, t(T::KeyTypeFirst))).clicked() || (entered && ready) {
-                        act = Some(KeyAction::Add);
-                    }
-                });
-                hint(left, t(T::KeysInputHint));
-                egui::ScrollArea::vertical().id_salt("key_list").max_height(90.0).show(left, |ui| {
-                    if book.entries.is_empty() {
-                        warning(ui, t(T::NoKeys));
-                    }
-                    for entry in &book.entries {
-                        let (status, tint) = health_text(&entry.health);
-                        ui.horizontal(|row| {
-                            row.label(masked(&entry.secret));
-                            row.label(RichText::new(t(status)).color(c(tint)));
-                            if entry.health == Health::Unreachable && row.add(button(t(T::Recheck))).clicked() {
-                                act = Some(KeyAction::Recheck(entry.id));
-                            }
-                            if row.add(button(t(T::Remove))).clicked() {
-                                act = Some(KeyAction::Remove(entry.id));
-                            }
-                        });
-                    }
-                });
-                // The models: the order they are asked in, and what each has left.
-                let right = &mut cols[1];
-                right.label(RichText::new(t(T::ModelsTitle)).color(c(WAX_DARK)));
-                hint(right, t(T::ModelsLegend));
-                egui::ScrollArea::vertical().id_salt("model_list").max_height(120.0).show(right, |ui| {
-                    if lines.is_empty() {
-                        hint(ui, t(T::ModelsUnknown));
-                    }
-                    for (line, availability) in lines.iter().zip(&free) {
-                        let (state, state_tint) = state_of(line, *availability, now, settings.lowest_tier, lang);
-                        let name_tint = if line.place.is_some() && line.tier <= settings.lowest_tier { INK } else { FADED };
-                        let label = line.place.map_or_else(|| format!(" · {}", line.id), |n| format!("{n:>2} {}", line.id));
-                        let chosen = picked.as_deref() == Some(line.id.as_str());
-                        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0), Sense::click());
-                        if chosen {
-                            ui.painter().rect_filled(rect, 0.0, c(BRASS_LIGHT));
-                        } else if response.hovered() {
-                            ui.painter().rect_filled(rect, 0.0, c(PARCHMENT_SHADE));
-                        }
-                        ui.painter().text(rect.left_center() + vec2(2.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(crate::ui::theme::BODY), c(name_tint));
-                        ui.painter().text(rect.right_center() - vec2(2.0, 0.0), egui::Align2::RIGHT_CENTER, state, egui::FontId::proportional(crate::ui::theme::BODY), c(state_tint));
-                        if response.clicked() {
-                            *picked = Some(line.id.clone());
-                        }
-                    }
-                });
-                right.horizontal_wrapped(|row| {
-                    let ready = picked.is_some();
-                    let why = t(T::PickModelFirst);
-                    for (label, then) in [(T::ModelUp, ModelAct::Up), (T::ModelDown, ModelAct::Down), (T::ModelSwitch, ModelAct::Switch)] {
-                        if row.add(button(t(label)).enabled(ready, why)).clicked() {
-                            model_act = Some(then);
-                        }
-                    }
-                    if row.add(button(t(T::ModelsReset))).clicked() {
-                        model_act = Some(ModelAct::Reset);
-                    }
-                });
-            });
+            }
+            add_key = parts::key_field(ui, &mut typed, lang);
+            hint(ui, t(T::KeysInputHint));
+            parts::section(ui, T::SectionModels, lang);
+            hint(ui, t(T::ModelsLegend));
+            if lines.is_empty() {
+                hint(ui, t(T::ModelsUnknown));
+            }
+            for (line, availability) in lines.iter().zip(&free) {
+                let (state, tint) = state_of(line, *availability, now, settings.lowest_tier, lang);
+                let place = line.place;
+                let up = place.is_some_and(|n| n > 1);
+                let down = place.is_some_and(|n| n < in_chain);
+                if let Some(press) = parts::model_row(ui, place, &line.id, Some((&state, tint)), up, down, Some(place.is_some()), lang) {
+                    model_press = Some((line.id.clone(), press));
+                }
+            }
+            if ui.add(button(t(T::ModelsReset))).clicked() {
+                reset = true;
+            }
+            parts::section(ui, T::SectionAnswer, lang);
+            answer_changed = crate::settings::answer_settings(ui, &mut edited, true);
             // What the last test of the master came to.
             ui.add_space(4.0);
             ui.add(egui::Label::new(RichText::new(&said).color(c(said_tint))).wrap());
@@ -223,54 +160,50 @@ fn keys_screen(
             }
         },
     );
-    if testing {
-        act = Some(KeyAction::TestGm);
+    let mut save = false;
+    if answer_changed {
+        *settings = edited;
+        save = true;
     }
-    match act {
-        Some(KeyAction::Add) => {
-            // A duplicate stays in the field so the player can see what was refused.
-            if gm.add_key(&mut book, &typed) {
-                typed.clear();
-            }
-        }
-        Some(KeyAction::Remove(id)) => gm.remove_key(&mut book, id),
-        Some(KeyAction::Recheck(id)) => gm.recheck(&mut book, id),
-        Some(KeyAction::TestGm) => gm.test(&mut test, &settings),
-        Some(KeyAction::UseGemini) => {
-            settings.set_master(None);
-            if let Err(e) = store.save_settings(&settings) {
-                error!("could not save settings: {e}");
-            }
-        }
+    if make_master {
+        settings.set_master(None);
+        save = true;
+    }
+    // A duplicate stays in the field so the player can see what was refused.
+    if add_key && gm.add_key(&mut book, &typed) {
+        typed.clear();
+    }
+    match key_press {
+        Some((id, KeyPress::Remove)) => gm.remove_key(&mut book, id),
+        Some((id, KeyPress::Recheck)) => gm.recheck(&mut book, id),
         None => {}
     }
-    // The picked model moved, switched, or the whole order given back to the game. The chain
-    // follows at once, and the choice is kept with the settings.
-    if let Some(model_act) = model_act {
-        let choice = match (model_act, picked.as_ref()) {
-            (ModelAct::Reset, _) => Some(llm::Choice::default()),
-            (ModelAct::Up, Some(id)) => Some(settings.gemini.moved(&chain, id, true)),
-            (ModelAct::Down, Some(id)) => Some(settings.gemini.moved(&chain, id, false)),
-            (ModelAct::Switch, Some(id)) => Some(settings.gemini.switched(&chain, id)),
-            (_, None) => None,
-        };
-        if let Some(choice) = choice.filter(|choice| *choice != settings.gemini) {
-            gm.dispatcher.set_choice(choice.clone());
-            settings.gemini = choice;
-            if let Err(e) = store.save_settings(&settings) {
-                error!("could not save settings: {e}");
-            }
-        }
+    if testing {
+        gm.test(&mut test, &settings);
     }
-    match to_tab {
-        Some(Some(kind)) => {
-            desk.open_on = Some(kind);
-            next.set(Screen::Provider);
-        }
-        Some(None) | None => {}
+    // A model moved or switched, or the whole order given back to the game. The chain
+    // follows at once, and the choice is kept with the settings.
+    let choice = match model_press {
+        _ if reset => Some(llm::Choice::default()),
+        Some((id, ModelPress::Up)) => Some(settings.gemini.moved(&chain, &id, true)),
+        Some((id, ModelPress::Down)) => Some(settings.gemini.moved(&chain, &id, false)),
+        Some((id, ModelPress::Drop)) => Some(settings.gemini.switched(&chain, &id)),
+        None => None,
+    };
+    if let Some(choice) = choice.filter(|choice| *choice != settings.gemini) {
+        gm.dispatcher.set_choice(choice.clone());
+        settings.gemini = choice;
+        save = true;
+    }
+    if save && let Err(e) = store.save_settings(&settings) {
+        error!("could not save settings: {e}");
+    }
+    if let Some(Some(kind)) = to_tab {
+        desk.open_on = Some(kind);
+        next.set(Screen::Provider);
     }
     if back {
-        next.set(return_to.0.take().unwrap_or(Screen::Main));
+        next.set(return_to.back());
     }
 }
 

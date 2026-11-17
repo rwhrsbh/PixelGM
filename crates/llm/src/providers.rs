@@ -16,10 +16,17 @@ pub enum Kind {
     Cloudflare,
     /// Any address of the player's own.
     Custom,
+    /// OpenCode's Go subscription: open models for a flat monthly price, over the OpenAI shape.
+    OpenCodeGo,
 }
 
+/// Where OpenCode Go takes the OpenAI shape, unless the player wrote another address.
+pub const OPENCODE_GO: &str = "https://opencode.ai/inference/go/openai/v1";
+/// Where OpenCode Go lists its models, should its OpenAI address not.
+const OPENCODE_GO_MODELS: &str = "https://opencode.ai/inference/go/v1/models";
+
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Nim, Kind::OpenRouter, Kind::Cloudflare, Kind::Custom];
+    pub const ALL: [Kind; 5] = [Kind::Nim, Kind::OpenRouter, Kind::OpenCodeGo, Kind::Cloudflare, Kind::Custom];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -27,6 +34,7 @@ impl Kind {
             Kind::OpenRouter => "OpenRouter",
             Kind::Cloudflare => "Cloudflare",
             Kind::Custom => "OpenAI API",
+            Kind::OpenCodeGo => "OpenCode Go",
         }
     }
 }
@@ -60,6 +68,8 @@ impl Provider {
             Kind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
             Kind::Cloudflare => format!("https://api.cloudflare.com/client/v4/accounts/{}/ai/v1", self.account.trim()),
             Kind::Custom => self.url.trim().trim_end_matches('/').trim_end_matches("/chat/completions").to_string(),
+            Kind::OpenCodeGo if self.url.trim().is_empty() => OPENCODE_GO.to_string(),
+            Kind::OpenCodeGo => self.url.trim().trim_end_matches('/').trim_end_matches("/chat/completions").to_string(),
         }
     }
 
@@ -87,7 +97,7 @@ impl Provider {
         };
         // NVIDIA's hosted speaking models answer only over gRPC, not at an address like the
         // others: there is no /audio/speech there (it answers 404), so they are not asked.
-        self.kind != Kind::Nim && addressed && !self.voices.is_empty() && (self.kind == Kind::Custom || !self.keys.is_empty())
+        !matches!(self.kind, Kind::Nim | Kind::OpenCodeGo) && addressed && !self.voices.is_empty() && (self.kind == Kind::Custom || !self.keys.is_empty())
     }
 
     /// Where a speaking model is asked, and with what. Cloudflare runs its models at an
@@ -122,6 +132,7 @@ impl Provider {
             // OpenRouter tells its models that give sound apart itself.
             Kind::OpenRouter => return self.list_from("https://openrouter.ai/api/v1/models?output_modalities=audio"),
             Kind::Nim => return Err("NVIDIA NIM gives speech only over gRPC; choose a voice from another provider".to_string()),
+            Kind::OpenCodeGo => return Err("OpenCode Go has no speaking models; choose a voice from another provider".to_string()),
             Kind::Custom => {}
         }
         // Elsewhere the speaking models are told from the rest by their names.
@@ -136,7 +147,11 @@ impl Provider {
             Kind::Cloudflare => format!("https://api.cloudflare.com/client/v4/accounts/{}/ai/models/search?task=Text%20Generation&per_page=200", self.account.trim()),
             _ => format!("{}/models", self.base()),
         };
-        self.list_from(&url)
+        match self.list_from(&url) {
+            // OpenCode Go has kept its list of models at more than one address.
+            Err(_) if self.kind == Kind::OpenCodeGo && self.url.trim().is_empty() => self.list_from(OPENCODE_GO_MODELS),
+            listed => listed,
+        }
     }
 
     fn list_from(&self, url: &str) -> Result<Vec<String>, String> {
@@ -595,6 +610,11 @@ mod tests {
         assert_eq!(cloud.endpoint(), "https://api.cloudflare.com/client/v4/accounts/abc/ai/v1/chat/completions");
         let router = Provider { kind: Kind::OpenRouter, ..nim(&["k"], &["m"]) };
         assert_eq!(router.endpoint(), "https://openrouter.ai/api/v1/chat/completions");
+        let go = Provider { kind: Kind::OpenCodeGo, ..nim(&["k"], &["m"]) };
+        assert_eq!(go.base(), OPENCODE_GO);
+        assert!(go.ready() && !go.voice_ready());
+        let moved = Provider { url: "https://opencode.ai/zen/go/v1/".into(), ..go };
+        assert_eq!(moved.base(), "https://opencode.ai/zen/go/v1");
         let own = Provider { kind: Kind::Custom, url: "http://localhost:11434/v1/".into(), keys: vec![], ..nim(&[], &["m"]) };
         assert_eq!(own.endpoint(), "http://localhost:11434/v1/chat/completions");
         // A local server needs no key; the others do; Cloudflare needs its account too.
