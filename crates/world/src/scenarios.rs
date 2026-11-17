@@ -341,3 +341,15 @@ fn logs_are_handed_from_hand_to_hand_only_when_standing_side_by_side_and_build_n
     assert!((8..=13).all(|x| w.here().tile_id(x, 8) == Some("water")), "handing builds nothing");
     assert_eq!(w.hero_cell(0), (3, 8), "the host's hero is where the host stands");
 }
+
+#[test]
+fn the_master_is_told_where_the_other_heroes_stand() {
+    let mut w = three_at_the_lake();
+    w.others = vec![token("Bob", (25, 8), "lake")];
+    let asked = crate::prompt::turn(&w, "Brak: I want a bridge", None);
+    assert!(asked.contains("- the hero Bob's hero at (25, 8): 31 steps away on foot"), "{asked}");
+    assert!(!asked.contains("the hero Carl's hero"), "Carl is somewhere else");
+    w.others = vec![token("Bob", (4, 8), "lake")];
+    let asked = crate::prompt::turn(&w, "Brak: I want a bridge", None);
+    assert!(asked.contains("- the hero Bob's hero at (4, 8): beside the party"), "{asked}");
+}

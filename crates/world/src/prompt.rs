@@ -376,6 +376,14 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     for creature in &here.creatures {
         let _ = writeln!(text, "- {} ({}): {}", creature.id, creature.name, walk((creature.x, creature.y)));
     }
+    // The other heroes in this place, where they stand: a thing is handed only side by side.
+    for (index, hero) in world.party.iter().enumerate().filter(|(i, h)| !h.dead && world.takes_part(*i)) {
+        let (hx, hy) = world.hero_cell(index);
+        if (hx, hy) == (x, y) || hx < 0 || hy < 0 || hx >= here_w as i32 || hy >= here_h as i32 {
+            continue;
+        }
+        let _ = writeln!(text, "- the hero {} at ({hx}, {hy}): {}", hero.name, walk((hx as usize, hy as usize)));
+    }
     for exit in &here.exits {
         let on_foot = match far[exit.y][exit.x] {
             Some(0) => "the party stands on it".to_string(),
