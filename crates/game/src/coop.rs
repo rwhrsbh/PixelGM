@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 11;
+pub const PROTOCOL: u32 = 12;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -76,9 +76,11 @@ pub enum Intent {
     /// A thing put on a quick slot, by name; an empty name clears the slot.
     Quick { slot: usize, name: String },
     /// One of a thing in the bag thrown on the ground of a cell.
-    Drop { index: usize, cell: (usize, usize) },
-    /// What lies on the ground picked up.
-    PickUp { n: usize },
+    /// Known by its name too: the master may have taken something from the bag meanwhile.
+    Drop { index: usize, cell: (usize, usize), name: String },
+    /// What lies on the ground picked up: the n-th as this guest saw it, known by its name
+    /// and cell, since another may have picked up something before it meanwhile.
+    PickUp { n: usize, name: String, cell: (usize, usize) },
     /// A container opened, picked or forced.
     OpenChest { prop: String, how: world::bag::Opening },
 }

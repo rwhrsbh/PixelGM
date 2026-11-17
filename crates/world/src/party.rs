@@ -402,14 +402,16 @@ impl World {
         Some(Checked { hero, roll, difficulty: check.difficulty, success, narration: branch.narration })
     }
 
-    /// Damage outside a fight falls on the first hero still standing.
-    pub(crate) fn hurt_party(&mut self, dice: &str, rng: &mut Rng) -> i32 {
+    /// A wound the story deals to one hero.
+    pub(crate) fn hurt_hero(&mut self, hero: usize, dice: &str, rng: &mut Rng) -> i32 {
         let amount = Dice::parse(dice, 0).map_or(0, |d| d.roll(rng)).clamp(0, self.story_cap());
-        let target = (0..self.party.len()).find(|i| self.takes_part(*i) && !self.party[*i].is_down());
-        if let Some(hero) = target.and_then(|i| self.party.get_mut(i)) {
-            hero.take_damage(amount);
+        match self.party.get_mut(hero) {
+            Some(hero) => {
+                hero.take_damage(amount);
+                amount
+            }
+            None => 0,
         }
-        amount
     }
 
     pub(crate) fn heal_party(&mut self, dice: &str, rng: &mut Rng) -> i32 {
@@ -1568,9 +1570,9 @@ mod tests {
         let mut w = world();
         w.party[0].max_hp = 400;
         w.party[0].hp = 400;
-        assert_eq!(w.hurt_party("300", &mut Rng::seeded(1)), 20);
+        assert_eq!(w.hurt_hero(0, "300", &mut Rng::seeded(1)), 20);
         w.table.no_limits = true;
-        assert_eq!(w.hurt_party("300", &mut Rng::seeded(1)), 300);
+        assert_eq!(w.hurt_hero(0, "300", &mut Rng::seeded(1)), 300);
     }
 
     #[test]

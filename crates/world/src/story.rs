@@ -853,7 +853,16 @@ impl World {
                     let who = resolve(id);
                     let heroes = matches!(who.as_str(), "" | "party" | "hero" | "heroes" | "player" | "players" | "everyone" | "all") || names.iter().any(|n| *n == who);
                     if heroes {
-                        self.hurt_party(amount, &mut Rng::from_clock());
+                        // The one named; everyone here when said of all; otherwise the one
+                        // who did what the story answers, or the first of those who did.
+                        let hit = match who.as_str() {
+                            "everyone" | "all" => present.clone(),
+                            "" | "party" | "hero" | "heroes" | "player" | "players" => doers.iter().copied().find(|h| *h == acting).or_else(|| doers.first().copied()).into_iter().collect(),
+                            _ => heroes_named(&who),
+                        };
+                        for hero in hit {
+                            self.hurt_hero(hero, amount, &mut Rng::from_clock());
+                        }
                     } else {
                         let dealt = rules::Dice::parse(amount, 0).map_or(0, |d| d.roll(&mut Rng::from_clock()));
                         if !self.wound(&who, dealt) {
