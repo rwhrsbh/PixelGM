@@ -58,6 +58,9 @@ pub struct Provider {
     /// How hard the model is asked to think: "low", "medium", "high", or empty to say
     /// nothing. A model that refuses the request for it is asked again without.
     pub effort: String,
+    /// The session the requests belong to, where a provider keeps a cache by it (OpenCode
+    /// Go); empty for one per run of the game.
+    pub session: String,
 }
 
 impl Provider {
@@ -75,6 +78,27 @@ impl Provider {
 
     fn endpoint(&self) -> String {
         format!("{}/chat/completions", self.base())
+    }
+
+    /// Where a model is asked. OpenCode Go says per model in its catalog, unless the player
+    /// wrote an address of their own.
+    fn endpoint_for(&self, model: &str) -> String {
+        match self.kind {
+            Kind::OpenCodeGo if self.url.trim().is_empty() => format!("{}/chat/completions", crate::opencode_go::base_for(model)),
+            _ => self.endpoint(),
+        }
+    }
+
+    /// What a request carries besides the key: for OpenCode Go, the session, the way its own
+    /// client says it, so that the prompt is cached and not paid for each time in full.
+    pub fn headers(&self) -> Vec<(&'static str, String)> {
+        match self.kind {
+            Kind::OpenCodeGo => {
+                let session = if self.session.trim().is_empty() { crate::opencode_go::session().to_string() } else { self.session.trim().to_string() };
+                crate::opencode_go::headers(&session)
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Whether there is enough to ask with.
@@ -142,6 +166,12 @@ impl Provider {
 
     /// The models the provider offers, for the player to choose from.
     pub fn list_models(&self) -> Result<Vec<String>, String> {
+        // OpenCode Go's own catalog: what its client offers, kept up to date there.
+        if self.kind == Kind::OpenCodeGo && self.url.trim().is_empty() {
+            if let Ok(models) = crate::opencode_go::models() {
+                return Ok(models.into_iter().map(|m| m.id).collect());
+            }
+        }
         let url = match self.kind {
             // Cloudflare lists its models elsewhere than the OpenAI-shaped address.
             Kind::Cloudflare => format!("https://api.cloudflare.com/client/v4/accounts/{}/ai/models/search?task=Text%20Generation&per_page=200", self.account.trim()),
@@ -197,6 +227,12 @@ pub struct Refusal {
 /// How requests are sent: the real network, or a stand-in in tests.
 pub trait Transport {
     fn post(&self, url: &str, key: &str, body: &str, timeout: Duration) -> Result<String, Refusal>;
+
+    /// As `post`, with headers of the provider's own beside the key.
+    fn post_with(&self, url: &str, key: &str, headers: &[(&'static str, String)], body: &str, timeout: Duration) -> Result<String, Refusal> {
+        let _ = headers;
+        self.post(url, key, body, timeout)
+    }
 
     /// As `post`, for an answer that is sound: the bytes, and what kind they are said to be.
     fn post_bytes(&self, _url: &str, _key: &str, _body: &str, _timeout: Duration) -> Result<(Vec<u8>, String), Refusal> {
@@ -267,10 +303,17 @@ impl Transport for Network {
     /// No limit on the whole answer: a free model may take a quarter of an hour, and that is
     /// not an error. Only silence for as long as `timeout` is.
     fn post(&self, url: &str, key: &str, body: &str, timeout: Duration) -> Result<String, Refusal> {
+        self.post_with(url, key, &[], body, timeout)
+    }
+
+    fn post_with(&self, url: &str, key: &str, headers: &[(&'static str, String)], body: &str, timeout: Duration) -> Result<String, Refusal> {
         let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(timeout).build();
         let mut request = agent.post(url).set("Content-Type", "application/json");
         if !key.trim().is_empty() {
             request = request.set("Authorization", &format!("Bearer {}", key.trim()));
+        }
+        for (name, value) in headers {
+            request = request.set(name, value);
         }
         match request.send_string(body) {
             Ok(answer) => {
@@ -430,22 +473,24 @@ impl Rotation {
                             provider.effort.trim()
                         }
                     };
-                    let mut answer = transport.post(&provider.endpoint(), key, &body(effort), timeout);
+                    let (endpoint, headers) = (provider.endpoint_for(model), provider.headers());
+                    let post = |body: &str| transport.post_with(&endpoint, key, &headers, body, timeout);
+                    let mut answer = post(&body(effort));
                     // More room asked for than the model has: once more with less.
                     if room.get() > 0 && answer.as_ref().is_err_and(|r| matches!(r.status, 400 | 413) && r.text.to_lowercase().contains("token")) {
                         room.set(4_000);
-                        answer = transport.post(&provider.endpoint(), key, &body(effort), timeout);
+                        answer = post(&body(effort));
                     }
                     // Refused with the thinking asked for: it may be the asking. Once more, plainly.
                     if !effort.is_empty() && answer.as_ref().is_err_and(|r| matches!(r.status, 400 | 422)) {
-                        answer = transport.post(&provider.endpoint(), key, &body(""), timeout);
+                        answer = post(&body(""));
                         if answer.is_ok() {
                             self.state.lock().unwrap().plain.insert(name.clone());
                         }
                     }
                     // Thought, and said nothing: once more without the thinking.
                     if effort != "none" && provider.kind != Kind::Custom && answer.as_ref().is_ok_and(|a| crate::openai::read_answer(a).is_err() && a.contains("\"thought\":true")) {
-                        let again = transport.post(&provider.endpoint(), key, &body("none"), timeout);
+                        let again = post(&body("none"));
                         if again.as_ref().is_ok_and(|a| crate::openai::read_answer(a).is_ok()) {
                             self.state.lock().unwrap().mute.insert(name.clone());
                             answer = again;
@@ -600,7 +645,7 @@ mod tests {
     }
 
     fn nim(keys: &[&str], models: &[&str]) -> Provider {
-        Provider { kind: Kind::Nim, keys: keys.iter().map(|k| k.to_string()).collect(), models: models.iter().map(|m| m.to_string()).collect(), account: String::new(), url: String::new(), effort: String::new(), voices: Vec::new(), voice: String::new() }
+        Provider { kind: Kind::Nim, keys: keys.iter().map(|k| k.to_string()).collect(), models: models.iter().map(|m| m.to_string()).collect(), account: String::new(), url: String::new(), effort: String::new(), voices: Vec::new(), voice: String::new(), session: String::new() }
     }
 
     #[test]
@@ -790,5 +835,29 @@ mod tests {
         assert_eq!(read_models(r#"{"data":[{"id":"meta/llama-3.3-70b-instruct"},{"id":"a/b"}]}"#).unwrap(), ["a/b", "meta/llama-3.3-70b-instruct"]);
         assert_eq!(read_models(r#"{"result":[{"id":"uuid-1","name":"@cf/meta/llama-3.1-8b-instruct"}]}"#).unwrap(), ["@cf/meta/llama-3.1-8b-instruct"]);
         assert!(read_models("{}").is_err());
+    }
+
+    #[test]
+    fn opencode_go_is_asked_with_the_session_as_its_own_client_asks() {
+        struct Heard(std::sync::Mutex<Vec<(String, Vec<(&'static str, String)>)>>);
+        impl Transport for Heard {
+            fn post(&self, _: &str, _: &str, _: &str, _: Duration) -> Result<String, Refusal> {
+                unreachable!("OpenCode Go is asked with its headers")
+            }
+            fn post_with(&self, url: &str, _: &str, headers: &[(&'static str, String)], _: &str, _: Duration) -> Result<String, Refusal> {
+                self.0.lock().unwrap().push((url.to_string(), headers.to_vec()));
+                Ok(r#"{"choices":[{"message":{"content":"ok"}}]}"#.to_string())
+            }
+        }
+        let heard = Heard(std::sync::Mutex::default());
+        // An address of the player's own: the catalog is not looked at.
+        let go = Provider { kind: Kind::OpenCodeGo, url: "https://opencode.ai/inference/go/openai/v1".into(), session: "ses_abc".into(), ..nim(&["k"], &["kimi-k3"]) };
+        let (text, _) = Rotation::default().complete(&[go], "system", "prompt", &heard).unwrap();
+        assert_eq!(text, "ok");
+        let (url, headers) = heard.0.lock().unwrap()[0].clone();
+        assert_eq!(url, "https://opencode.ai/inference/go/openai/v1/chat/completions");
+        assert!(headers.iter().any(|(n, v)| *n == "x-opencode-session" && v == "ses_abc"));
+        // Nobody else is sent OpenCode's headers.
+        assert!(nim(&["k"], &["m"]).headers().is_empty());
     }
 }
