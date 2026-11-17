@@ -674,9 +674,13 @@ impl World {
     /// Starts a fight with every hostile creature here. `false` when there is nobody to
     /// fight or nobody to do the fighting.
     pub fn start_fight(&mut self, rng: Rng) -> bool {
-        if self.fight.is_some() || !self.party_stands() || self.hostiles().next().is_none() {
+        let here = self.current.clone();
+        self.focus_fight(&here);
+        if self.fight_here() || !self.party_stands() || self.hostiles().next().is_none() {
             return false;
         }
+        // A fight going on somewhere else goes on there: this one is fought beside it.
+        self.park_fight();
         // Whoever turned on the party a moment ago is joined by the rest of its pack.
         self.muster();
         let enemies: Vec<Combatant> = self
@@ -759,6 +763,9 @@ impl World {
         let host_there = self.fight_place.is_empty() || self.fight_place == self.host_place();
         let summary = self.in_fight_place(|world| world.end_fight_here(host_there));
         self.fight_place.clear();
+        // Another fight still going on comes into view: the host's own first.
+        let host = self.host_place().to_string();
+        self.focus_fight(&host);
         summary
     }
 
@@ -1634,6 +1641,60 @@ mod tests {
         assert_eq!((w.player, w.current.as_str(), w.fight_place.as_str()), (before, "camp", ""));
         assert_eq!((w.party[0].xp, w.party[1].xp > 0), (0, true), "only the one who fought learns from it");
         assert!(w.locations["east_road"].creatures.iter().all(|c| c.id != "wolf"), "the dead wolf is gone from its own place");
+    }
+
+    #[test]
+    fn two_fights_go_on_at_once_in_two_places() {
+        let mut w = world();
+        w.party.clear();
+        let skills = vec!["acrobatics".to_string(), "athletics".to_string()];
+        for name in ["Ann's", "Bob's"] {
+            w.party.push(Character::create(name, "", "human", "fighter", [15, 12, 14, 8, 10, 13], &skills, &[]).unwrap());
+        }
+        w.owners = vec!["Ann".into(), "Bob".into()];
+        w.present = vec!["Ann".into(), "Bob".into()];
+        let draft: crate::LocationDraft = serde_json::from_str(&fake::location("east_road", "The East Road", "camp")).unwrap();
+        w.add_location(&draft, "east_road", Some("camp")).unwrap();
+        w.places.insert("Bob".into(), "east_road".into());
+
+        // Bob is set upon on the east road.
+        let home = w.enter("east_road", Player::in_cell(19, 8));
+        assert!(w.start_fight(Rng::seeded(5)));
+        w.leave(home);
+        assert!(!w.fight_here() && w.fight_in("east_road"));
+
+        // And a wolf of the same kind comes at Ann in the camp: a fight of its own begins.
+        let mut wolf = w.locations["east_road"].creatures.iter().find(|c| c.attitude == crate::Attitude::Hostile).unwrap().clone();
+        let (px, py) = w.player.cell();
+        (wolf.id, wolf.x, wolf.y) = ("camp_wolf".into(), px as usize + 1, py as usize);
+        w.here_mut().creatures.push(wolf);
+        assert!(w.start_fight(Rng::seeded(6)));
+        assert!(w.fight_here(), "the host sees the fight it is in");
+        assert_eq!(w.fight_places().len(), 2);
+        assert!(w.fight.as_ref().unwrap().index_of("hero_0").is_some());
+        assert!(w.fights_elsewhere["east_road"].index_of("hero_1").is_some(), "Bob's fight waits in its place");
+        assert!(!w.start_fight(Rng::seeded(7)), "one fight to a place");
+
+        // Looked at from the east road, Bob's fight is the one there.
+        let home = w.enter("east_road", Player::in_cell(19, 8));
+        assert!(w.fight_here() && w.fight.as_ref().unwrap().index_of("hero_1").is_some());
+        w.leave(home);
+        assert!(w.fight.as_ref().unwrap().index_of("hero_0").is_some(), "back in the camp, the camp's fight");
+
+        // Ann's fight ends; Bob's goes on and is the one moved on now.
+        for c in w.fight.as_mut().unwrap().combatants.iter_mut().filter(|c| c.side == Side::Enemy) {
+            c.hp = 0;
+            c.dead = true;
+        }
+        assert!(w.end_fight().unwrap().won);
+        assert_eq!(w.fight_place, "east_road");
+        assert!(w.fights_elsewhere.is_empty() && !w.fight_here());
+        // A world saved with both fights comes back with both.
+        let home = w.enter("east_road", Player::in_cell(19, 8));
+        w.leave(home);
+        let json = serde_json::to_string(&w).unwrap();
+        let back: World = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.fight_places(), vec!["east_road".to_string()]);
     }
 
     #[test]

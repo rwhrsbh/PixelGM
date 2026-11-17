@@ -409,6 +409,10 @@ pub struct World {
     /// The place the fight in progress is in.
     #[serde(default)]
     pub fight_place: String,
+    /// Fights going on at the same time in other places, by place. The one in `fight` is
+    /// the one of the place being looked at, when there is one there.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fights_elsewhere: BTreeMap<String, Encounter>,
     /// The hero whose player the master is answering, for whose bag a thing goes into.
     #[serde(skip)]
     pub acting: Option<usize>,
@@ -719,6 +723,7 @@ impl World {
             self.host_place = Some(self.current.clone());
             self.current = place.to_string();
             self.player = at;
+            self.focus_fight(place);
         }
         home
     }
@@ -726,6 +731,52 @@ impl World {
     pub fn leave(&mut self, home: (String, Player)) {
         (self.current, self.player) = home;
         self.host_place = None;
+        let here = self.current.clone();
+        self.focus_fight(&here);
+    }
+
+    /// Brings the fight going on in `place`, if there is one, into `fight`; the one that
+    /// was there waits among the others. With no fight in `fight` at all, any other one
+    /// is brought in, so that a fight elsewhere is still moved on.
+    pub fn focus_fight(&mut self, place: &str) {
+        if self.fight.is_some() && (self.fight_place.is_empty() || self.fight_place == place) {
+            return;
+        }
+        let there = match self.fights_elsewhere.remove(place) {
+            Some(fight) => (place.to_string(), fight),
+            None if self.fight.is_none() => match self.fights_elsewhere.pop_first() {
+                Some(any) => any,
+                None => return,
+            },
+            None => return,
+        };
+        self.park_fight();
+        (self.fight_place, self.fight) = (there.0, Some(there.1));
+    }
+
+    /// Puts the fight in `fight` among those waiting, leaving `fight` empty.
+    pub(crate) fn park_fight(&mut self) {
+        if let Some(fight) = self.fight.take() {
+            let place = if self.fight_place.is_empty() { self.host_place().to_string() } else { std::mem::take(&mut self.fight_place) };
+            self.fights_elsewhere.insert(place, fight);
+        }
+        self.fight_place.clear();
+    }
+
+    /// The places where a fight is going on.
+    pub fn fight_places(&self) -> Vec<String> {
+        let focused = self.fight.as_ref().map(|_| if self.fight_place.is_empty() { self.host_place().to_string() } else { self.fight_place.clone() });
+        focused.into_iter().chain(self.fights_elsewhere.keys().cloned()).collect()
+    }
+
+    /// One who fights, in whichever of the fights going on it is in.
+    pub fn fighter(&self, id: &str) -> Option<&rules::Combatant> {
+        self.fight.iter().chain(self.fights_elsewhere.values()).find_map(|f| f.combatants.iter().find(|c| c.id == id))
+    }
+
+    /// Whether a fight is going on in `place`.
+    pub fn fight_in(&self, place: &str) -> bool {
+        self.fights_elsewhere.contains_key(place) || (self.fight.is_some() && (self.fight_place.is_empty() || self.fight_place == place))
     }
 
     /// Whether the fight in progress is in the place being looked at.

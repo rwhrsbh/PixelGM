@@ -353,7 +353,7 @@ fn act(intent: FightIntent, world: &mut World, view: &mut FightView, session: &S
     if events.is_empty() {
         return;
     }
-    session.broadcast(&Down::FightEvents(events.clone()));
+    session.broadcast(&Down::FightEvents(world.fight_place.clone(), events.clone()));
     view.queue.extend(events);
     view.until_next = 0.0;
     redraw.0 = true;
@@ -409,10 +409,11 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
     }
     let Some(fight) = world.fight.as_ref() else { return };
     if fight.outcome() != Outcome::Ongoing {
+        let place = world.fight_place.clone();
         view.over = world.end_fight();
         view.mode = Mode::Menu;
         if let Some(summary) = &view.over {
-            session.broadcast(&Down::FightOver(summary.clone()));
+            session.broadcast(&Down::FightOver(place, summary.clone()));
         }
         redraw.0 = true;
         return;
@@ -432,17 +433,33 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
         world.fight_monster_turn()
     };
     if !events.is_empty() {
-        session.broadcast(&Down::FightEvents(events.clone()));
+        session.broadcast(&Down::FightEvents(world.fight_place.clone(), events.clone()));
         view.queue.extend(events);
         view.until_next = EVENT_SECONDS;
         redraw.0 = true;
     }
 }
 
-/// A fight in a place the host is not in still has to be moved on by the host: its
-/// monsters take their turns and it ends, and the guests who are in it are told.
+/// The host keeps the fight of the place it is in, when there is one, in view: the
+/// others wait among the fights elsewhere.
+fn focus(mut game: ResMut<Game>) {
+    let world = &game.world;
+    if world.fight_here() || !world.fight_in(&world.current) {
+        return;
+    }
+    let here = game.world.current.clone();
+    game.world.focus_fight(&here);
+}
+
+/// Fights in places the host is not in still have to be moved on by the host, each of
+/// them: their monsters take their turns and they end, and the guests in them are told.
 fn drive_elsewhere(time: Res<Time>, mut game: ResMut<Game>, session: Res<Session>, mut since: Local<f32>) {
-    if !session.is_host() || game.world.fight.is_none() || game.world.fight_here() {
+    if !session.is_host() {
+        return;
+    }
+    let world = &game.world;
+    let places: Vec<String> = world.fight_places().into_iter().filter(|place| *place != world.current).collect();
+    if places.is_empty() {
         return;
     }
     // At the pace the guests watch it played back.
@@ -452,17 +469,25 @@ fn drive_elsewhere(time: Res<Time>, mut game: ResMut<Game>, session: Res<Session
     }
     *since = 0.0;
     let world = &mut game.world;
-    if world.fight.as_ref().is_some_and(|f| f.outcome() != Outcome::Ongoing) {
-        if let Some(summary) = world.end_fight() {
-            session.broadcast(&Down::FightOver(summary));
+    for place in places {
+        world.focus_fight(&place);
+        if world.fight_place != place {
+            continue;
         }
-        return;
+        if world.fight.as_ref().is_some_and(|f| f.outcome() != Outcome::Ongoing) {
+            if let Some(summary) = world.end_fight() {
+                session.broadcast(&Down::FightOver(place, summary));
+            }
+            continue;
+        }
+        let abandoned = world.acting_owner().is_some_and(|owner| !world.present.is_empty() && !world.present.iter().any(|p| p == owner));
+        let events = if abandoned { world.fight_act(&FightIntent::EndTurn) } else { world.fight_monster_turn() };
+        if !events.is_empty() {
+            session.broadcast(&Down::FightEvents(place, events));
+        }
     }
-    let abandoned = world.acting_owner().is_some_and(|owner| !world.present.is_empty() && !world.present.iter().any(|p| p == owner));
-    let events = if abandoned { world.fight_act(&FightIntent::EndTurn) } else { world.fight_monster_turn() };
-    if !events.is_empty() {
-        session.broadcast(&Down::FightEvents(events));
-    }
+    let here = world.current.clone();
+    world.focus_fight(&here);
 }
 
 /// The hero's part: keys and the mouse while moving or aiming.
@@ -745,7 +770,7 @@ fn on_activate(
 /// A fight that starts gets a clean view. It is the fight that counts, not the screen: a
 /// sheet opened and closed in the middle of one must not wipe the blows still to be shown.
 fn reset(game: Res<Game>, mut view: ResMut<FightView>, mut was: Local<bool>) {
-    let now = game.world.fight.is_some();
+    let now = game.world.fight_here();
     if now && !*was {
         *view = FightView::default();
     }
@@ -757,7 +782,7 @@ pub struct FightPlugin;
 impl Plugin for FightPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FightView>()
-            .add_systems(Update, (reset, input, drive, drive_elsewhere, markers).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (focus, reset, input, drive, drive_elsewhere, markers).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             // A fight left behind (a save loaded after a defeat) leaves nothing on the next screen.
             .add_systems(OnExit(Screen::Play), |mut view: ResMut<FightView>| *view = FightView::default())
             .init_resource::<sheet::StuntField>()

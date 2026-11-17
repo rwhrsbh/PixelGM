@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 10;
+pub const PROTOCOL: u32 = 11;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -210,10 +210,11 @@ pub enum Down {
     Thinking(String),
     /// The game master could not answer.
     Trouble(String),
-    FightEvents(Vec<Event>),
-    FightOver(FightSummary),
+    /// What happened in the fight of a place: only the players there watch it.
+    FightEvents(String, Vec<Event>),
+    FightOver(String, FightSummary),
     /// A line for the fight's log that is not an event of the rules: how a stunt went.
-    FightNote(String),
+    FightNote(String, String),
     /// The place this guest walked into is being drawn; the world follows when it is.
     Drawing(String),
     /// A die was rolled where this guest is, and came up so.
@@ -1128,6 +1129,9 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
         for (peer, name) in guests {
             copy.current = game.world.place_of(&name).to_string();
             copy.player = world::Player { x: 0.0, y: 0.0 };
+            // The fight in front of the guest is the one it sees, if there is one there.
+            let place = copy.current.clone();
+            copy.focus_fight(&place);
             let encoded = serde_json::to_string(&copy).unwrap_or_default();
             if hosting.sent.get(&peer) == Some(&encoded) {
                 continue;
@@ -1245,7 +1249,7 @@ fn adopt(id: String, world: World, game: &mut Option<ResMut<Game>>, commands: &m
             } else {
                 world.player = game.world.player;
                 // After a fight the guest walks on from where its hero ended it.
-                if world.fight.is_none()
+                if !world.fight_here()
                     && let Some((x, y)) = game.world.fight_cell_of(me)
                 {
                     world.player = world::Player::in_cell(x, y);
@@ -1275,6 +1279,12 @@ fn adopt(id: String, world: World, game: &mut Option<ResMut<Game>>, commands: &m
             next.set(if has_hero { Screen::Play } else { Screen::Hero });
         }
     }
+}
+
+/// Whether this guest watches the fight of `place`: the one where it is. A fight with no
+/// place named is everybody's.
+fn watches(game: &Option<ResMut<Game>>, place: &str) -> bool {
+    place.is_empty() || game.as_ref().is_none_or(|game| game.world.current == place)
 }
 
 /// The guest's side of the wire.
@@ -1399,9 +1409,22 @@ fn client_pump(
                     *phase = Phase::Drawing { to };
                 }
             }
-            ClientEvent::Message(Down::FightEvents(events)) => view.extend(events),
-            ClientEvent::Message(Down::FightOver(summary)) => view.finish(summary),
-            ClientEvent::Message(Down::FightNote(line)) => view.note(line),
+            // Another place's fight is not watched here: there can be several at once.
+            ClientEvent::Message(Down::FightEvents(place, events)) => {
+                if watches(&game, &place) {
+                    view.extend(events);
+                }
+            }
+            ClientEvent::Message(Down::FightOver(place, summary)) => {
+                if watches(&game, &place) {
+                    view.finish(summary);
+                }
+            }
+            ClientEvent::Message(Down::FightNote(place, line)) => {
+                if watches(&game, &place) {
+                    view.note(line);
+                }
+            }
             ClientEvent::Message(Down::KeysOut { waiting }) => table.keys_vote.get_or_insert_with(KeysVote::default).waiting = waiting,
             ClientEvent::Message(Down::KeysOver) => table.keys_vote = None,
             ClientEvent::Message(Down::KeysWait(left)) => table.keys_wait = left,
