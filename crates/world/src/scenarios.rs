@@ -298,3 +298,46 @@ fn logs_dropped_by_one_are_picked_up_by_another_and_a_thing_gone_is_not_taken_tw
     // And the logs, asked for again by someone who did not see them go, are not there.
     assert_eq!(w.lying_at(seen_logs, "Logs", (4, 8)), None);
 }
+
+fn token(name: &str, cell: (usize, usize), place: &str) -> crate::Token {
+    let at = crate::Player::in_cell(cell.0, cell.1);
+    crate::Token { name: name.into(), x: at.x, y: at.y, place: place.into(), facing: (1, 0), vx: 0.0, vy: 0.0 }
+}
+
+#[test]
+fn logs_are_handed_from_hand_to_hand_only_when_standing_side_by_side_and_build_nothing() {
+    let mut w = three_at_the_lake();
+    // Bob's logs; Bob stands far from Ann on the other shore.
+    w.story.bags[1].receive(serde_json::from_value(serde_json::json!({ "name": "Logs", "description": "", "count": 3 })).unwrap());
+    w.others = vec![token("Bob", (25, 8), "lake")];
+    let logs = |w: &World, hero: usize| w.story.bags[hero].inventory.iter().find(|i| i.name == "Logs").map_or(0, |i| i.count);
+
+    // Ann wants a bridge: the master offers Bob to hand the logs over, beside Ann.
+    w.acting = Some(0);
+    w.actors = vec![0];
+    let (turn, _) = answer(&mut w, "Ann's hero: I want to build a bridge", serde_json::json!({
+        "narration": "You need wood. Bob has logs.",
+        "options": [{ "label": "Hand the logs to Ann", "outcome": "Bob hands the logs over.", "for": "Bob's hero", "near": "Brak",
+                      "effects": [{ "op": "hand", "name": "Logs", "to": "Brak" }] }]
+    }));
+    let option = &turn.options[0];
+    assert_eq!(option.near.as_deref(), Some("brak"), "Bob walks up to Ann's hero first");
+    assert_eq!(option.for_hero.as_deref(), Some("Bob's hero"));
+
+    // Taken from afar: nothing changes hands.
+    let home = w.enter("lake", crate::Player::in_cell(25, 8));
+    w.acting = Some(1);
+    w.actors = vec![1];
+    w.choose(option);
+    w.leave(home);
+    assert_eq!((logs(&w, 0), logs(&w, 1)), (0, 3), "not beside Ann: the logs stay with Bob");
+
+    // Bob walks up beside Ann (3, 8): now they change hands, all three, and no bridge is laid.
+    w.others = vec![token("Bob", (4, 8), "lake")];
+    let home = w.enter("lake", crate::Player::in_cell(4, 8));
+    w.choose(option);
+    w.leave(home);
+    assert_eq!((logs(&w, 0), logs(&w, 1)), (3, 0), "into Ann's bag");
+    assert!((8..=13).all(|x| w.here().tile_id(x, 8) == Some("water")), "handing builds nothing");
+    assert_eq!(w.hero_cell(0), (3, 8), "the host's hero is where the host stands");
+}
