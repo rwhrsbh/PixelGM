@@ -477,6 +477,10 @@ texts! {
     InitiativeRare: "Редко", "Rarely";
     InitiativeOften: "Часто", "Often";
     InitiativeHint: "После долгой тишины мастер устраивает событие. Тратит ход.", "After a long silence the master makes something happen. Spends a turn.";
+    SetTurnTimer: "Время на ход в бою", "Time for a turn in a fight";
+    TurnTimerHint: "За общим столом, который ты ведёшь: кто не успел — герой уклоняется, ход переходит дальше.", "At a table you host: whoever runs out of time, their hero dodges and the turn passes on.";
+    TimerOff: "Без ограничения", "No limit";
+    TurnLeft: "На ход осталось", "Time left for the turn:";
     Drawing: "Мастер рисует место:", "The game master is drawing:";
     DrawingHint: "Обычно это занимает до пары минут.", "This usually takes up to a couple of minutes.";
     StuckTitle: "Место не нарисовано", "The place was not drawn";

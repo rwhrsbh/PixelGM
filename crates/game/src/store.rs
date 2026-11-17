@@ -36,6 +36,9 @@ pub struct Settings {
     /// Who this player is at any table, whatever the name: a table gives a player who comes
     /// back the seat and the hero they had. Made at the first start.
     pub player_id: u64,
+    /// Seconds a player has for a turn in a fight at a shared table the player hosts; 0 for
+    /// no limit. When they run out the hero dodges and the turn passes.
+    pub turn_timer: u16,
     /// Loudness of the music and of the effects, each from 0 (off) to 4.
     pub music: u8,
     pub sound: u8,
@@ -200,7 +203,7 @@ impl Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Ru, fullscreen: true, fullscreen_set: false, thinking: ThinkingSetting::Medium, first_token: 120, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), player_id: 0, music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 2, zoom: 2, screen: 0, ui_size: 1, online_music: true, providers: Vec::new(), custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new(), gemini: llm::Choice::default() }
+        Self { lang: Lang::Ru, fullscreen: true, fullscreen_set: false, thinking: ThinkingSetting::Medium, first_token: 120, lowest_tier: Tier::Gemma, predraw: true, initiative: Initiative::Rare, memory_budget: 30_000, player_name: String::new(), player_id: 0, turn_timer: 0, music: 2, sound: 3, voice: false, grade: crate::post::Grade::default(), gfx: crate::post::Gfx::default(), window_size: 0, fill: true, narration: 2, zoom: 2, screen: 0, ui_size: 1, online_music: true, providers: Vec::new(), custom_on: false, custom_url: "http://localhost:11434/v1".into(), custom_model: String::new(), custom_key: String::new(), gemini: llm::Choice::default() }
     }
 }
 
@@ -467,7 +470,7 @@ mod tests {
     #[test]
     fn settings_survive_a_restart() {
         let store = temp_store("settings");
-        let settings = Settings { lang: Lang::En, fullscreen: true, fullscreen_set: true, thinking: ThinkingSetting::Off, first_token: 90, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), player_id: 7, music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, narration: 2, zoom: 1, screen: 3, ui_size: 2, online_music: false, providers: Vec::new(), custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new(), gemini: llm::Choice { order: vec!["gemma-9-1b".into()], off: vec!["gemini-9-flash".into()] } };
+        let settings = Settings { lang: Lang::En, fullscreen: true, fullscreen_set: true, thinking: ThinkingSetting::Off, first_token: 90, lowest_tier: Tier::Flash, predraw: false, initiative: Initiative::Often, memory_budget: 9_000, player_name: "Ann".into(), player_id: 7, turn_timer: 60, music: 0, sound: 4, voice: true, grade: crate::post::Grade::Crt, gfx: crate::post::Gfx { glass: true, ..Default::default() }, window_size: 3, fill: false, narration: 2, zoom: 1, screen: 3, ui_size: 2, online_music: false, providers: Vec::new(), custom_on: true, custom_url: "http://localhost:1234/v1".into(), custom_model: "qwen".into(), custom_key: String::new(), gemini: llm::Choice { order: vec!["gemma-9-1b".into()], off: vec!["gemini-9-flash".into()] } };
         store.save_settings(&settings).unwrap();
         // A provider of one's own kept the old way comes back as one of the providers,
         // with its address, its model and its key; the rest is as it was saved.
