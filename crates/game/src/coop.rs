@@ -152,6 +152,8 @@ pub enum Up {
     },
     /// Ready to begin, or no longer.
     Ready(bool),
+    /// The world as this guest has it went wrong: the whole of it again, please.
+    Resync,
     Position {
         x: f32,
         y: f32,
@@ -193,6 +195,9 @@ pub enum Down {
     Feed { seq: u64, message: Box<Down> },
     /// Someone in a place says something aloud: the place, who, the words.
     Bubble { place: String, who: String, text: String },
+    /// The parts of the world that changed since the guest last had them: each by its key
+    /// ("story", "locations/camp", "sprites/cat"), and the keys gone.
+    Patch { id: String, parts: Vec<(String, serde_json::Value)>, removed: Vec<String> },
     /// The whole world, sent on joining and whenever it changes. `id` names its saves.
     World { id: String, world: Box<World> },
     /// Where everybody's token is.
@@ -263,6 +268,63 @@ pub struct Roster {
     pub turn_timer: u16,
 }
 
+/// The keys whose parts are sent one by one: each place, each picture.
+const SPLIT: [&str; 2] = ["locations", "sprites"];
+
+/// A world cut into parts: every field on its own, and each place and picture apart; each
+/// with a hash of what it comes to and the part itself.
+fn parts_of(world: &serde_json::Value) -> std::collections::BTreeMap<String, (u64, serde_json::Value)> {
+    use std::hash::{Hash, Hasher};
+    let hash = |v: &serde_json::Value| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        v.to_string().hash(&mut h);
+        h.finish()
+    };
+    let mut parts = std::collections::BTreeMap::new();
+    let Some(fields) = world.as_object() else { return parts };
+    for (key, value) in fields {
+        match (SPLIT.contains(&key.as_str()), value.as_object()) {
+            (true, Some(entries)) => {
+                for (id, entry) in entries {
+                    parts.insert(format!("{key}/{id}"), (hash(entry), entry.clone()));
+                }
+            }
+            _ => {
+                parts.insert(key.clone(), (hash(value), value.clone()));
+            }
+        }
+    }
+    parts
+}
+
+/// A world with the parts that changed put in and those gone taken out; none when it does
+/// not come out a world.
+fn patch_world(world: &World, parts: &[(String, serde_json::Value)], removed: &[String]) -> Option<World> {
+    let mut value = serde_json::to_value(world).ok()?;
+    let fields = value.as_object_mut()?;
+    for (key, part) in parts {
+        match key.split_once('/') {
+            Some((field, id)) => {
+                fields.entry(field.to_string()).or_insert_with(|| serde_json::json!({})).as_object_mut()?.insert(id.to_string(), part.clone());
+            }
+            None => {
+                fields.insert(key.clone(), part.clone());
+            }
+        }
+    }
+    for key in removed {
+        match key.split_once('/') {
+            Some((field, id)) => {
+                fields.get_mut(field).and_then(|f| f.as_object_mut()).map(|f| f.remove(id));
+            }
+            None => {
+                fields.remove(key);
+            }
+        }
+    }
+    serde_json::from_value(value).ok()
+}
+
 /// What was told to a player after the last thing they read, in order, to send again.
 fn missed_since(hosting: &Hosting, player: u64, last_seq: u64) -> Vec<Down> {
     hosting.feeds.get(&player).map(|(_, kept)| kept.iter().filter(|(seq, _)| *seq > last_seq).filter_map(|(_, json)| serde_json::from_str(json).ok()).collect()).unwrap_or_default()
@@ -316,6 +378,9 @@ pub struct Hosting {
     /// The world as last sent to each guest, to tell when it has changed. Each guest is
     /// sent the world as seen from the place that guest is in.
     sent: HashMap<PeerId, String>,
+    /// The parts of the world each guest has, by the world and place they were sent for,
+    /// with what each part came to.
+    parts: HashMap<PeerId, ((String, String), HashMap<String, u64>)>,
     since_world: f32,
     since_positions: f32,
     /// Requests handed to guests, with the guests already tried; the last one is working on it.
@@ -692,7 +757,7 @@ pub fn invite_friends(link: &SteamLink, session: &Session) {
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 
 fn fresh_hosting(net: Host<Up, Down>, beacon: Option<net::beacon::Beacon>) -> Session {
-    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, feeds: HashMap::new(), host_last: (0.0, 0.0), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
+    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, parts: HashMap::new(), feeds: HashMap::new(), host_last: (0.0, 0.0), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
 }
 
 /// Joins a friend's Steam lobby.
@@ -868,6 +933,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                 hosting.ready.remove(&peer);
                 hosting.tokens.remove(&peer);
                 hosting.sent.remove(&peer);
+                hosting.parts.remove(&peer);
                 // What the guest who left was working on goes to the next one.
                 let orphaned: Vec<u64> = hosting.relayed.iter().filter(|(_, (_, tried))| tried.last() == Some(&peer)).map(|(id, _)| *id).collect();
                 for id in orphaned {
@@ -918,6 +984,10 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
             }
             HostEvent::Message(peer, Up::Ready(ready)) => {
                 hosting.ready.insert(peer, ready);
+            }
+            HostEvent::Message(peer, Up::Resync) => {
+                hosting.parts.remove(&peer);
+                hosting.sent.remove(&peer);
             }
             HostEvent::Message(peer, Up::Position { x, y, facing, vx, vy }) => {
                 hosting.tokens.insert(peer, (x, y, facing, (vx, vy)));
@@ -1059,13 +1129,31 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
             copy.current = game.world.place_of(&name).to_string();
             copy.player = world::Player { x: 0.0, y: 0.0 };
             let encoded = serde_json::to_string(&copy).unwrap_or_default();
-            if hosting.sent.get(&peer) != Some(&encoded) {
-                hosting.sent.insert(peer, encoded);
-                // Where a guest new to its place first stands: by the host, or where the
-                // place lets people in.
-                copy.player = if copy.current == host_place { host_token } else { copy.locations.get(&copy.current).map_or(host_token, |l| world::Player::in_cell(l.spawn.0, l.spawn.1)) };
-                hosting.net.send(peer, &Down::World { id: game.world_id.clone(), world: Box::new(copy.clone()) });
+            if hosting.sent.get(&peer) == Some(&encoded) {
+                continue;
             }
+            hosting.sent.insert(peer, encoded);
+            let Ok(value) = serde_json::to_value(&copy) else { continue };
+            let now = parts_of(&value);
+            let key = (game.world_id.clone(), copy.current.clone());
+            // Within one world and one place only the parts that changed go: a place, a
+            // picture, the story. Anything else, and a guest who asks, gets it whole.
+            match hosting.parts.get(&peer).filter(|(was, _)| *was == key) {
+                Some((_, before)) => {
+                    let changed: Vec<(String, serde_json::Value)> = now.iter().filter(|(k, (hash, _))| before.get(*k) != Some(hash)).map(|(k, (_, v))| (k.clone(), v.clone())).collect();
+                    let removed: Vec<String> = before.keys().filter(|k| !now.contains_key(*k)).cloned().collect();
+                    if !changed.is_empty() || !removed.is_empty() {
+                        hosting.net.send(peer, &Down::Patch { id: game.world_id.clone(), parts: changed, removed });
+                    }
+                }
+                None => {
+                    // Where a guest new to its place first stands: by the host, or where the
+                    // place lets people in.
+                    copy.player = if copy.current == host_place { host_token } else { copy.locations.get(&copy.current).map_or(host_token, |l| world::Player::in_cell(l.spawn.0, l.spawn.1)) };
+                    hosting.net.send(peer, &Down::World { id: game.world_id.clone(), world: Box::new(copy.clone()) });
+                }
+            }
+            hosting.parts.insert(peer, (key, now.into_iter().map(|(k, (hash, _))| (k, hash)).collect()));
         }
     }
 }
@@ -1241,6 +1329,15 @@ fn client_pump(
                 }
             }
             ClientEvent::Message(Down::World { id, world }) => adopt(id, *world, &mut game, &mut commands, &mut next, *screen.get(), &me, &mut redraw, &mut phase, &store),
+            ClientEvent::Message(Down::Patch { id, parts, removed }) => {
+                // Put together onto the world this guest has; if it does not fit, the whole
+                // world is asked for.
+                let patched = game.as_ref().filter(|g| g.world_id == id).and_then(|g| patch_world(&g.world, &parts, &removed));
+                match patched {
+                    Some(world) => adopt(id, world, &mut game, &mut commands, &mut next, *screen.get(), &me, &mut redraw, &mut phase, &store),
+                    None => session.send(Up::Resync),
+                }
+            }
             ClientEvent::Message(Down::Positions(tokens)) => {
                 if let Some(game) = &mut game {
                     game.world.others = tokens.into_iter().filter(|t| t.name != me).collect();
@@ -1551,5 +1648,26 @@ mod tests {
         // What was read already is not read twice.
         let twice: Vec<ClientEvent<Down>> = missed_since(&hosting.lock().unwrap(), 7, 0).into_iter().map(ClientEvent::Message).collect();
         assert_eq!(unwrap_feed(twice, &mut seen).len(), 0);
+    }
+
+    #[test]
+    fn a_world_put_together_from_its_changed_parts_is_the_world_the_host_has() {
+        let before = world_with(&["Ann"]);
+        let mut after = before.clone();
+        // A place changed, a picture came, the story grew; nothing else.
+        after.here_mut().description = "The fire is out.".into();
+        after.sprites.insert("ghost".into(), after.sprites.values().next().unwrap().clone());
+        after.story.facts.push("The fire went out.".into());
+        let (old, new) = (parts_of(&serde_json::to_value(&before).unwrap()), parts_of(&serde_json::to_value(&after).unwrap()));
+        let changed: Vec<(String, serde_json::Value)> = new.iter().filter(|(k, (h, _))| old.get(*k).map(|(o, _)| o) != Some(h)).map(|(k, (_, v))| (k.clone(), v.clone())).collect();
+        let keys: Vec<&str> = changed.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"sprites/ghost") && keys.iter().any(|k| k.starts_with("locations/")) && keys.contains(&"story"), "{keys:?}");
+        // Only the parts that changed travel, not the whole world.
+        assert!(changed.len() <= 4, "{keys:?}");
+        let patched = patch_world(&before, &changed, &[]).unwrap();
+        assert_eq!(serde_json::to_value(&patched).unwrap(), serde_json::to_value(&after).unwrap());
+        // A picture gone is taken out.
+        let gone = patch_world(&after, &[], &["sprites/ghost".to_string()]).unwrap();
+        assert!(!gone.sprites.contains_key("ghost"));
     }
 }
