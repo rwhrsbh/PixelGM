@@ -342,6 +342,12 @@ pub struct Token {
     /// Which way that player's hero looks: a step along x or y.
     #[serde(default)]
     pub facing: (i32, i32),
+    /// How fast it was going, in pixels a second: a figure drawn by others goes on that way
+    /// for a moment when the next word of it is late.
+    #[serde(default)]
+    pub vx: f32,
+    #[serde(default)]
+    pub vy: f32,
 }
 
 pub const SAVE_VERSION: u32 = 1;

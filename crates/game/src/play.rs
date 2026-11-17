@@ -314,7 +314,12 @@ struct Glide {
 
 /// News comes about this often; a walk is never given less than half of it nor more than
 /// a quarter of a second, so that late news is caught up with and a pause is not a crawl.
-const GLIDE_USUAL: f32 = 0.1;
+const GLIDE_USUAL: f32 = 0.05;
+/// The shortest walk between two words of where a figure is: news that comes close upon
+/// news is not run to.
+const GLIDE_SHORTEST: f32 = 0.05;
+/// How long a figure goes on the way it was going when the next word of it is late.
+const GLIDE_ON: f32 = 0.25;
 /// Farther than this in one piece of news is not a walk: the story set the hero down there.
 const GLIDE_JUMP: f32 = 3.0 * TILE as f32;
 
@@ -324,7 +329,14 @@ impl Glide {
     }
 
     /// One frame: `heard` is where the player was last heard to be. Gives where to draw.
+    #[cfg(test)]
     fn step(&mut self, heard: Vec2, dt: f32) -> Vec2 {
+        self.step_going(heard, Vec2::ZERO, dt)
+    }
+
+    /// As `step`, knowing how fast the player was going: when the next word is late, the
+    /// figure goes on that way for a moment, slowing, rather than stopping dead.
+    fn step_going(&mut self, heard: Vec2, going: Vec2, dt: f32) -> Vec2 {
         if !self.started || heard.distance(self.shown) > GLIDE_JUMP {
             *self = Self::at(heard);
             return heard;
@@ -334,13 +346,18 @@ impl Glide {
         if heard != self.to {
             // The walk to the new place takes as long as the news took to come: the figure
             // arrives as the next news is due, and so never stops between two of them.
-            self.span = self.gap.clamp(GLIDE_USUAL * 0.5, 0.25);
+            self.span = self.gap.clamp(GLIDE_SHORTEST, 0.25);
             self.gap = 0.0;
             self.from = self.shown;
             self.to = heard;
             self.since = dt;
         }
         self.shown = self.from.lerp(self.to, (self.since / self.span).min(1.0));
+        let late = (self.since - self.span).clamp(0.0, GLIDE_ON);
+        if late > 0.0 && going != Vec2::ZERO {
+            // Slowing to a stop over the time it may go on.
+            self.shown += going * late * (1.0 - late / (2.0 * GLIDE_ON));
+        }
         self.shown
     }
 }
@@ -1125,7 +1142,7 @@ fn place_fellows(time: Res<Time>, game: Res<Game>, mut redraw: ResMut<Redraw>, m
     for (fellow, frames, mut gait, mut transform, mut sprite) in &mut fellows {
         let Some(token) = others.iter().find(|t| t.name == fellow.0) else { continue };
         // Drawn on the way to where the player was last heard to be, not set down there.
-        let now = gait.glide.step(Vec2::new(token.x, token.y), time.delta_secs());
+        let now = gait.glide.step_going(Vec2::new(token.x, token.y), Vec2::new(token.vx, token.vy), time.delta_secs());
         let moved = now - gait.last;
         if moved.length() > 0.05 {
             if let Some(facing) = crate::doll::Facing::of(moved.x, moved.y) {
@@ -3913,5 +3930,23 @@ mod tests {
         // Without words the place in the list is all there is to go by.
         assert_eq!(take_offer(&mut offered, 0, "").map(|o| o.label), Some("Run".to_string()));
         assert!(take_offer(&mut offered, 5, "").is_none());
+    }
+
+    #[test]
+    fn a_figure_whose_next_word_is_late_goes_on_for_a_moment_and_stops() {
+        let mut glide = Glide::at(Vec2::ZERO);
+        let going = Vec2::new(72.0, 0.0);
+        let dt = 1.0 / 60.0;
+        // Heard once, a step on, walking right; then nothing more.
+        let mut shown = glide.step_going(Vec2::new(4.0, 0.0), going, dt);
+        let mut last = shown;
+        for _ in 0..60 {
+            shown = glide.step_going(Vec2::new(4.0, 0.0), going, dt);
+            assert!(shown.x >= last.x - 1e-3, "it never walks back");
+            last = shown;
+        }
+        // It went on past where it was heard, but not far, and has stopped.
+        assert!(shown.x > 4.0 + 3.0 && shown.x < 4.0 + 72.0 * GLIDE_ON, "{}", shown.x);
+        assert_eq!(glide.step_going(Vec2::new(4.0, 0.0), going, dt), shown);
     }
 }

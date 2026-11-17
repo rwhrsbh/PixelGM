@@ -158,6 +158,11 @@ pub enum Up {
         /// Which way the hero looks, so the master knows what is in front of this player.
         #[serde(default)]
         facing: (i32, i32),
+        /// How fast the hero is going, in pixels a second.
+        #[serde(default)]
+        vx: f32,
+        #[serde(default)]
+        vy: f32,
     },
     Intent(Intent),
     Hero(Box<Character>),
@@ -305,7 +310,9 @@ pub struct Hosting {
     /// latest things told, kept to be sent again after a drop.
     feeds: HashMap<u64, (u64, VecDeque<(u64, String)>)>,
     names: HashMap<PeerId, String>,
-    tokens: HashMap<PeerId, (f32, f32, (i32, i32))>,
+    tokens: HashMap<PeerId, (f32, f32, (i32, i32), (f32, f32))>,
+    /// Where the host's own hero was when last told, to tell how fast it goes.
+    host_last: (f32, f32),
     /// The world as last sent to each guest, to tell when it has changed. Each guest is
     /// sent the world as seen from the place that guest is in.
     sent: HashMap<PeerId, String>,
@@ -384,6 +391,8 @@ pub enum Way {
 pub struct Joined {
     net: Client<Up, Down>,
     way: Way,
+    /// Where the hero was when last told, to tell how fast it goes.
+    last_sent: (f32, f32),
     since_position: f32,
     /// Answers to the host's relayed requests, from the threads that fetched them.
     served: Arc<Mutex<Vec<(u64, Served)>>>,
@@ -683,14 +692,14 @@ pub fn invite_friends(link: &SteamLink, session: &Session) {
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 
 fn fresh_hosting(net: Host<Up, Down>, beacon: Option<net::beacon::Beacon>) -> Session {
-    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, feeds: HashMap::new(), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
+    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, feeds: HashMap::new(), host_last: (0.0, 0.0), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
 }
 
 /// Joins a friend's Steam lobby.
 pub fn join_steam(steam: &net::Steam, lobby: u64, name: &str, player: u64, last_seq: u64) -> Session {
     let net = Client::connect_steam(steam, lobby);
     net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player, last_seq });
-    Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Steam(lobby) }))
+    Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Steam(lobby), last_sent: (0.0, 0.0) }))
 }
 
 /// Joins a table by its code or its address, with or without a port.
@@ -708,7 +717,7 @@ pub fn join(typed: &str, name: &str, player: u64, last_seq: u64) -> std::io::Res
     };
     let net = Client::connect(&address)?;
     net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player, last_seq });
-    Ok(Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Address(address) })))
+    Ok(Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Address(address), last_sent: (0.0, 0.0) })))
 }
 
 /// The world as a guest should receive it: no tokens of other players in it (they travel
@@ -910,8 +919,8 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
             HostEvent::Message(peer, Up::Ready(ready)) => {
                 hosting.ready.insert(peer, ready);
             }
-            HostEvent::Message(peer, Up::Position { x, y, facing }) => {
-                hosting.tokens.insert(peer, (x, y, facing));
+            HostEvent::Message(peer, Up::Position { x, y, facing, vx, vy }) => {
+                hosting.tokens.insert(peer, (x, y, facing, (vx, vy)));
             }
             HostEvent::Message(peer, Up::Hero(hero)) => {
                 let (Some(game), Some(name)) = (&mut game, hosting.names.get(&peer)) else { continue };
@@ -1013,10 +1022,10 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
             game.world.places.insert(name.clone(), here);
         }
     }
-    let mut tokens: Vec<Token> = hosting.tokens.iter().filter_map(|(peer, (x, y, facing))| {
+    let mut tokens: Vec<Token> = hosting.tokens.iter().filter_map(|(peer, (x, y, facing, (vx, vy)))| {
         let name = hosting.names.get(peer)?.clone();
         let place = game.world.place_of(&name).to_string();
-        Some(Token { name, x: *x, y: *y, place, facing: *facing })
+        Some(Token { name, x: *x, y: *y, place, facing: *facing, vx: *vx, vy: *vy })
     }).collect();
     tokens.sort_by(|a, b| a.name.cmp(&b.name));
     if game.world.others != tokens {
@@ -1030,8 +1039,11 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
     }
     hosting.since_positions += time.delta_secs();
     if playing && hosting.since_positions >= POSITIONS_EVERY {
+        let (x, y) = (game.world.player.x, game.world.player.y);
+        let (vx, vy) = ((x - hosting.host_last.0) / hosting.since_positions.max(0.001), (y - hosting.host_last.1) / hosting.since_positions.max(0.001));
+        hosting.host_last = (x, y);
         hosting.since_positions = 0.0;
-        tokens.push(Token { name: player_name(&settings), x: game.world.player.x, y: game.world.player.y, place: game.world.current.clone(), facing: game.world.facing });
+        tokens.push(Token { name: player_name(&settings), x, y, place: game.world.current.clone(), facing: game.world.facing, vx, vy });
         hosting.net.broadcast(&Down::Positions(tokens));
     }
     hosting.since_world += time.delta_secs();
@@ -1201,8 +1213,11 @@ fn client_pump(
             let mut joined = joined.lock().unwrap();
             joined.since_position += time.delta_secs();
             if let (true, Some(game)) = (joined.since_position >= POSITIONS_EVERY && *screen.get() == Screen::Play, &game) {
+                let (x, y) = (game.world.player.x, game.world.player.y);
+                let (vx, vy) = ((x - joined.last_sent.0) / joined.since_position.max(0.001), (y - joined.last_sent.1) / joined.since_position.max(0.001));
+                joined.last_sent = (x, y);
                 joined.since_position = 0.0;
-                joined.net.send(&Up::Position { x: game.world.player.x, y: game.world.player.y, facing: game.world.facing });
+                joined.net.send(&Up::Position { x, y, facing: game.world.facing, vx, vy });
             }
             for (id, result) in std::mem::take(&mut *joined.served.lock().unwrap()) {
                 joined.net.send(&Up::Answer { id, result });
@@ -1457,7 +1472,7 @@ mod tests {
     #[test]
     fn a_snapshot_leaves_out_what_is_only_the_hosts() {
         let mut w = world_with(&[]);
-        w.others.push(Token { name: "Bob".into(), x: 1.0, y: 2.0, place: String::new(), facing: (0, 0) });
+        w.others.push(Token { name: "Bob".into(), x: 1.0, y: 2.0, place: String::new(), facing: (0, 0), vx: 0.0, vy: 0.0 });
         assert!(snapshot(&w).others.is_empty());
     }
 
