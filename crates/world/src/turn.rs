@@ -345,9 +345,14 @@ impl World {
         // A choice that needs the party beside something is also kept on that thing, to be
         // found there when the party walks up; one naming nothing here needs nobody.
         let here = self.current.clone();
+        let heroes: Vec<String> = self.party.iter().map(|h| crate::build::slug(&h.name)).collect();
         if let Some(location) = self.locations.get_mut(&here) {
             for option in &mut options {
                 let Some(id) = option.near.clone() else { continue };
+                // Beside another hero: the one who takes it walks up to that hero.
+                if heroes.contains(&id) {
+                    continue;
+                }
                 let actions = location.props.iter_mut().find(|p| p.id == id).map(|p| &mut p.actions).or_else(|| location.creatures.iter_mut().find(|c| c.id == id).map(|c| &mut c.actions));
                 match actions {
                     Some(actions) => {

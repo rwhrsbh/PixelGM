@@ -1822,7 +1822,8 @@ fn led(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, mut table: ResMut<T
 /// The cells to walk to stand beside a thing here.
 fn way_to(world: &World, id: &str) -> Option<Vec<(usize, usize)>> {
     let here = world.here();
-    let target = here.props.iter().find(|p| p.id == id).map(|p| (p.x, p.y)).or_else(|| here.creatures.iter().find(|c| c.id == id).map(|c| (c.x, c.y)))?;
+    let hero = || world.party.iter().position(|h| world::build::slug(&h.name) == id).map(|h| world.hero_cell(h)).map(|(x, y)| (x.max(0) as usize, y.max(0) as usize));
+    let target = here.props.iter().find(|p| p.id == id).map(|p| (p.x, p.y)).or_else(|| here.creatures.iter().find(|c| c.id == id).map(|c| (c.x, c.y))).or_else(hero)?;
     let (px, py) = world.player.cell();
     let (w, h) = here.size();
     let start = (px.clamp(0, w as i32 - 1) as usize, py.clamp(0, h as i32 - 1) as usize);

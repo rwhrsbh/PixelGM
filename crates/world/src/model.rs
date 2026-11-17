@@ -406,6 +406,9 @@ pub struct World {
     /// While the world is looked at from another place: where the host really is.
     #[serde(skip)]
     pub host_place: Option<String>,
+    /// While the world is looked at through a guest's eyes: where the host's own hero stands.
+    #[serde(skip)]
+    pub host_at: Option<Player>,
     /// The place the fight in progress is in.
     #[serde(default)]
     pub fight_place: String,
@@ -725,6 +728,7 @@ impl World {
         let home = (self.current.clone(), self.player);
         if self.locations.contains_key(place) && self.host_place.is_none() {
             self.host_place = Some(self.current.clone());
+            self.host_at = Some(self.player);
             self.current = place.to_string();
             self.player = at;
             self.focus_fight(place);
@@ -735,6 +739,7 @@ impl World {
     pub fn leave(&mut self, home: (String, Player)) {
         (self.current, self.player) = home;
         self.host_place = None;
+        self.host_at = None;
         let here = self.current.clone();
         self.focus_fight(&here);
     }
@@ -771,6 +776,16 @@ impl World {
     pub fn fight_places(&self) -> Vec<String> {
         let focused = self.fight.as_ref().map(|_| if self.fight_place.is_empty() { self.host_place().to_string() } else { self.fight_place.clone() });
         focused.into_iter().chain(self.fights_elsewhere.keys().cloned()).collect()
+    }
+
+    /// The cell a hero stands in: where its player's figure is, or the host's for the host's
+    /// own hero and one nobody plays.
+    pub fn hero_cell(&self, hero: usize) -> (i32, i32) {
+        let owner = self.owners.get(hero).filter(|o| !o.is_empty());
+        match owner.and_then(|o| self.others.iter().find(|t| t.name == *o)) {
+            Some(token) => Player { x: token.x, y: token.y }.cell(),
+            None => self.host_at.unwrap_or(self.player).cell(),
+        }
     }
 
     /// One who fights, in whichever of the fights going on it is in.

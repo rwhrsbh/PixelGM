@@ -59,6 +59,9 @@ pub enum Effect {
         #[serde(default)]
         from: String,
     },
+    /// A thing passes from the hand of the hero whose deed this is into the bag of the hero
+    /// named, standing beside them: nothing else comes of it.
+    Hand { name: String, to: String },
     /// A thing looks different from now on.
     Describe { id: String, description: String },
     Attitude { id: String, attitude: Attitude },
@@ -787,6 +790,8 @@ impl World {
         let mut moved: Vec<(usize, (usize, usize))> = Vec::new();
         // The heroes here: what is used up is taken from their bags, never from one far off.
         let with_us: Vec<bool> = (0..self.party.len()).map(|h| self.takes_part(h)).collect();
+        // Where each hero stands now, for what is handed from one to another.
+        let hero_cells: Vec<(i32, i32)> = (0..self.party.len()).map(|h| self.hero_cell(h)).collect();
         // Where the story puts heroes, settled once all the ground of the answer is laid:
         // a bridge laid after the step onto it in the list is still stepped onto.
         let mut hero_moves: Vec<(Vec<usize>, (usize, usize))> = Vec::new();
@@ -951,6 +956,28 @@ impl World {
                             Some(hero) => notes.push(format!("take: '{name}' is carried by {}, whose player did not give it up", hero.name)),
                             None => notes.push(format!("take: the party has no '{name}'")),
                         }
+                    }
+                }
+                Effect::Hand { name, to } => {
+                    let giver = doers.iter().copied().find(|h| *h == acting).or_else(|| doers.first().copied());
+                    let taker = heroes_named(&slug(to)).first().copied();
+                    let wanted = name.trim().to_lowercase();
+                    match (giver, taker) {
+                        (Some(g), Some(t)) if g != t && present.contains(&t) => {
+                            let (a, b) = (hero_cells[g], hero_cells[t]);
+                            if (a.0 - b.0).abs() > 1 || (a.1 - b.1).abs() > 1 {
+                                notes.push(format!("hand: {} is not beside {}: they walk up first", self.party[g].name, self.party[t].name));
+                            } else if let Some(at) = self.story.bags.get(g).and_then(|bag| bag.inventory.iter().position(|i| i.name.to_lowercase() == wanted).or_else(|| bag.inventory.iter().position(|i| i.name.to_lowercase().contains(&wanted)))) {
+                                let mut item = self.story.bags[g].inventory.remove(at);
+                                item.at = None;
+                                if let Some(bag) = self.story.bags.get_mut(t) {
+                                    bag.receive(item);
+                                }
+                            } else {
+                                notes.push(format!("hand: {} carries no '{name}'", self.party[g].name));
+                            }
+                        }
+                        _ => notes.push(format!("hand: nobody here called '{to}' to hand '{name}' to")),
                     }
                 }
                 Effect::Describe { id, description } => {
