@@ -6,7 +6,6 @@
 use crate::menu::Screen;
 use crate::play::{HeroPose, Phase};
 use crate::store::Settings;
-use crate::widgets::Activate;
 use bevy::audio::Volume;
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -143,9 +142,13 @@ fn cues(mut fx: ResMut<crate::fx::Fx>, mut sounds: MessageWriter<Play>) {
     }
 }
 
-/// Every button makes the same small click.
-fn click(_used: On<Activate>, mut sounds: MessageWriter<Play>) {
-    sounds.write(Play(Sfx::Click));
+/// Every control makes the same small click when pressed.
+fn click(mut egui: bevy_egui::EguiContexts, mut sounds: MessageWriter<Play>) {
+    if let Ok(ctx) = egui.ctx_mut()
+        && crate::ui::kit::take_pressed(ctx)
+    {
+        sounds.write(Play(Sfx::Click));
+    }
 }
 
 /// What the play screen is doing has a sound when it changes.
@@ -185,7 +188,7 @@ pub struct AudioPlugin;
 
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Bank>().init_resource::<Muted>().add_message::<Play>().add_systems(Update, (cues, phase_sounds, footsteps, play_sounds).chain()).add_observer(click);
+        app.init_resource::<Bank>().init_resource::<Muted>().add_message::<Play>().add_systems(Update, (cues, phase_sounds, footsteps, play_sounds).chain()).add_systems(bevy_egui::EguiPrimaryContextPass, click.after(crate::ui::UiSet::Screens));
     }
 }
 

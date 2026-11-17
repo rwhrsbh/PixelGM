@@ -83,6 +83,19 @@ pub enum Kind {
     Primary,
 }
 
+/// The mark a pressed control leaves for the click to be heard.
+const PRESSED: &str = "a control was pressed";
+
+/// Says that a control was pressed this frame: the game plays its click.
+pub fn pressed(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(PRESSED), true));
+}
+
+/// Whether a control was pressed since the last asking.
+pub fn take_pressed(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::new(PRESSED))).unwrap_or(false)
+}
+
 /// A button. It acts when pressed with the mouse, or with Enter or Space while it has the
 /// keyboard's focus. One that cannot be pressed says why under the cursor.
 #[must_use = "add it with ui.add(…)"]
@@ -194,6 +207,9 @@ impl egui::Widget for Button<'_> {
         if enabled {
             response = response.on_hover_cursor(CursorIcon::PointingHand);
         }
+        if response.clicked() {
+            pressed(ui.ctx());
+        }
         if let Some(why) = why_not {
             response = response.on_hover_text(why);
         } else if cut {
@@ -245,6 +261,7 @@ pub fn choice(ui: &mut Ui, name: &str, values: &[&str], index: &mut usize) -> Re
     if step != 0 {
         *index = ((*index as i32 + step).rem_euclid(count as i32)) as usize;
         response.mark_changed();
+        pressed(ui.ctx());
     }
     let shown = values.get(*index).copied().unwrap_or("");
     let focused = response.has_focus();
@@ -279,6 +296,7 @@ pub fn toggle(ui: &mut Ui, name: &str, on: &mut bool) -> Response {
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
+        pressed(ui.ctx());
     }
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, *on, name));
     if ui.is_rect_visible(rect) {

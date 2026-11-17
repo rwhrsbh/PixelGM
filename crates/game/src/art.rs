@@ -5,7 +5,6 @@ use crate::theme::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::ui::widget::NodeImageMode;
 
 #[derive(Clone)]
 pub struct Pixels {
@@ -68,6 +67,7 @@ impl Pixels {
         }
     }
 
+    #[cfg(test)]
     pub fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
         for yy in y..y + h {
             for xx in x..x + w {
@@ -143,32 +143,6 @@ pub fn table(w: u32, h: u32) -> Pixels {
     p
 }
 
-/// A bevelled plate with clipped corners, drawn small so it can be stretched as a nine-slice.
-/// `shadow` adds a dark row underneath, inside the image bounds.
-fn plate(size: i32, outline: Rgba, light: Rgba, fill: Rgba, shade: Rgba, shadow: bool) -> Pixels {
-    let mut p = Pixels::new(size as u32, size as u32, CLEAR);
-    let bottom = if shadow { size - 2 } else { size - 1 };
-    if shadow {
-        p.rect(2, bottom, size - 3, 1, [0, 0, 0, 0x70]);
-        p.rect(3, bottom + 1, size - 4, 1, [0, 0, 0, 0x70]);
-        p.rect(size - 1, 3, 1, bottom - 3, [0, 0, 0, 0x70]);
-    }
-    let right = if shadow { size - 2 } else { size - 1 };
-    p.rect(0, 0, right + 1, bottom + 1, outline);
-    p.rect(1, 1, right - 1, bottom - 1, fill);
-    p.rect(1, 1, right - 1, 1, light);
-    p.rect(1, 1, 1, bottom - 1, light);
-    p.rect(1, bottom - 1, right - 1, 1, shade);
-    p.rect(right - 1, 1, 1, bottom - 1, shade);
-    for (x, y) in [(0, 0), (right, 0), (0, bottom), (right, bottom)] {
-        p.set(x, y, CLEAR);
-    }
-    for (x, y) in [(1, 1), (right - 1, 1), (1, bottom - 1), (right - 1, bottom - 1)] {
-        p.set(x, y, outline);
-    }
-    p
-}
-
 const CANDLE_LEGEND: &[(char, Rgba)] = &[
     ('k', INK),
     ('t', TALLOW),
@@ -229,45 +203,11 @@ fn glow(size: i32) -> Pixels {
     p
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ButtonLook {
-    Idle,
-    Hot,
-    Down,
-    Disabled,
-}
-
 #[derive(Resource)]
 pub struct Art {
     pub table: Handle<Image>,
-    pub panel: Handle<Image>,
-    pub field: Handle<Image>,
-    buttons: [Handle<Image>; 4],
     pub candle: [Handle<Image>; 4],
     pub glow: Handle<Image>,
-}
-
-pub const PANEL_BORDER: f32 = 6.0;
-pub const BUTTON_BORDER: f32 = 4.0;
-
-impl Art {
-    pub fn button(&self, look: ButtonLook) -> Handle<Image> {
-        self.buttons[look as usize].clone()
-    }
-}
-
-/// An image stretched as a nine-slice: corners keep their size, the middle fills the node.
-pub fn sliced(image: Handle<Image>, border: f32) -> ImageNode {
-    ImageNode {
-        image,
-        image_mode: NodeImageMode::Sliced(TextureSlicer {
-            border: BorderRect::all(border),
-            center_scale_mode: SliceScaleMode::Stretch,
-            sides_scale_mode: SliceScaleMode::Stretch,
-            max_corner_scale: 1.0,
-        }),
-        ..default()
-    }
 }
 
 impl FromWorld for Art {
@@ -277,14 +217,6 @@ impl FromWorld for Art {
         let mut add = |p: Pixels| images.add(p.into_image());
         Art {
         table: add(table(canvas.x, canvas.y)),
-        panel: add(plate(16, INK, PARCHMENT_LIGHT, PARCHMENT, PARCHMENT_SHADE, true)),
-        field: add(plate(12, INK, PARCHMENT_SHADE, PARCHMENT_LIGHT, PARCHMENT_LIGHT, false)),
-        buttons: [
-            add(plate(12, INK, WOOD_LIGHT, WOOD, WOOD_DARK, true)),
-            add(plate(12, INK, BRASS_LIGHT, BRASS, BRASS_DARK, true)),
-            add(plate(12, INK, WOOD_DEEP, WOOD_DARK, WOOD, false)),
-            add(plate(12, WOOD_DEEP, WOOD_DARK, WOOD_DARK, WOOD_DARK, false)),
-        ],
         candle: [add(candle(0)), add(candle(1)), add(candle(2)), add(candle(3))],
         glow: add(glow(96)),
         }
