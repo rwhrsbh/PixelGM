@@ -1,17 +1,15 @@
 //! Making a character for a world that has none yet, and showing the sheet of one that exists.
 
-use crate::art::Art;
 use crate::coop::{GmAct, Intent, Session, Up, owner_name};
 use crate::i18n::{Lang, T};
-use crate::menu::{Nav, Screen, screen_root, spawn_panel};
+use crate::menu::Screen;
 use crate::play::Game;
 use crate::store::{Settings, Store};
 use crate::theme::*;
-use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, scroll_list, text_button};
-use bevy::input_focus::AutoFocus;
+use crate::ui::egui::{self, Sense, vec2};
+use crate::ui::kit::{self, Sheet, button, hint};
+use crate::ui::theme::c;
 use bevy::prelude::*;
-use bevy::text::{EditableText, TextCursorStyle};
-use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use rules::character::{AbilityMethod, POINT_BUDGET, STANDARD_ARRAY, modifier, point_cost, points_spent, roll_scores, suggested_scores, suggested_spells};
 use rules::{Ability, Character, Rng, srd, tr};
 
@@ -268,10 +266,10 @@ impl Draft {
     }
 }
 
-#[derive(Component, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Action {
-    Race,
-    Class,
+    Race(usize),
+    Class(usize),
     Minus(usize),
     Plus(usize),
     Pick(usize),
@@ -290,20 +288,6 @@ enum Action {
     Rotate,
 }
 
-/// The hero in the preview, walking on the spot.
-#[derive(Component)]
-struct Preview(Vec<Handle<Image>>, crate::doll::Facing);
-
-#[derive(Component)]
-struct NameInput;
-
-#[derive(Component)]
-struct StoryInput;
-
-/// The part of the screen that is rebuilt whenever the draft changes.
-#[derive(Component)]
-struct Choices;
-
 fn method_label(method: AbilityMethod) -> T {
     match method {
         AbilityMethod::PointBuy => T::MethodPointBuy,
@@ -314,256 +298,6 @@ fn method_label(method: AbilityMethod) -> T {
 
 fn signed(n: i32) -> String {
     if n >= 0 { format!("+{n}") } else { n.to_string() }
-}
-
-fn field(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, width: Val, marker: impl Bundle, limit: usize) {
-    parent.spawn(Node { width, height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }).with_children(|slot| {
-        slot.spawn(backing(art.field.clone(), 4.0));
-        slot.spawn((
-            marker,
-            AutoDirectionalNavigation::default(),
-            Node { width: percent(100), ..default() },
-            EditableText { allow_newlines: false, max_characters: Some(limit), ..default() },
-            TextLayout::no_wrap(),
-            fonts.body(),
-            TextColor(color(INK)),
-            TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
-        ));
-    });
-}
-
-fn spawn_screen(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<Res<Game>>, store: Res<Store>, mut next: ResMut<NextState<Screen>>, session: Res<Session>, lang: Res<Lang>) {
-    let Some(game) = game else {
-        next.set(Screen::Main);
-        return;
-    };
-    // Saved at once, so leaving now and choosing Continue comes back to this screen.
-    if let Err(e) = store.save_game(&game.world_id, &game.world, false) {
-        error!("could not save the game: {e}");
-    }
-    commands.insert_resource(Draft::with_method(game.world.table.method));
-    let ink = TextColor(color(INK));
-    commands.spawn(screen_root(Screen::Hero)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(6)), width: px(464), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() };
-        spawn_panel(root, &art, sheet, |sheet| {
-            sheet.spawn(Node { align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                line.spawn((Text::default(), T::HeroTitle, fonts.title(1), ink));
-                line.spawn(Node { flex_grow: 1.0, ..default() });
-                // At a shared table somebody may run the game instead of playing in it.
-                let seat_free = game.world.gm.as_deref().is_none_or(|gm| !game.world.present.iter().any(|p| p == gm));
-                if !matches!(*session, Session::Solo) && seat_free {
-                    button(line, &art, &fonts, T::SeatNoHero, true, Action::Lead);
-                }
-            });
-            // At a shared table the heroes of players who are away can be taken over.
-            let free: Vec<usize> = if matches!(*session, Session::Solo) { Vec::new() } else { (0..game.world.party.len()).filter(|i| game.world.is_away(*i) && !game.world.party[*i].dead).collect() };
-            if !free.is_empty() {
-                let ru = *lang == Lang::Ru;
-                sheet.spawn(Node { column_gap: px(4), row_gap: px(2), flex_wrap: FlexWrap::Wrap, align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                    line.spawn((Text::default(), T::FreeHeroes, fonts.body(), TextColor(color(FADED))));
-                    for i in free {
-                        let hero = &game.world.party[i];
-                        let class = srd().class(&hero.class).map_or(hero.class.as_str(), |c| tr(ru, &c.name));
-                        text_button(line, &art, &fonts, format!("{} ({class} {})", hero.name, hero.level), Action::Take(i));
-                    }
-                });
-            }
-            sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                line.spawn((Node { width: px(60), flex_shrink: 0.0, ..default() }, Text::default(), T::HeroName, fonts.body(), ink));
-                field(line, &art, &fonts, px(150), (NameInput, AutoFocus), 30);
-            });
-            sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                line.spawn((Node { width: px(60), flex_shrink: 0.0, ..default() }, Text::default(), T::HeroStory, fonts.body(), ink));
-                field(line, &art, &fonts, px(372), StoryInput, 300);
-            });
-            sheet.spawn((Choices, Node { flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }));
-        });
-    });
-}
-
-/// Rebuilds everything that depends on the draft. The two text fields are left alone, so
-/// what was typed in them survives.
-#[allow(clippy::too_many_arguments)]
-fn redraw(
-    mut commands: Commands,
-    draft: Res<Draft>,
-    lang: Res<Lang>,
-    art: Res<Art>,
-    fonts: Res<Fonts>,
-    choices: Query<Entity, With<Choices>>,
-    fresh: Query<(), Added<Choices>>,
-    session: Res<Session>,
-    game: Option<Res<Game>>,
-    mut images: ResMut<Assets<Image>>,
-) {
-    let Ok(choices) = choices.single() else { return };
-    if !draft.is_changed() && !lang.is_changed() && fresh.is_empty() {
-        return;
-    }
-    let data = srd();
-    let ru = *lang == Lang::Ru;
-    let (race, class) = (&data.races[draft.race], &data.classes[draft.class]);
-    let ink = TextColor(color(INK));
-    let faded = TextColor(color(FADED));
-    commands.entity(choices).despawn_children().with_children(|area| {
-        area.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-            text_button(line, &art, &fonts, format!("{}: {}", T::HeroRace.text(*lang), tr(ru, &race.name)), Action::Race);
-            text_button(line, &art, &fonts, format!("{}: {}", T::HeroClass.text(*lang), tr(ru, &class.name)), Action::Class);
-            // The host chose the method for the whole world.
-            line.spawn((Text::new(method_label(draft.method).text(*lang).to_string()), fonts.body(), faded));
-            if draft.method == AbilityMethod::Roll && draft.tab == Tab::Stats {
-                button(line, &art, &fonts, T::Reroll, true, Action::Reroll);
-            }
-            line.spawn(Node { flex_grow: 1.0, ..default() });
-            for (tab, label) in [(Tab::Look, T::TabLook), (Tab::Stats, T::TabStats)] {
-                let mark = if draft.tab == tab { "> " } else { "" };
-                text_button(line, &art, &fonts, format!("{mark}{}", label.text(*lang)), Action::Show(tab));
-            }
-        });
-        if draft.tab == Tab::Look {
-            look_tab(area, &draft, *lang, &art, &fonts, &mut images, &session, game.as_deref());
-            return;
-        }
-        area.spawn(Node { column_gap: px(10), align_items: AlignItems::FlexStart, ..default() }).with_children(|columns| {
-            columns.spawn(Node { width: px(214), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }).with_children(|left| {
-                let hint = match draft.method {
-                    AbilityMethod::PointBuy => format!("{} {}", T::PointsLeft.text(*lang), draft.points_left()),
-                    _ => T::SwapHint.text(*lang).to_string(),
-                };
-                left.spawn((Text::new(hint), fonts.body(), faded));
-                for ability in Ability::ALL {
-                    let i = ability as usize;
-                    let total = draft.base[i] + race.bonuses[i] + class.background[i];
-                    left.spawn(Node { column_gap: px(3), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                        let picked = draft.picked == Some(i);
-                        let name = TextColor(color(if picked { WAX } else { INK }));
-                        line.spawn((Node { width: px(92), flex_shrink: 0.0, ..default() }, Text::new(tr(ru, ability.name()).to_string()), TextLayout::no_wrap(), fonts.body(), name));
-                        line.spawn((Node { width: px(54), flex_shrink: 0.0, ..default() }, Text::new(format!("{total} ({})", signed(modifier(total)))), TextLayout::no_wrap(), fonts.body(), ink));
-                        if draft.method == AbilityMethod::PointBuy {
-                            text_button(line, &art, &fonts, "-".to_string(), Action::Minus(i));
-                            text_button(line, &art, &fonts, "+".to_string(), Action::Plus(i));
-                        } else {
-                            button(line, &art, &fonts, T::Swap, true, Action::Pick(i));
-                        }
-                    });
-                }
-            });
-            columns.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|right| {
-                right.spawn((Text::new(format!("{} {}/{}", T::HeroSkills.text(*lang), draft.skills.len(), class.skill_picks)), fonts.body(), faded));
-                let caster = draft.caster().filter(|hero| hero.cantrips_allowed() + hero.spells_allowed() > 0);
-                let skill_rows = if caster.is_some() { 2.5 } else { 4.0 };
-                right.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, skill_rows * (BUTTON_HEIGHT + 1.0))).with_children(|rows| {
-                    for skill in &class.skill_options {
-                        let name = data.skill(skill).map_or(skill.as_str(), |s| tr(ru, &s.name));
-                        let mark = if draft.skills.contains(skill) { "[x]" } else { "[ ]" };
-                        text_button(rows, &art, &fonts, format!("{mark} {name}"), Action::Skill(skill.clone()));
-                    }
-                });
-                if let Some(hero) = &caster {
-                    let chosen = |cantrips: bool| draft.spells.iter().filter_map(|s| data.spells.get(s)).filter(|s| (s.level == 0) == cantrips).count();
-                    right.spawn((
-                        Text::new(format!("{} {}/{} · {} {}/{}", T::Cantrips.text(*lang), chosen(true), hero.cantrips_allowed(), T::Spells.text(*lang), chosen(false), hero.spells_allowed())),
-                        fonts.body(),
-                        faded,
-                    ));
-                    right.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, 2.5 * (BUTTON_HEIGHT + 1.0))).with_children(|rows| {
-                        let mut pool = data.class_spells(&hero.class, hero.highest_slot());
-                        pool.sort_by_key(|s| (s.level, tr(ru, &s.name).to_string()));
-                        for spell in pool {
-                            let mark = if draft.spells.contains(&spell.index) { "[x]" } else { "[ ]" };
-                            // Spells the rules cannot carry out by themselves go through the master.
-                            let kind = if spell.mechanised() { "" } else { " *" };
-                            text_button(rows, &art, &fonts, format!("{mark} {} {}{kind}", spell.level, tr(ru, &spell.name)), Action::Spell(spell.index.clone()));
-                        }
-                    });
-                }
-                // What the choices come to, so the player sees the character before making it.
-                if let Some(hero) = draft.preview() {
-                    right.spawn((Text::new(format!("{} {} · {} {}", T::HitPoints.text(*lang), hero.max_hp, T::ArmorClass.text(*lang), hero.ac())), fonts.body(), ink));
-                }
-                finish(right, &draft, &art, &fonts, &session, game.as_deref());
-            });
-        });
-    });
-}
-
-/// Room for one line of body text.
-const PROBLEM_LINE: f32 = 10.0;
-
-/// What ends either tab: a problem with the hero, if any, and the ways out of the screen.
-fn finish(parent: &mut ChildSpawnerCommands, draft: &Draft, art: &Art, fonts: &Fonts, session: &Session, game: Option<&Game>) {
-    // The line for what is wrong with the hero is always there, empty when nothing is: the
-    // buttons under it must not move when it comes or goes, or a press meant for one of them
-    // falls beside it.
-    parent.spawn((Node { min_height: px(PROBLEM_LINE), flex_shrink: 0.0, ..default() }, Text::new(draft.problem.clone().unwrap_or_default()), fonts.body(), TextColor(color(WAX))));
-    parent.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-        button(line, art, fonts, T::Back, true, Nav::Go(Screen::Main));
-        button(line, art, fonts, T::CreateHero, true, Action::Create);
-    });
-    let _ = (session, game);
-}
-
-/// The looks of the hero: a large figure that walks on the spot, and a row for each feature.
-#[allow(clippy::too_many_arguments)]
-fn look_tab(area: &mut ChildSpawnerCommands, draft: &Draft, lang: Lang, art: &Art, fonts: &Fonts, images: &mut Assets<Image>, session: &Session, game: Option<&Game>) {
-    let ru = lang == Lang::Ru;
-    let ink = TextColor(color(INK));
-    area.spawn(Node { column_gap: px(10), align_items: AlignItems::FlexStart, ..default() }).with_children(|columns| {
-        columns.spawn(Node { width: px(150), flex_shrink: 0.0, flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: px(3), ..default() }).with_children(|left| {
-            // The figure at four times its size in the world, on a patch of ground.
-            left.spawn((Node { width: px(120), height: px(118), justify_content: JustifyContent::Center, align_items: AlignItems::FlexEnd, padding: UiRect::bottom(px(6)), ..default() }, BackgroundColor(Color::srgb(0.3, 0.36, 0.24))))
-                .with_children(|stage| {
-                    if let Some(hero) = draft.preview() {
-                        let frames: Vec<Handle<Image>> = crate::doll::frames(&hero).into_iter().map(|frame| images.add(frame.into_image())).collect();
-                        let first = frames[crate::doll::frame_index(draft.facing, 0)].clone();
-                        stage.spawn((Preview(frames, draft.facing), Node { width: px(64), height: px(96), ..default() }, ImageNode::new(first)));
-                    }
-                });
-            left.spawn(Node { column_gap: px(3), ..default() }).with_children(|line| {
-                button(line, art, fonts, T::LookTurn, true, Action::Rotate);
-                button(line, art, fonts, T::LookRandom, true, Action::Random);
-            });
-            finish(left, draft, art, fonts, session, game);
-        });
-        columns.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }).with_children(|right| {
-            for feature in Feature::ALL {
-                let value = feature.slot(&mut draft.look.clone()).to_owned();
-                right.spawn(Node { column_gap: px(3), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                    line.spawn((Node { width: px(78), flex_shrink: 0.0, ..default() }, Text::new(feature.label().text(lang).to_string()), TextLayout::no_wrap(), fonts.body(), ink));
-                    text_button(line, art, fonts, "<".to_string(), Action::Turn(feature, -1));
-                    line.spawn(Node { width: px(78), flex_shrink: 0.0, column_gap: px(3), align_items: AlignItems::Center, ..default() }).with_children(|cell| {
-                        if let Some((r, g, b)) = feature.swatch(value) {
-                            cell.spawn((Node { width: px(10), height: px(10), flex_shrink: 0.0, border: UiRect::all(px(1)), ..default() }, BackgroundColor(Color::srgb_u8(r, g, b)), BorderColor::all(color(INK))));
-                        }
-                        cell.spawn((Text::new(feature.name(value, ru)), TextLayout::no_wrap(), fonts.body(), ink));
-                    });
-                    text_button(line, art, fonts, ">".to_string(), Action::Turn(feature, 1));
-                });
-            }
-            right.spawn(Node { column_gap: px(3), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                line.spawn((Node { width: px(78), flex_shrink: 0.0, ..default() }, Text::new(T::LookHelmet.text(lang).to_string()), TextLayout::no_wrap(), fonts.body(), ink));
-                let mark = if draft.look.helmet { "[x]" } else { "[ ]" };
-                text_button(line, art, fonts, mark.to_string(), Action::Helmet);
-            });
-        });
-    });
-}
-
-/// The figure in the preview walks on the spot.
-fn walk_preview(time: Res<Time>, mut figures: Query<(&Preview, &mut ImageNode)>, mut since: Local<f32>, mut step: Local<usize>) {
-    *since += time.delta_secs();
-    if *since < 0.14 {
-        return;
-    }
-    *since = 0.0;
-    *step = (*step + 1) % crate::doll::STEPS;
-    for (preview, mut image) in &mut figures {
-        if let Some(frame) = preview.0.get(crate::doll::frame_index(preview.1, *step))
-            && image.image != *frame
-        {
-            image.image = frame.clone();
-        }
-    }
 }
 
 fn clone_of(draft: &Draft) -> Draft {
@@ -583,31 +317,301 @@ fn clone_of(draft: &Draft) -> Draft {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn on_activate(
-    used: On<Activate>,
-    buttons: Query<&Action>,
-    draft: Option<ResMut<Draft>>,
-    game: Option<ResMut<Game>>,
-    lang: Res<Lang>,
-    name: Query<&EditableText, (With<NameInput>, Without<StoryInput>)>,
-    story: Query<&EditableText, (With<StoryInput>, Without<NameInput>)>,
+/// What is typed in the two fields of the screen.
+#[derive(Resource, Default)]
+struct Typed {
+    name: String,
+    story: String,
+}
+
+fn enter(mut commands: Commands, game: Option<Res<Game>>, store: Res<Store>, mut next: ResMut<NextState<Screen>>) {
+    let Some(game) = game else {
+        next.set(Screen::Main);
+        return;
+    };
+    // Saved at once, so leaving now and choosing Continue comes back to this screen.
+    if let Err(e) = store.save_game(&game.world_id, &game.world, false) {
+        error!("could not save the game: {e}");
+    }
+    commands.insert_resource(Draft::with_method(game.world.table.method));
+    commands.insert_resource(Typed::default());
+}
+
+/// The figure in the preview as egui knows it: the frames of the look shown, made once.
+#[derive(Default)]
+struct Figure {
+    key: String,
+    frames: Vec<(egui::TextureId, Vec2)>,
+}
+
+/// The hero screen, drawn with egui: the name and the story, people and class, and two
+/// tabs, the looks with a figure that walks on the spot and the numbers with the skills.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn hero_screen(
+    mut egui: bevy_egui::EguiContexts,
+    (mut draft, mut typed, game, session, settings, lang, time): (ResMut<Draft>, ResMut<Typed>, Option<ResMut<Game>>, Res<Session>, Res<Settings>, Res<Lang>, Res<Time>),
     mut next: ResMut<NextState<Screen>>,
-    session: Res<Session>,
-    settings: Res<Settings>,
+    mut images: ResMut<Assets<Image>>,
+    mut figure: Local<Figure>,
+    mut clock: Local<f32>,
 ) {
-    let (Ok(action), Some(mut draft)) = (buttons.get(used.entity), draft) else { return };
+    let lang = *lang;
+    let ru = lang == Lang::Ru;
+    let t = |text: T| text.text(lang);
+    let data = srd();
+    // The figure's frames, made again only when the looks change.
+    let shown = draft.preview();
+    let key = shown.as_ref().map(crate::doll::key).unwrap_or_default();
+    if figure.key != key {
+        figure.key = key;
+        figure.frames = shown
+            .as_ref()
+            .map(|hero| {
+                crate::doll::frames(hero)
+                    .into_iter()
+                    .map(|frame| {
+                        let size = Vec2::new(frame.w as f32, frame.h as f32);
+                        (egui.add_image(bevy_egui::EguiTextureHandle::Strong(images.add(frame.into_image()))), size)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    *clock += time.delta_secs();
+    let step = (*clock / 0.14) as usize % crate::doll::STEPS;
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let Some(mut ui) = kit::screen_ui(ctx, "hero") else { return };
+    let mut acts: Vec<Action> = Vec::new();
+    let mut leave = false;
+    let mut create = false;
+    let (race, class) = (&data.races[draft.race], &data.classes[draft.class]);
+    let world = game.as_deref().map(|g| &g.world);
+    let shared = !matches!(*session, Session::Solo);
+    let seat_free = world.is_some_and(|w| w.gm.as_deref().is_none_or(|gm| !w.present.iter().any(|p| p == gm)));
+    let free: Vec<(usize, String)> = match world {
+        Some(w) if shared => (0..w.party.len())
+            .filter(|i| w.is_away(*i) && !w.party[*i].dead)
+            .map(|i| {
+                let hero = &w.party[i];
+                let class = srd().class(&hero.class).map_or(hero.class.as_str(), |c| tr(ru, &c.name));
+                (i, format!("{} ({class} {})", hero.name, hero.level))
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let problem = draft.problem.clone().unwrap_or_default();
+    let sheet = Sheet { id: "hero", title: t(T::HeroTitle), about: t(T::HeroAbout), max: vec2(480.0, 470.0), top: 0.0, fixed: true };
+    kit::sheet(
+        &mut ui,
+        sheet,
+        |ui| {
+            // At a shared table somebody may run the game instead of playing in it, and the
+            // heroes of players who are away can be taken over.
+            if shared && seat_free && ui.add(button(t(T::SeatNoHero))).clicked() {
+                acts.push(Action::Lead);
+            }
+            if !free.is_empty() {
+                ui.horizontal_wrapped(|row| {
+                    hint(row, t(T::FreeHeroes));
+                    for (i, label) in &free {
+                        if row.add(button(label.as_str())).clicked() {
+                            acts.push(Action::Take(*i));
+                        }
+                    }
+                });
+            }
+            ui.horizontal(|row| {
+                row.label(t(T::HeroName));
+                let field = row.add(egui::TextEdit::singleline(&mut typed.name).desired_width(150.0).char_limit(30));
+                if row.memory(|m| m.focused().is_none()) {
+                    field.request_focus();
+                }
+                row.label(t(T::HeroStory));
+                row.add(egui::TextEdit::singleline(&mut typed.story).desired_width(f32::INFINITY).char_limit(300));
+            });
+            let races: Vec<&str> = data.races.iter().map(|r| tr(ru, &r.name)).collect();
+            let mut at = draft.race;
+            if kit::choice(ui, t(T::HeroRace).trim_end_matches(':'), &races, &mut at).changed() {
+                acts.push(Action::Race(at));
+            }
+            let classes: Vec<&str> = data.classes.iter().map(|c| tr(ru, &c.name)).collect();
+            let mut at = draft.class;
+            if kit::choice(ui, t(T::HeroClass).trim_end_matches(':'), &classes, &mut at).changed() {
+                acts.push(Action::Class(at));
+            }
+            ui.horizontal(|row| {
+                for (tab, label) in [(Tab::Look, T::TabLook), (Tab::Stats, T::TabStats)] {
+                    let mut b = button(t(label));
+                    if draft.tab == tab {
+                        b = b.primary();
+                    }
+                    if row.add(b).clicked() {
+                        acts.push(Action::Show(tab));
+                    }
+                }
+                // The host chose the method for the whole world.
+                hint(row, method_label(draft.method).text(lang));
+                if draft.method == AbilityMethod::Roll && draft.tab == Tab::Stats && row.add(button(t(T::Reroll))).clicked() {
+                    acts.push(Action::Reroll);
+                }
+            });
+            ui.add_space(2.0);
+            if draft.tab == Tab::Look {
+                {
+                    // The figure at the left in a narrow column, the looks at the right in
+                    // the rest: their names are long.
+                    let area = ui.available_rect_before_wrap();
+                    let column = |rect: egui::Rect| egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min));
+                    let mut left = ui.new_child(column(egui::Rect::from_min_size(area.min, vec2(150.0, area.height()))));
+                    let mut right = ui.new_child(column(egui::Rect::from_min_max(egui::pos2(area.left() + 160.0, area.top()), area.max)));
+                    let (left, right) = (&mut left, &mut right);
+                    // The figure at four times its size in the world, on a patch of ground.
+                    let (stage, _) = left.allocate_exact_size(vec2(140.0, 120.0), Sense::hover());
+                    left.painter().rect_filled(stage, 0.0, egui::Color32::from_rgb(0x4c, 0x5c, 0x3d));
+                    if let Some((texture, size)) = figure.frames.get(crate::doll::frame_index(draft.facing, step)) {
+                        let scale = ((stage.height() - 8.0) / size.y).min(stage.width() / size.x).floor().max(1.0);
+                        let place = egui::Rect::from_center_size(stage.center(), vec2(size.x * scale, size.y * scale));
+                        left.painter().image(*texture, place, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
+                    }
+                    left.horizontal(|row| {
+                        if row.add(button(t(T::LookTurn))).clicked() {
+                            acts.push(Action::Rotate);
+                        }
+                        if row.add(button(t(T::LookRandom))).clicked() {
+                            acts.push(Action::Random);
+                        }
+                    });
+                    for feature in Feature::ALL {
+                        let value = *feature.slot(&mut draft.look.clone());
+                        let names: Vec<String> = (0..feature.count()).map(|v| feature.name(v as u8, ru)).collect();
+                        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                        let mut at = value as usize;
+                        let row = kit::choice(right, feature.label().text(lang), &names, &mut at);
+                        if row.changed() {
+                            acts.push(Action::Turn(feature, at as i32 - value as i32));
+                        }
+                        // A colour shows as a swatch at the left of its value.
+                        if let Some((r, g, b)) = feature.swatch(value) {
+                            let x = row.rect.right() - kit::ROW - 2.0 - kit::VALUE_COLUMN + 6.0;
+                            let swatch = egui::Rect::from_center_size(egui::pos2(x + 4.0, row.rect.center().y), vec2(8.0, 8.0));
+                            right.painter().rect_filled(swatch, 0.0, egui::Color32::from_rgb(r, g, b));
+                            right.painter().rect_stroke(swatch, 0.0, egui::Stroke::new(1.0, c(INK)), egui::StrokeKind::Outside);
+                        }
+                    }
+                    let mut helmet = draft.look.helmet;
+                    if kit::toggle(right, t(T::LookHelmet), &mut helmet).changed() {
+                        acts.push(Action::Helmet);
+                    }
+                    let tall = left.min_rect().height().max(right.min_rect().height());
+                    ui.allocate_space(vec2(area.width(), tall));
+                }
+            } else {
+                ui.columns(2, |cols| {
+                    let left = &mut cols[0];
+                    hint(left, match draft.method {
+                        AbilityMethod::PointBuy => format!("{} {}", t(T::PointsLeft), draft.points_left()),
+                        _ => t(T::SwapHint).to_string(),
+                    });
+                    for ability in Ability::ALL {
+                        let i = ability as usize;
+                        let total = draft.base[i] + race.bonuses[i] + class.background[i];
+                        left.horizontal(|row| {
+                            let picked = draft.picked == Some(i);
+                            let (r, _) = row.allocate_exact_size(vec2(84.0, kit::ROW), Sense::hover());
+                            row.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, tr(ru, ability.name()), egui::FontId::proportional(crate::ui::theme::BODY), c(if picked { WAX } else { INK }));
+                            let (r, _) = row.allocate_exact_size(vec2(46.0, kit::ROW), Sense::hover());
+                            row.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, format!("{total} ({})", signed(modifier(total))), egui::FontId::proportional(crate::ui::theme::BODY), c(INK));
+                            if draft.method == AbilityMethod::PointBuy {
+                                if row.add(button("−")).clicked() {
+                                    acts.push(Action::Minus(i));
+                                }
+                                if row.add(button("+")).clicked() {
+                                    acts.push(Action::Plus(i));
+                                }
+                            } else {
+                                let mut swap = button(t(T::Swap));
+                                if picked {
+                                    swap = swap.primary();
+                                }
+                                if row.add(swap).clicked() {
+                                    acts.push(Action::Pick(i));
+                                }
+                            }
+                        });
+                    }
+                    // What the choices come to, so the player sees the character before making it.
+                    if let Some(hero) = &shown {
+                        left.label(format!("{} {} · {} {}", t(T::HitPoints), hero.max_hp, t(T::ArmorClass), hero.ac()));
+                    }
+                    let right = &mut cols[1];
+                    hint(right, format!("{} {}/{}", t(T::HeroSkills), draft.skills.len(), class.skill_picks));
+                    let caster = draft.caster().filter(|hero| hero.cantrips_allowed() + hero.spells_allowed() > 0);
+                    egui::ScrollArea::vertical().id_salt("skills").max_height(if caster.is_some() { 90.0 } else { 200.0 }).show(right, |ui| {
+                        for skill in &class.skill_options {
+                            let name = data.skill(skill).map_or(skill.as_str(), |s| tr(ru, &s.name));
+                            let mut on = draft.skills.contains(skill);
+                            if kit::toggle(ui, name, &mut on).changed() {
+                                acts.push(Action::Skill(skill.clone()));
+                            }
+                        }
+                    });
+                    if let Some(hero) = &caster {
+                        let chosen = |cantrips: bool| draft.spells.iter().filter_map(|s| data.spells.get(s)).filter(|s| (s.level == 0) == cantrips).count();
+                        hint(right, format!("{} {}/{} · {} {}/{}", t(T::Cantrips), chosen(true), hero.cantrips_allowed(), t(T::Spells), chosen(false), hero.spells_allowed()));
+                        egui::ScrollArea::vertical().id_salt("spells").max_height(90.0).show(right, |ui| {
+                            let mut pool = data.class_spells(&hero.class, hero.highest_slot());
+                            pool.sort_by_key(|s| (s.level, tr(ru, &s.name).to_string()));
+                            for spell in pool {
+                                // Spells the rules cannot carry out by themselves go through the master.
+                                let kind = if spell.mechanised() { "" } else { " *" };
+                                let mut on = draft.spells.contains(&spell.index);
+                                if kit::toggle(ui, &format!("{} {}{kind}", spell.level, tr(ru, &spell.name)), &mut on).changed() {
+                                    acts.push(Action::Spell(spell.index.clone()));
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+        },
+        |footer| {
+            if footer.add(button(t(T::Back)).key("Esc")).clicked() {
+                leave = true;
+            }
+            if footer.add(button(t(T::CreateHero)).primary()).clicked() {
+                create = true;
+            }
+            // What is wrong with the hero, beside the button that would make it.
+            if !problem.is_empty() {
+                kit::warning(footer, problem.as_str());
+            }
+        },
+    );
+    if leave {
+        next.set(Screen::Main);
+    }
+    if create {
+        acts.push(Action::Create);
+    }
+    let mut game = game;
+    for act in acts {
+        apply(act, &mut draft, &typed, game.as_deref_mut(), lang, &mut next, &session, &settings);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply(action: Action, draft: &mut Draft, typed: &Typed, game: Option<&mut Game>, lang: Lang, next: &mut NextState<Screen>, session: &Session, settings: &Settings) {
     draft.problem = None;
     let data = srd();
     match action {
-        Action::Race => {
-            draft.race = (draft.race + 1) % data.races.len();
+        Action::Race(at) => {
+            draft.race = at % data.races.len();
             // Another people changes the scores, and with them what may be cast.
             draft.spells = draft.usual_spells();
         }
-        Action::Spell(spell) => draft.toggle_spell(spell),
-        Action::Class => {
-            draft.class = (draft.class + 1) % data.classes.len();
+        Action::Spell(spell) => draft.toggle_spell(&spell),
+        Action::Class(at) => {
+            draft.class = at % data.classes.len();
             draft.skills.clear();
             draft.deal();
         }
@@ -615,8 +619,8 @@ fn on_activate(
             draft.rolled = roll_scores(&mut Rng::from_clock());
             draft.deal();
         }
-        Action::Show(tab) => draft.tab = *tab,
-        Action::Turn(feature, by) => draft.turn(*feature, *by),
+        Action::Show(tab) => draft.tab = tab,
+        Action::Turn(feature, by) => draft.turn(feature, by),
         Action::Helmet => draft.look.helmet = !draft.look.helmet,
         Action::Random => draft.randomize(&mut Rng::from_clock()),
         Action::Rotate => {
@@ -628,38 +632,37 @@ fn on_activate(
                 Facing::Right => Facing::Down,
             };
         }
-        Action::Minus(i) => draft.nudge(*i, -1),
-        Action::Plus(i) => draft.nudge(*i, 1),
-        Action::Pick(i) => draft.pick(*i),
-        Action::Skill(skill) => draft.toggle_skill(skill),
+        Action::Minus(i) => draft.nudge(i, -1),
+        Action::Plus(i) => draft.nudge(i, 1),
+        Action::Pick(i) => draft.pick(i),
+        Action::Skill(skill) => draft.toggle_skill(&skill),
         Action::Lead => {
-            if let Some(mut game) = game {
+            if let Some(game) = game {
                 session.intend(Intent::Gm(GmAct::Seat(true)));
-                game.world.gm = Some(owner_name(&session, &settings));
+                game.world.gm = Some(owner_name(session, settings));
                 next.set(Screen::Play);
             }
         }
         Action::Take(hero) => {
-            if let Some(mut game) = game {
+            if let Some(game) = game {
                 // The host decides; the local copy is changed too so the guest can walk on
                 // before the host's world comes back.
-                session.send(Up::Claim(*hero));
-                game.world.claim(*hero, &owner_name(&session, &settings));
+                session.send(Up::Claim(hero));
+                game.world.claim(hero, &owner_name(session, settings));
                 next.set(Screen::Play);
             }
         }
         Action::Create => {
-            let name = name.single().map(|n| n.value().to_string()).unwrap_or_default();
-            let description = story.single().map(|s| s.value().to_string()).unwrap_or_default();
-            match (draft.build(&name, &description), game) {
-                (Ok(hero), Some(mut game)) => {
+            let name = typed.name.trim().to_string();
+            match (draft.build(&name, typed.story.trim()), game) {
+                (Ok(hero), Some(game)) => {
                     // A guest's hero is the host's to add; it is put in the local copy too
                     // so the guest can start walking before the host's world comes back.
                     session.send(Up::Hero(Box::new(hero.clone())));
                     let world = &mut game.world;
                     let length = world.party.len();
                     world.owners.resize(length, String::new());
-                    let owner = owner_name(&session, &settings);
+                    let owner = owner_name(session, settings);
                     // A player whose hero died lets go of it.
                     if !owner.is_empty()
                         && let Some(old) = world.owners.iter().position(|o| *o == owner)
@@ -673,11 +676,11 @@ fn on_activate(
                     world.tidy_gear();
                     next.set(Screen::Play);
                 }
-                (Err(_), _) if name.trim().is_empty() => draft.problem = Some(T::NeedName.text(*lang).to_string()),
+                (Err(_), _) if name.is_empty() => draft.problem = Some(T::NeedName.text(lang).to_string()),
                 (Err(_), _) => {
                     // The skills are on the other tab: shown, so that what is missing is seen.
                     draft.tab = Tab::Stats;
-                    draft.problem = Some(format!("{} {}", T::NeedSkills.text(*lang), data.classes[draft.class].skill_picks));
+                    draft.problem = Some(format!("{} {}", T::NeedSkills.text(lang), data.classes[draft.class].skill_picks));
                 }
                 (Ok(_), None) => {}
             }
@@ -777,7 +780,7 @@ pub struct HeroPlugin;
 
 impl Plugin for HeroPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Screen::Hero), spawn_screen).add_systems(Update, (redraw.run_if(resource_exists::<Draft>), walk_preview).run_if(in_state(Screen::Hero))).add_observer(on_activate);
+        app.add_systems(OnEnter(Screen::Hero), enter).add_systems(bevy_egui::EguiPrimaryContextPass, hero_screen.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Hero)).run_if(resource_exists::<Draft>));
     }
 }
 

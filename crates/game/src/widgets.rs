@@ -117,12 +117,6 @@ pub fn text_button(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, 
 #[derive(Component)]
 pub struct Scrolls;
 
-pub fn scroll_list(node: Node, height: f32) -> impl Bundle {
-    // Room is left on the right for the bar that appears when there is more than fits.
-    let padding = UiRect { right: px(SCROLL_BAR + 2.0), ..node.padding };
-    (Node { max_height: px(height), overflow: Overflow::scroll_y(), padding, ..node }, Scrolls, RelativeCursorPosition::default())
-}
-
 /// How wide the bar beside a list is, and how tall each of its arrows.
 const SCROLL_BAR: f32 = 9.0;
 /// Canvas pixels a held arrow moves a list by in a second.

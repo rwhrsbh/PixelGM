@@ -138,7 +138,7 @@ impl<'a> Button<'a> {
 const PAD: Vec2 = vec2(6.0, 3.0);
 pub const ROW: f32 = 16.0;
 /// How wide the value of a setting is at least, so the arrows of a sheet stand in one column.
-const VALUE_COLUMN: f32 = 130.0;
+pub const VALUE_COLUMN: f32 = 130.0;
 /// A label written on a control is at most this many rows; longer is cut with "…" and
 /// shown whole under the cursor.
 const MOST_ROWS: usize = 3;
