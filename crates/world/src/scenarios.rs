@@ -480,3 +480,34 @@ fn after_the_story_is_written_up_the_master_still_sees_where_everyone_stands_and
     }
     assert!(w.story.chapters.len() >= 1);
 }
+
+#[test]
+fn a_new_place_is_asked_with_the_look_of_the_world_the_side_the_way_leaves_and_the_story() {
+    let mut w = three_at_the_lake();
+    let camp = w.locations.keys().find(|k| *k != "lake").unwrap().clone();
+    w.story.say(crate::Speaker::Player, "Brak: we follow the thief's tracks east.");
+    let stub = w.locations["lake"].exits.iter().find(|e| e.to != camp).map(|e| e.to.clone());
+    // The lake's exits lead back to the camp; ask for the camp's onward place instead.
+    w.travel(&camp);
+    let onward = w.here().exits.iter().find(|e| w.stubs.contains_key(&e.to)).map(|e| e.to.clone()).or(stub).expect("a way to a place not drawn yet");
+    let asked = crate::prompt::new_location(&w, &onward, &camp);
+    assert!(asked.contains("THE LOOK OF THIS WORLD"), "pictures to draw alike");
+    assert!(asked.contains("The way here leaves") && asked.contains("side"), "{}", &asked[asked.find("The way here").unwrap_or(0)..].chars().take(200).collect::<String>());
+    assert!(asked.contains("Brak: we follow the thief's tracks east."));
+    assert!(asked.contains("PALETTE"));
+}
+
+#[test]
+fn things_without_a_picture_are_drawn_with_the_next_turn_with_the_palette_at_hand() {
+    let mut w = three_at_the_lake();
+    w.story.bags[0].receive(serde_json::from_value(serde_json::json!({ "name": "Old Map", "description": "Torn.", "count": 1 })).unwrap());
+    let asked = crate::prompt::turn(&w, "Brak: I unfold the map", None);
+    assert!(asked.contains("PALETTE (0 is transparent):"), "a turn draws with the world's colours");
+    assert!(asked.contains("THINGS WITHOUT A PICTURE YET") && asked.contains("\"Old Map\""), "the thing is asked for with the turn");
+    let picture: crate::bag::ThingsDraft = serde_json::from_str(&fake::things(&[("Old Map".into(), (2, 2))])).unwrap();
+    let draft: TurnDraft = serde_json::from_value(serde_json::json!({ "narration": "The map shows the lake.", "pictures": picture.things })).unwrap();
+    w.take_turn("Brak: I unfold the map", &draft);
+    let map = w.story.bags[0].inventory.iter().find(|i| i.name == "Old Map").unwrap();
+    assert!(!map.rows.is_empty() && map.size() == (2, 2));
+    assert!(!crate::prompt::turn(&w, "x", None).contains("\"Old Map\""), "asked for no more once drawn");
+}
