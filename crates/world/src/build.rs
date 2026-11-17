@@ -783,6 +783,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         places: Default::default(),
         host_place: None,
         fight_place: String::new(),
+        fights_elsewhere: BTreeMap::new(),
         pending_place: String::new(),
         table: TableRules::default(),
         offers: Vec::new(),

@@ -103,7 +103,8 @@ pub enum Answer {
     Chapter(Result<ChapterDraft, Trouble>),
     Card { for_player: String, card: Result<Box<CreatureCard>, Trouble> },
     Feats { hero: usize, secret: bool, feats: Result<Vec<rules::Feat>, Trouble> },
-    Stunt { spell: Option<(String, u8)>, draft: Result<Box<StuntDraft>, Trouble> },
+    /// What a hero tried in the fight of `place`.
+    Stunt { place: String, spell: Option<(String, u8)>, draft: Result<Box<StuntDraft>, Trouble> },
     Portrait { hero: usize, rows: Result<Vec<String>, Trouble> },
     Translated { texts: Vec<String>, translated: Result<Vec<String>, Trouble> },
 }
@@ -523,7 +524,7 @@ impl Master {
                 }
                 Ask::Stunt { world, said, spell } => {
                     let draft: Result<StuntDraft, Trouble> = if fake { faked(fake::stunt(&said)) } else { call.read(prompt::play_prompt(&world), &prompt::stunt(&world, &said)) };
-                    Answer::Stunt { spell, draft: draft.map(Box::new) }
+                    Answer::Stunt { place: world.fight_place.clone(), spell, draft: draft.map(Box::new) }
                 }
                 Ask::Translate { texts, language } => {
                     let draft: Result<TranslationDraft, Trouble> =

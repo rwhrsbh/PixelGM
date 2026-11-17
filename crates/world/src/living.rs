@@ -125,7 +125,7 @@ impl World {
     /// Nothing where the place is safe, where the master already set something hostile, or
     /// where it wrote nothing that could come.
     pub fn wander(&mut self, rng: &mut Rng) -> Option<Wandered> {
-        if self.fight.is_some() || self.party.is_empty() {
+        if self.fight_in(&self.current) || self.party.is_empty() {
             return None;
         }
         let night = self.is_night();

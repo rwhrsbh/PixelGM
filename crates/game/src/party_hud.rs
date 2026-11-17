@@ -39,8 +39,8 @@ fn column(mut egui: EguiContexts, game: Res<Game>, session: Res<Session>, settin
     let me = player_name(&settings);
     let mine = my_hero(world, &me, matches!(*session, Session::Solo));
     // In a fight the wounds are the fight's until it ends.
-    let hp_of = |i: usize, hero: &rules::Character| world.fight.as_ref().and_then(|f| f.combatants.iter().find(|c| c.id == format!("hero_{i}"))).map_or(hero.hp, |c| c.hp);
-    let acting = world.fight.as_ref().map(|f| f.actor().id.clone());
+    let hp_of = |i: usize, hero: &rules::Character| world.fighter(&format!("hero_{i}")).map_or(hero.hp, |c| c.hp);
+    let acting = world.fight.as_ref().filter(|_| world.fight_here()).map(|f| f.actor().id.clone());
     // Each face is made once and handed to egui.
     let mut wanted = Vec::new();
     for hero in &world.party {
@@ -112,7 +112,7 @@ fn column(mut egui: EguiContexts, game: Res<Game>, session: Res<Session>, settin
             }
             // Those who travel with the party, smaller: a name and a bar.
             for (n, companion) in world.companions.iter().enumerate() {
-                let fighter = world.fight.as_ref().and_then(|f| f.combatants.iter().find(|c| c.id == format!("ally_{n}")));
+                let fighter = world.fighter(&format!("ally_{n}"));
                 let hp = fighter.map_or(companion.hp, |c| c.hp);
                 let turn = acting.as_deref() == Some(format!("ally_{n}").as_str());
                 let frame = egui::Frame::new().stroke(Stroke::new(1.0, c(if turn { BRASS_LIGHT } else { WOOD_DARK }))).inner_margin(egui::Margin::same(2)).outer_margin(egui::Margin::symmetric(3, 2));

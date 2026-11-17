@@ -1475,10 +1475,10 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
     // Something hostile close by does not wait to be spoken to. With guests at the table
     // any of their tokens can be the one that is noticed.
     // A pack that has not been counted out yet is, now that the party is here.
-    if !session.is_client() && game.world.fight.is_none() && game.world.here().creatures.iter().any(|c| (c.attitude == world::Attitude::Hostile || c.count > 1) && !c.mustered) {
+    if !session.is_client() && !game.world.fight_here() && game.world.here().creatures.iter().any(|c| (c.attitude == world::Attitude::Hostile || c.count > 1) && !c.mustered) {
         game.world.muster();
     }
-    let noticed = game.world.fight.is_none() && (game.world.hostile_near(NOTICE_CELLS) || game.world.tokens_here().any(|t| hostile_near_token(&game.world, t.x, t.y)));
+    let noticed = !game.world.fight_here() && (game.world.hostile_near(NOTICE_CELLS) || game.world.tokens_here().any(|t| hostile_near_token(&game.world, t.x, t.y)));
     if !session.is_client() && noticed && game.world.start_fight(Rng::from_clock()) {
         *phase = Phase::Fighting;
         return;
@@ -1964,29 +1964,43 @@ fn receive(
                     }
                 }
             }
-            Answer::Stunt { spell, draft } => {
+            Answer::Stunt { place, spell, draft } => {
                 let lang = settings.lang;
+                // The stunt is done in the fight it was tried in, which may not be the host's.
+                game.world.focus_fight(&place);
+                let here = place.is_empty() || place == game.world.current;
                 let line = match draft {
                     Ok(draft) => {
                         let name = spell.as_ref().and_then(|(index, _)| rules::srd().spells.get(index)).map_or_else(|| T::StuntName.text(Lang::En).to_string(), |s| s.name.clone());
                         let caster = game.world.fight.as_ref().and_then(|f| f.actor().id.strip_prefix("hero_").and_then(|n| n.parse::<usize>().ok()));
                         let Some(stunt) = game.world.fight_stunt(&draft, &name, &mut Rng::from_clock()) else {
-                            view.note(String::new());
+                            if here {
+                                view.note(String::new());
+                            }
+                            session.broadcast(&Down::FightNote(place.clone(), String::new()));
+                            let home = game.world.current.clone();
+                            game.world.focus_fight(&home);
                             continue;
                         };
                         // The slot goes whether or not the spell did what was hoped.
                         if let (Some((_, slot)), Some(hero)) = (&spell, caster.and_then(|i| game.world.party.get_mut(i))) {
                             hero.spend_slot(*slot);
                         }
-                        session.broadcast(&Down::FightEvents(stunt.events.clone()));
-                        view.extend(stunt.events);
+                        session.broadcast(&Down::FightEvents(place.clone(), stunt.events.clone()));
+                        if here {
+                            view.extend(stunt.events);
+                        }
                         let verdict = if stunt.success { T::CheckSuccess } else { T::CheckFailure };
                         format!("{}: d20 {}{:+} = {} / {} — {}. {}", stunt.hero, stunt.roll.die, stunt.roll.bonus, stunt.roll.total(), stunt.difficulty, verdict.text(lang), stunt.narration)
                     }
                     Err(trouble) => trouble_text(&trouble, gm.dispatcher.now(), lang),
                 };
-                session.broadcast(&Down::FightNote(line.clone()));
-                view.note(line);
+                session.broadcast(&Down::FightNote(place, line.clone()));
+                if here {
+                    view.note(line);
+                }
+                let home = game.world.current.clone();
+                game.world.focus_fight(&home);
                 redraw.0 = true;
             }
             Answer::Portrait { hero, rows } => {
@@ -3112,11 +3126,14 @@ fn guests(
                 None
             }
             Intent::Fight(act) => {
+                // The guest acts in the fight of its own place, among those going on.
+                let place = game.world.place_of(&player).to_string();
+                game.world.focus_fight(&place);
                 // Only the player whose hero is acting may act for it.
-                if game.world.acting_owner() == Some(player.as_str()) {
+                if (game.world.fight_place.is_empty() || game.world.fight_place == place) && game.world.acting_owner() == Some(player.as_str()) {
                     let events = game.world.fight_act(&act);
                     if !events.is_empty() {
-                        session.broadcast(&Down::FightEvents(events.clone()));
+                        session.broadcast(&Down::FightEvents(place, events.clone()));
                         // The host watches only a fight it is in.
                         if game.world.fight_here() {
                             view.extend(events);
@@ -3124,6 +3141,8 @@ fn guests(
                         }
                     }
                 }
+                let home = game.world.current.clone();
+                game.world.focus_fight(&home);
                 None
             }
             Intent::Feat(choice) => {
@@ -3139,9 +3158,13 @@ fn guests(
                 None
             }
             Intent::Stunt { said, spell } => {
+                let place = game.world.place_of(&player).to_string();
+                game.world.focus_fight(&place);
                 // Only the player whose hero is acting may try something for it.
-                if game.world.acting_owner() == Some(player.as_str()) {
-                    view.wait_for_master();
+                if (game.world.fight_place.is_empty() || game.world.fight_place == place) && game.world.acting_owner() == Some(player.as_str()) {
+                    if game.world.fight_here() {
+                        view.wait_for_master();
+                    }
                     announce(&session, &mut table, &game.world, &player, &said, false);
                     // The master sees the fight through the eyes of the one who acts.
                     let mut seen = game.world.clone();
@@ -3150,6 +3173,8 @@ fn guests(
                     }
                     master.ask(&gm, &store, &settings, Ask::Stunt { world: Box::new(seen), said, spell });
                 }
+                let home = game.world.current.clone();
+                game.world.focus_fight(&home);
                 None
             }
             // Each player's bag is their own hero's.
@@ -3278,16 +3303,18 @@ fn guests(
         leave_scene(&mut game, &mut table, home);
     }
     // A hostile creature that notices a guest in a place the host is not in starts a fight
-    // there. One fight at a time: the others wait their turn.
-    if session.is_host() && game.world.fight.is_none() {
-        let elsewhere: Vec<world::Token> = game.world.others.iter().filter(|t| !t.place.is_empty() && t.place != game.world.current).cloned().collect();
+    // there, beside any fight going on elsewhere: one fight to a place.
+    if session.is_host() {
+        let elsewhere: Vec<world::Token> = game.world.others.iter().filter(|t| !t.place.is_empty() && t.place != game.world.current && !game.world.fight_in(&t.place)).cloned().collect();
         for token in elsewhere {
-            let home = game.world.enter(&token.place, world::Player { x: token.x, y: token.y });
-            let started = game.world.hostile_near(NOTICE_CELLS) && game.world.start_fight(Rng::from_clock());
-            game.world.leave(home);
-            if started {
-                break;
+            if game.world.fight_in(&token.place) {
+                continue;
             }
+            let home = game.world.enter(&token.place, world::Player { x: token.x, y: token.y });
+            if game.world.hostile_near(NOTICE_CELLS) {
+                game.world.start_fight(Rng::from_clock());
+            }
+            game.world.leave(home);
         }
     }
     // A master who left the table leaves no draft waiting: the model's word stands.
