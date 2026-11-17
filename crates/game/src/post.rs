@@ -70,11 +70,6 @@ impl Grade {
         }
     }
 
-    pub fn next(self) -> Self {
-        let at = Self::ALL.iter().position(|g| *g == self).unwrap_or(0);
-        Self::ALL[(at + 1) % Self::ALL.len()]
-    }
-
     fn grading(self) -> ColorGrading {
         let section = |saturation: f32, contrast: f32| ColorGradingSection { saturation, contrast, ..default() };
         let (global, sections) = match self {

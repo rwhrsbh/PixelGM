@@ -79,7 +79,9 @@ impl Choice {
             // Seconds, shown by the button's own text instead.
             Choice::FirstToken => return None,
             Choice::Language => T::LanguageName,
-            Choice::Screen => [T::ScreenAuto, T::ScreenFhd, T::Screen2k, T::Screen4k][s.screen.min(3) as usize],
+            // The names of screens are the same in every language: shown by `shown`.
+            Choice::Screen if s.screen > 0 => return None,
+            Choice::Screen => T::ScreenAuto,
             Choice::UiSize => [T::UiSmaller, T::UiNormal, T::UiLarger][s.ui_size.min(2) as usize],
             Choice::Window => {
                 if s.fullscreen {
@@ -225,6 +227,9 @@ pub enum SettingsAct {
 impl Choice {
     /// What the setting shows for these settings. A language is named in itself.
     fn shown(self, s: &Settings, lang: Lang) -> String {
+        if self == Choice::Screen && s.screen > 0 {
+            return ["Full HD", "2K", "4K"][s.screen.min(3) as usize - 1].to_string();
+        }
         match self.value(s) {
             Some(T::LanguageName) => T::LanguageName.text(s.lang).to_string(),
             Some(value) => value.text(lang).to_string(),
