@@ -38,6 +38,8 @@ pub enum Step {
     /// A press and its release within one frame, as a quick hand makes on a slow frame.
     Snap(Option<Vec2>),
     Type(String),
+    /// The mouse wheel turned, in lines: up for positive.
+    Wheel(f32),
     Key(KeyCode, Key, ButtonState),
     Shot(String),
     /// Put the party in a cell of the current location, to test what lies beyond a walk.
@@ -145,6 +147,8 @@ pub fn parse_script(script: &str) -> Vec<Step> {
                 }
             }
             "type" => steps.push(Step::Type(arg.to_string())),
+            // `scroll:-10` turns the wheel ten lines down, over where the cursor is.
+            "scroll" => steps.extend(arg.parse().ok().map(|lines| [Step::Wheel(lines), Step::Frames(CLICK_FRAMES)]).into_iter().flatten()),
             // Hold a key for a while: `hold:d,1.5` walks right for a second and a half.
             "hold" => {
                 if let Some(((code, key), seconds)) = arg.split_once(',').and_then(|(name, time)| Some((named_key(name.trim())?, time.trim().parse().ok()?))) {
@@ -267,6 +271,7 @@ fn play_script(
     mut window: Single<(Entity, &mut Window), With<PrimaryWindow>>,
     mut window_events: MessageWriter<WindowEvent>,
     mut moves: MessageWriter<CursorMoved>,
+    mut wheels: MessageWriter<bevy::input::mouse::MouseWheel>,
     mut buttons: MessageWriter<MouseButtonInput>,
     mut keys: MessageWriter<KeyboardInput>,
     mut exit: MessageWriter<AppExit>,
@@ -290,6 +295,11 @@ fn play_script(
     match step {
         Step::Wait(seconds) => progress.wait = seconds,
         Step::Frames(n) => progress.frames = n,
+        Step::Wheel(lines) => {
+            let wheel = bevy::input::mouse::MouseWheel { unit: bevy::input::mouse::MouseScrollUnit::Line, x: 0.0, y: lines, window: entity, phase: bevy::input::touch::TouchPhase::Moved };
+            window_events.write(WindowEvent::MouseWheel(wheel));
+            wheels.write(wheel);
+        }
         Step::Move(at) => {
             // Script coordinates are on the interface's grid.
             let (scale, origin, _) = fit(window.1.physical_size());

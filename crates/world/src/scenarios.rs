@@ -394,3 +394,60 @@ fn what_the_master_made_without_a_picture_is_drawn_by_it_and_what_the_game_gives
     assert!(!map.rows.is_empty() && map.size() == (2, 2) && map.at.is_some(), "drawn, at the master's size, with a place in the bag");
     assert!(!w.undrawn_things(&[], 6).iter().any(|t| t.name == "Old Map"));
 }
+
+/// Plays the master writing up the story the way `compaction` asks, until a turn fits.
+fn write_up(w: &mut World, room: usize) -> usize {
+    let mut steps = 0;
+    while let Some((what, _)) = crate::prompt::compaction(w, room) {
+        steps += 1;
+        assert!(steps < 200, "the story never came to fit");
+        let short = "Chapter: the party did many things; nothing is forgotten.";
+        match what {
+            crate::prompt::Compaction::Chapter { upto } => {
+                let asked = crate::prompt::chapter_upto(w, upto);
+                assert!(crate::prompt::tokens(&crate::prompt::play_prompt(w)) + crate::prompt::tokens(&asked) <= room, "the request to write up fits what the model reads");
+                w.story.close_chapter_upto(upto, short, &[]);
+            }
+            crate::prompt::Compaction::Merge { count } => {
+                let asked = crate::prompt::merge_chapters(w, count);
+                assert!(crate::prompt::tokens(&asked) <= room);
+                w.story.merge_chapters(count, short, &[]);
+            }
+        }
+    }
+    steps
+}
+
+#[test]
+fn a_long_story_is_written_up_in_pieces_that_fit_until_a_turn_fits_again() {
+    let mut w = three_at_the_lake();
+    let base = crate::prompt::tokens(&crate::prompt::play_prompt(&w)) + crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
+    // A room the empty story uses less than half of, and a story many times that.
+    let room = base * 2 + 2_000;
+    assert_eq!(crate::prompt::compaction(&w, room), None, "a short story is left as it is");
+    for n in 0..600 {
+        w.story.say(crate::Speaker::Player, &format!("Line {n}: I look around the lake once more, slowly, and say what I see."));
+        w.story.say(crate::Speaker::Master, &format!("Answer {n}: the water is still, the reeds whisper, and nothing changes but the light."));
+    }
+    let (_, urgent) = crate::prompt::compaction(&w, room).expect("a long story is written up");
+    assert!(urgent, "a turn would not fit at all");
+    let steps = write_up(&mut w, room);
+    assert!(steps > 1, "in more than one piece");
+    let turn = crate::prompt::tokens(&crate::prompt::play_prompt(&w)) + crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
+    assert!((turn as f32) < room as f32 * crate::prompt::COMPACT_AT, "a turn fits again");
+    assert!(w.story.log.len() >= crate::story::KEPT_LINES, "the newest lines are kept word for word");
+}
+
+#[test]
+fn chapters_that_pile_up_are_written_up_into_one() {
+    let mut w = three_at_the_lake();
+    let base = crate::prompt::tokens(&crate::prompt::play_prompt(&w)) + crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
+    let room = base * 2 + 2_000;
+    for n in 0..80 {
+        w.story.chapters.push(format!("Chapter {n}: {}", "a long road walked and many people met on it. ".repeat(6)));
+    }
+    let (what, _) = crate::prompt::compaction(&w, room).expect("too many chapters");
+    assert!(matches!(what, crate::prompt::Compaction::Merge { .. }), "{what:?}");
+    write_up(&mut w, room);
+    assert!(w.story.chapters.len() < 80);
+}

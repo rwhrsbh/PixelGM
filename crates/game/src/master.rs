@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use world::story::KEPT_LINES;
 use world::{ChapterDraft, CreatureCard, FeatsDraft, LocationDraft, PortraitDraft, StuntDraft, TranslationDraft, TurnDraft, World, WorldDraft, build_world, fake, prompt};
 
 pub enum Ask {
@@ -90,9 +89,10 @@ pub enum Ask {
     Chatter {
         world: Box<World>,
     },
-    /// The older story is to be written up.
+    /// The older story is to be written up: a piece of it, or the oldest chapters into one.
     Chapter {
         world: Box<World>,
+        what: prompt::Compaction,
     },
 }
 
@@ -105,7 +105,7 @@ pub enum Answer {
     Ambush(Result<Box<TurnDraft>, Trouble>),
     /// What the people of a place say aloud, for speech bubbles.
     Chatter { place: String, lines: Vec<(String, String)> },
-    Chapter(Result<ChapterDraft, Trouble>),
+    Chapter { what: prompt::Compaction, draft: Result<ChapterDraft, Trouble> },
     Card { for_player: String, card: Result<Box<CreatureCard>, Trouble> },
     Feats { hero: usize, secret: bool, feats: Result<Vec<rules::Feat>, Trouble> },
     /// What a hero tried in the fight of `place`.
@@ -311,6 +311,7 @@ impl Call {
     /// Sends a request and reads the answer as `T`, asking again when it cannot be read.
     fn read<T: serde::de::DeserializeOwned>(&self, system: String, prompt: &str) -> Result<T, Trouble> {
         let request = request_for(&system, prompt, self.thinking);
+        self.store.log_prompt(&system, prompt);
         let mut last = String::new();
         // A round in which the table decided about spent keys is not an attempt of the master's.
         let mut left = self.attempts;
@@ -322,7 +323,17 @@ impl Call {
             if !self.providers.is_empty() {
                 match self.rotation.complete(&self.providers, &system, prompt, &llm::providers::Network) {
                     Ok((text, who)) => {
-                        info!("the master answered: {who} in {:.1} s, {} characters for a prompt of {}", started.elapsed().as_secs_f32(), text.chars().count(), prompt.chars().count());
+                        let spent = llm::context::last_spent().filter(|(m, _)| *m == who).map(|(_, s)| s).unwrap_or_default();
+                        info!(
+                            "the master answered: {who} in {:.1} s, {} characters for a prompt of {}; tokens: {} in ({} from the cache), {} out, {} thinking",
+                            started.elapsed().as_secs_f32(),
+                            text.chars().count(),
+                            prompt.chars().count(),
+                            spent.prompt,
+                            spent.cached,
+                            spent.output,
+                            spent.thinking
+                        );
                         self.store.log_answer(&who.replace([':', '/', ' ', '@'], "-"), &text);
                         match world::read_answer::<T>(&text) {
                             Ok(value) => return Ok(value),
@@ -352,6 +363,7 @@ impl Call {
             let (text, model) = match self.gm.dispatcher.generate_in(&request, self.lowest, self.cheap) {
                 Ok((reply, model)) => {
                     let u = reply.usage;
+                    llm::context::spent(&model.id, &llm::context::Spent { prompt: u.prompt_tokens, cached: u.cached_tokens, output: u.output_tokens, thinking: u.thought_tokens });
                     info!(
                         "the master answered: {} in {:.1} s, {} characters for a prompt of {}; tokens: {} in ({} from the cache), {} out, {} thinking",
                         model.id,
@@ -423,12 +435,14 @@ impl Master {
         let unhurried = matches!(ask, Ask::Location { ahead: true, .. } | Ask::Event { .. } | Ask::Portrait { .. } | Ask::Things { .. });
         // Small talk is asked of the cheap models, once.
         let cheap = matches!(ask, Ask::Chatter { .. });
+        // Drawing, translating and small talk need no thinking: it only costs tokens.
+        let plain = matches!(ask, Ask::Things { .. } | Ask::Translate { .. } | Ask::Chatter { .. } | Ask::Portrait { .. });
         let call = Call {
-            providers: settings.providers(),
+            providers: if plain { Settings { thinking: llm::ThinkingSetting::Off, ..settings.clone() }.providers() } else { settings.providers() },
             rotation: self.rotation.clone(),
             gm: gm.clone(),
             store: store.clone(),
-            thinking: settings.thinking,
+            thinking: if plain { llm::ThinkingSetting::Off } else { settings.thinking },
             lowest: if cheap { Tier::Gemma } else if unhurried { Tier::Flash } else { settings.lowest_tier },
             attempts: if unhurried || cheap { 1 } else { READ_ATTEMPTS },
             cheap,
@@ -445,7 +459,7 @@ impl Master {
                 Ask::Event { .. } => "an event of its own".to_string(),
                 Ask::Chatter { .. } => "small talk for the place".to_string(),
                 Ask::Ambush { comer, cell, .. } => format!("an ambush: '{}' at {cell:?}", comer.monster),
-                Ask::Chapter { .. } => "a chapter".to_string(),
+                Ask::Chapter { what, .. } => format!("the story written up: {what:?}"),
                 Ask::Feats { hero, secret, .. } => format!("abilities for hero {hero}{}", if *secret { " (secret)" } else { "" }),
                 Ask::Stunt { .. } => "a stunt in a fight".to_string(),
                 Ask::Portrait { hero, .. } => format!("a portrait of hero {hero}"),
@@ -555,7 +569,7 @@ impl Master {
                     let draft: Result<world::bag::ThingsDraft, Trouble> = if fake {
                         faked(fake::things(&things.iter().map(|t| (t.name.clone(), t.size)).collect::<Vec<_>>()))
                     } else {
-                        call.read(prompt::system_prompt(&world.language), &prompt::draw_things(&world, &things))
+                        call.read(prompt::DRAWER.to_string(), &prompt::draw_things(&world, &things))
                     };
                     Answer::Things(draft.map(|d| d.things))
                 }
@@ -592,9 +606,13 @@ impl Master {
                         if fake { faked(fake::turn("(nothing)")) } else { call.read(prompt::play_prompt(&world), &prompt::event(&world)) };
                     Answer::Event(draft.map(Box::new))
                 }
-                Ask::Chapter { world } => {
-                    let lines = world.story.log.len().saturating_sub(KEPT_LINES);
-                    Answer::Chapter(if fake { faked(fake::chapter(lines)) } else { call.read(prompt::play_prompt(&world), &prompt::chapter(&world)) })
+                Ask::Chapter { world, what } => {
+                    let draft = match what {
+                        prompt::Compaction::Chapter { upto } => if fake { faked(fake::chapter(upto)) } else { call.read(prompt::play_prompt(&world), &prompt::chapter_upto(&world, upto)) },
+                        // The chapters alone, without the rules of play: they are all it needs.
+                        prompt::Compaction::Merge { count } => if fake { faked(fake::chapter(count)) } else { call.read("You keep the record of a tabletop role-playing campaign, faithfully.".to_string(), &prompt::merge_chapters(&world, count)) },
+                    };
+                    Answer::Chapter { what, draft }
                 }
             };
             answers.lock().unwrap().push(answer);
@@ -644,3 +662,47 @@ mod tests {
         assert_eq!(waiter.join().unwrap(), None);
     }
 }
+
+/// What the model the master is asked with can read, and which model that is: the smallest
+/// of all that may answer, or the one asked first, as the player chose.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextLimit {
+    pub tokens: u32,
+    pub model: String,
+    /// Some models of the queue did not say how much they read: they were taken to read
+    /// `llm::context::UNKNOWN`.
+    pub guessed: bool,
+}
+
+impl ContextLimit {
+    /// The tokens a request may take: what the model reads, less what is kept for its
+    /// answer and its thinking.
+    pub fn room(&self) -> usize {
+        let tokens = self.tokens as usize;
+        tokens - (tokens / 4).min(16_000)
+    }
+}
+
+/// The models the master may be asked with, in the order they are tried.
+pub fn queue_models(settings: &Settings, gm: &Gm) -> Vec<String> {
+    let providers = settings.providers();
+    if !providers.is_empty() {
+        return providers.iter().flat_map(|p| p.models.clone()).collect();
+    }
+    let choice = gm.dispatcher.choice();
+    let mut models: Vec<String> = gm.dispatcher.survey().into_iter().filter(|s| s.model.tier <= settings.lowest_tier && !choice.off.contains(&s.model.id)).map(|s| s.model.id).collect();
+    // In the player's order, where they gave one.
+    models.sort_by_key(|id| choice.order.iter().position(|o| o == id).unwrap_or(usize::MAX));
+    models
+}
+
+pub fn context_limit(settings: &Settings, gm: &Gm) -> ContextLimit {
+    let models = queue_models(settings, gm);
+    let known = |id: &str| llm::context::of(id);
+    let guessed = models.iter().any(|m| known(m).is_none());
+    let read = |id: &String| (known(id).unwrap_or(llm::context::UNKNOWN), id.clone());
+    let chosen = if settings.context_smallest { models.iter().map(read).min_by_key(|(t, _)| *t) } else { models.first().map(read) };
+    let (tokens, model) = chosen.unwrap_or((llm::context::UNKNOWN, String::new()));
+    ContextLimit { tokens, model, guessed }
+}
+

@@ -207,6 +207,7 @@ pub fn survey(v1: &[ListedModel], v1beta: &[ListedModel]) -> Vec<Surveyed> {
         .into_iter()
         .filter_map(|(id, (api, listed))| {
             let rank = rank(&id)?;
+            crate::context::remember(&id, listed.input_token_limit);
             let model = Model { id, api, tier: rank.class.tier(), input_token_limit: listed.input_token_limit, output_token_limit: listed.output_token_limit };
             Some((rank, model))
         })
@@ -262,6 +263,7 @@ pub fn build_voice_chain(v1: &[ListedModel], v1beta: &[ListedModel]) -> Vec<Mode
                 return None;
             }
             let rank = rank_of(&tokens).filter(|rank| matches!(rank.class, Class::Flash | Class::FlashLite))?;
+            crate::context::remember(&id, listed.input_token_limit);
             let model = Model { id, api, tier: rank.class.tier(), input_token_limit: listed.input_token_limit, output_token_limit: listed.output_token_limit };
             Some((rank, model))
         })

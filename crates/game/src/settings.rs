@@ -249,6 +249,43 @@ pub fn answer_settings(ui: &mut Ui, settings: &mut Settings, gemini: bool) -> bo
     changed
 }
 
+/// How much the master can read and how full the story keeps it, with the switch between
+/// counting by the smallest model and by the first, and what the last answer cost. `true`
+/// when the switch was turned.
+pub fn memory_section(ui: &mut Ui, settings: &mut Settings, limit: &crate::master::ContextLimit) -> bool {
+    let lang = settings.lang;
+    let t = |text: T| text.text(lang);
+    let by = if settings.context_smallest { t(T::ContextBySmallest) } else { t(T::ContextByFirst) };
+    let model = if limit.model.is_empty() { String::new() } else { format!(" ({})", limit.model) };
+    ui.label(format!("{}: {} {} — {by}{model}", t(T::ContextIs), limit.tokens / 1000, t(T::ContextTokens)));
+    if limit.guessed {
+        kit::warning(ui, t(T::ContextGuessed));
+    }
+    let mut on = settings.context_smallest;
+    let changed = kit::toggle(ui, t(T::ContextSmallest), &mut on).changed();
+    if changed {
+        settings.context_smallest = on;
+    }
+    hint(ui, t(T::ContextSmallestHint));
+    hint(ui, t(T::ContextCompacts));
+    if let Some((model, spent)) = llm::context::last_spent() {
+        ui.add_space(3.0);
+        ui.label(format!(
+            "{} ({model}): {} {}, {} {} ({}%), {} {}{}",
+            t(T::LastSpent),
+            t(T::SpentIn),
+            spent.prompt,
+            t(T::SpentCached),
+            spent.cached,
+            spent.cache_share(),
+            t(T::SpentOut),
+            spent.output,
+            if spent.thinking > 0 { format!(", {} {}", t(T::SpentThinking), spent.thinking) } else { String::new() }
+        ));
+    }
+    changed
+}
+
 /// What the player did on the settings screen besides changing a setting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsAct {

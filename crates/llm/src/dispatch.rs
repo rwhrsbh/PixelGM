@@ -348,7 +348,12 @@ impl<T: Transport> Dispatcher<T> {
                     why = reason;
                     continue;
                 }
-                Err(Failure::BadRequest(message)) => return Err(GenError::BadRequest(message)),
+                Err(Failure::BadRequest(message)) => {
+                    // Too long for this model: what it reads is learned, and the story will
+                    // be written up to fit it.
+                    crate::context::learn(&model.id, &message);
+                    return Err(GenError::BadRequest(message));
+                }
                 Err(Failure::RateLimited { retry_after, limit }) => Outcome::RateLimited { retry_after, limit },
                 Err(Failure::Overloaded) => Outcome::Overloaded,
                 Err(Failure::ModelGone) => Outcome::ModelGone,
