@@ -1409,8 +1409,10 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
         pose.moving = false;
         return;
     }
-    // Something for everyone to read comes before walking on.
-    if let Some(turn) = table.unread.pop_front() {
+    // Something for everyone to read comes before walking on, once nothing else is open.
+    if matches!(*phase, Phase::Walking | Phase::Asking { .. })
+        && let Some(turn) = table.unread.pop_front()
+    {
         *phase = Phase::Reading { turn };
         return;
     }
@@ -1575,10 +1577,22 @@ pub fn show(turn: Turn, phase: &mut Phase, table: &mut Table) {
     }
     // It does not take the place of a thing being looked at, a die about to be rolled or
     // words being typed: those wait, and it is read after them.
-    if matches!(*phase, Phase::Walking | Phase::Asking { .. }) {
-        *phase = Phase::Reading { turn };
-    } else {
-        table.unread.push_back(turn);
+    match phase {
+        Phase::Walking | Phase::Asking { .. } => *phase = Phase::Reading { turn },
+        // Read on from the same panel: the new part follows what is being read, and its
+        // choices take the place of the old ones.
+        Phase::Reading { turn: reading } => {
+            reading.narration = format!("{}\n\n{}", reading.narration.trim_end(), turn.narration.trim());
+            if !turn.options.is_empty() {
+                reading.options = turn.options;
+            }
+        }
+        // Something else is open (the bag, a sheet, the journal, a fight): the telling waits
+        // for it to close, and the corner says there is one.
+        _ => {
+            table.notices.push(format!("✉ {}", gist(&turn.narration)));
+            table.unread.push_back(turn);
+        }
     }
 }
 
@@ -1859,11 +1873,12 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
         if game.world.place_of(&player) == place {
             session.send_to(&player, &Down::Told(turn.clone()));
         } else if !gist.is_empty() {
-            session.send_to(&player, &Down::Chat { from: where_.clone(), text: gist.clone() });
+            session.send_to(&player, &Down::News { place: where_.clone(), text: gist.clone() });
         }
     }
+    // News from far off goes to the corner, not to the table's talk.
     if table.elsewhere && !gist.is_empty() {
-        table.heard(&where_, &gist);
+        table.notices.push(format!("{where_}: {gist}"));
     }
     // The outcome of a chest opened or a die rolled offers nothing, and takes nothing
     // away: the choices of the telling before it stand.
@@ -3708,6 +3723,26 @@ mod tests {
     fn world() -> World {
         let draft: world::WorldDraft = serde_json::from_str(&fake::world("play")).unwrap();
         world::build_world(&draft, "play", "English").unwrap().0
+    }
+
+    #[test]
+    fn a_telling_arrives_whatever_the_player_has_open() {
+        let told = |text: &str| Turn { narration: text.to_string(), options: Vec::new() };
+        let mut table = Table::default();
+        // Walking: it is read at once.
+        let mut phase = Phase::Walking;
+        show(told("The door creaks."), &mut phase, &mut table);
+        assert!(matches!(&phase, Phase::Reading { turn } if turn.narration == "The door creaks."));
+        // Reading: the next one follows in the same panel, nothing waits.
+        show(told("A cat runs in."), &mut phase, &mut table);
+        assert!(matches!(&phase, Phase::Reading { turn } if turn.narration == "The door creaks.\n\nA cat runs in."));
+        assert!(table.unread.is_empty());
+        // The bag open: it waits for the bag to close, and the corner says so.
+        let mut phase = Phase::Bag;
+        show(told("Rain begins."), &mut phase, &mut table);
+        assert_eq!(phase, Phase::Bag);
+        assert_eq!(table.unread.len(), 1);
+        assert!(table.notices.iter().any(|n| n.contains("Rain begins.")));
     }
 
     #[test]

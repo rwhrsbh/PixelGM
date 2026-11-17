@@ -150,8 +150,11 @@ pub fn overlay(
         }
         Sheet::Reading(turn) => {
             if fields.telling != turn.narration {
+                // A telling that went on from the one being read keeps what was written out.
+                if !turn.narration.starts_with(fields.telling.as_str()) || fields.telling.is_empty() {
+                    fields.letters = 0.0;
+                }
                 fields.telling = turn.narration.clone();
-                fields.letters = 0.0;
             }
             fields.letters += crate::play::LETTERS_PER_SECOND * time.delta_secs();
             let shown: String = turn.narration.chars().take(fields.letters as usize).collect();

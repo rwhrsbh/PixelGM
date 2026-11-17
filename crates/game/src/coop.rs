@@ -178,6 +178,8 @@ pub enum Down {
     Kicked,
     /// Every seat at the table is taken.
     Full,
+    /// The first words of what was told in a place this player is not in.
+    News { place: String, text: String },
     /// Someone in a place says something aloud: the place, who, the words.
     Bubble { place: String, who: String, text: String },
     /// The whole world, sent on joining and whenever it changes. `id` names its saves.
@@ -1161,6 +1163,7 @@ fn client_pump(
                 redraw.0 = true;
             }
             ClientEvent::Message(Down::Roster(roster)) => table.roster = roster,
+            ClientEvent::Message(Down::News { place, text }) => table.notices.push(format!("{place}: {text}")),
             ClientEvent::Message(Down::Kicked | Down::Full) => {
                 // Not a dropped line: there is no coming back by trying again.
                 table.status = Some(T::LobbyKicked);
