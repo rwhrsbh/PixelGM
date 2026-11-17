@@ -140,6 +140,7 @@ texts! {
     Invite: "Пригласить", "Invite";
     TableOf: "Стол:", "Table of";
     LobbyAbout: "Твой стол уже открыт: зови друзей на свободные места или зайди за чужой стол справа.", "Your table is open already: ask friends to the free seats, or join another table at the right.";
+    LobbyGuestAbout: "Ты за чужим столом: нажми «Готов», а когда хост начнёт, игра откроется сама.", "You are at somebody's table: press Ready, and the game opens by itself when the host begins.";
     Party: "Партия", "Party";
     TableCode: "Код стола", "The table's code";
     Copy: "Копировать", "Copy";
@@ -150,6 +151,7 @@ texts! {
     OtherVersion: "У этого стола другая версия игры.", "That table runs another version of the game.";
     CodeHint: "Код стола или адрес (LAN, ZeroTier, Radmin). Ctrl+V — вставить.", "A table's code or address (LAN, ZeroTier, Radmin). Ctrl+V pastes.";
     TalkEmpty: "Здесь пишут за столом: Enter — отправить.", "Talk at the table goes here: Enter sends.";
+    TalkTitle: "Разговор за столом", "Talk at the table";
     LobbyBackHint: "В меню; стол остаётся открытым", "To the menu; the table stays open";
     LeaveTable: "Покинуть стол", "Leave the table";
     NotReadyAction: "Не готов", "Not ready";

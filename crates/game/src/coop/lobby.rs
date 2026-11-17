@@ -223,7 +223,8 @@ fn screen(
         None => t(T::Multiplayer).to_string(),
     };
     let lobby = &mut *lobby;
-    let sheet = Sheet { id: "lobby", title: &title, about: t(T::LobbyAbout), max: vec2(640.0, 470.0), top: 0.0, fixed: true };
+    let about = if guest { t(T::LobbyGuestAbout) } else { t(T::LobbyAbout) };
+    let sheet = Sheet { id: "lobby", title: &title, about, max: vec2(640.0, 470.0), top: 0.0, fixed: true };
     kit::sheet(
         &mut ui,
         sheet,
@@ -269,7 +270,10 @@ fn screen(
             if roster.steam {
                 hint(&mut left, t(T::SteamOpen));
             }
-            if !hosting && !guest {
+            // Alone: on the way back to a table, or with no table of one's own.
+            if !hosting && !guest && table.rejoin.is_some() {
+                hint(&mut left, t(T::Rejoining));
+            } else if !hosting && !guest {
                 kit::warning(&mut left, table.status.map_or(t(T::LobbyHostFailed), |s| s.text(lang)));
                 if left.add(button(t(T::OpenTable))).clicked() {
                     reopen = true;
@@ -313,7 +317,7 @@ fn screen(
             }
 
             // The table's talk.
-            kit::title(&mut right, t(T::TableTalk), crate::ui::theme::SMALL_TITLE);
+            kit::title(&mut right, t(T::TalkTitle), crate::ui::theme::SMALL_TITLE);
             egui::ScrollArea::vertical().id_salt("talk").max_height(90.0).stick_to_bottom(true).show(&mut right, |ui| {
                 if table.chat.is_empty() {
                     hint(ui, t(T::TalkEmpty));
@@ -338,7 +342,7 @@ fn screen(
             if footer.add(button(t(T::Back)).key("Esc")).on_hover_text(t(T::LobbyBackHint)).clicked() {
                 back = true;
             }
-            if (hosting || guest) && footer.add(button(t(T::LeaveTable))).clicked() {
+            if guest && footer.add(button(t(T::LeaveTable))).clicked() {
                 leave = true;
             }
             if guest {
