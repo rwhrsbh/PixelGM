@@ -51,7 +51,14 @@ fn main() -> AppExit {
     // A hidden test window is one canvas; a real one is sized to the screen once it opens.
     let (width, height) = args.size.unwrap_or(if args.hidden { (960, 540) } else { (1920, 1080) });
     let store = store::Store::at(store::home());
-    let settings = store.load_settings();
+    let mut settings = store.load_settings();
+    // A player is somebody from the first start on, whatever name they go by.
+    if settings.player_id == 0 {
+        settings.player_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64 ^ (std::process::id() as u64) << 32).max(1);
+        if let Err(e) = store.save_settings(&settings) {
+            eprintln!("could not save settings: {e}");
+        }
+    }
     let mut app = App::new();
     // A command meant for something already gone (a figure redrawn the same frame it was
     // told to move) is written down, not a crash.

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 9;
+pub const PROTOCOL: u32 = 10;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -140,7 +140,15 @@ impl Held {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Up {
-    Hello { name: String, version: u32 },
+    Hello {
+        name: String,
+        version: u32,
+        /// Who this player is, whatever the name: one who comes back gets the same seat.
+        #[serde(default)]
+        player: u64,
+    },
+    /// Ready to begin, or no longer.
+    Ready(bool),
     Position {
         x: f32,
         y: f32,
@@ -164,9 +172,12 @@ pub enum Up {
 pub enum Down {
     /// The name the guest goes by at this table.
     Welcome { name: String },
-    /// Everyone at the table, the host first: the name, the hero's name if they have one, and
-    /// whether the table was joined through Steam.
-    Roster { seats: Vec<(String, String)>, steam: bool },
+    /// Everyone at the table, the host first, and how the table is reached.
+    Roster(Roster),
+    /// The host took this player off the table.
+    Kicked,
+    /// Every seat at the table is taken.
+    Full,
     /// Someone in a place says something aloud: the place, who, the words.
     Bubble { place: String, who: String, text: String },
     /// The whole world, sent on joining and whenever it changes. `id` names its saves.
@@ -209,8 +220,41 @@ pub enum Down {
     KeysWait(Option<u64>),
 }
 
+/// A seat at the table as the room shows it.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Seat {
+    pub name: String,
+    /// The hero's name and level, empty while there is none.
+    pub hero: String,
+    pub ready: bool,
+    pub host: bool,
+}
+
+/// Who sits at the table and how it is reached, as the host tells it.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Roster {
+    pub seats: Vec<Seat>,
+    /// Friends reach it through Steam.
+    pub steam: bool,
+    /// The table's code for one network, and the networks it is on with their codes.
+    pub codes: Vec<(String, String)>,
+    /// The world played there, empty while none is chosen.
+    pub world: String,
+    /// Whether the game has begun.
+    pub playing: bool,
+}
+
+/// The most players at a table, the host among them; a master of flesh and blood sits apart.
+pub const SEATS: usize = 5;
+
 pub struct Hosting {
     net: Host<Up, Down>,
+    /// Who each guest is, whatever the name.
+    ids: HashMap<PeerId, u64>,
+    /// The guests who said they are ready.
+    ready: HashMap<PeerId, bool>,
+    /// Says where the table is to every network this machine is on; none for Steam alone.
+    beacon: Option<net::beacon::Beacon>,
     names: HashMap<PeerId, String>,
     tokens: HashMap<PeerId, (f32, f32, (i32, i32))>,
     /// The world as last sent to each guest, to tell when it has changed. Each guest is
@@ -222,8 +266,74 @@ pub struct Hosting {
     relayed: HashMap<u64, (Relayed, Vec<PeerId>)>,
 }
 
+/// How many times a dropped table is tried again, a few seconds apart, before giving up.
+pub const REJOIN_TRIES: u32 = 20;
+const REJOIN_EVERY: f32 = 3.0;
+
+/// A table being reached again after the line dropped.
+pub struct Rejoin {
+    pub way: Way,
+    pub tries: u32,
+    since: f32,
+    /// A connection being made by address, on a thread of its own: it may take seconds.
+    trying: Option<Arc<Mutex<Option<std::io::Result<Session>>>>>,
+}
+
+/// Tries the table again every few seconds after the line dropped, until it answers or the
+/// tries run out.
+fn rejoin(time: Res<Time>, mut session: ResMut<Session>, mut table: ResMut<Table>, settings: Res<Settings>, link: Res<SteamLink>) {
+    if !matches!(*session, Session::Solo) {
+        return;
+    }
+    let Some(rejoin) = &mut table.rejoin else { return };
+    if let Some(slot) = &rejoin.trying {
+        let Some(result) = slot.lock().unwrap().take() else { return };
+        rejoin.trying = None;
+        if let Ok(joined) = result {
+            *session = joined;
+            return;
+        }
+    }
+    rejoin.since += time.delta_secs();
+    if rejoin.since < REJOIN_EVERY {
+        return;
+    }
+    rejoin.since = 0.0;
+    rejoin.tries += 1;
+    if rejoin.tries > REJOIN_TRIES {
+        table.rejoin = None;
+        table.lost = true;
+        table.status = Some(T::LobbyLost);
+        return;
+    }
+    let (name, player) = (player_name(&settings), settings.player_id);
+    match rejoin.way.clone() {
+        Way::Address(address) => {
+            let slot: Arc<Mutex<Option<std::io::Result<Session>>>> = Arc::default();
+            rejoin.trying = Some(slot.clone());
+            std::thread::spawn(move || {
+                let result = join(&address, &name, player);
+                *slot.lock().unwrap() = Some(result);
+            });
+        }
+        Way::Steam(lobby) => {
+            if let Some(steam) = &link.steam {
+                *session = join_steam(steam, lobby, &name, player);
+            }
+        }
+    }
+}
+
+/// How a guest reached the table, to reach it again when the line drops.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Way {
+    Address(String),
+    Steam(u64),
+}
+
 pub struct Joined {
     net: Client<Up, Down>,
+    way: Way,
     since_position: f32,
     /// Answers to the host's relayed requests, from the threads that fetched them.
     served: Arc<Mutex<Vec<(u64, Served)>>>,
@@ -256,6 +366,16 @@ impl Session {
 
     pub fn intend(&self, intent: Intent) {
         self.send(Up::Intent(intent));
+    }
+
+    /// Takes a guest off the table, by name; does nothing unless this is the host.
+    pub fn kick(&self, player: &str) {
+        let Session::Host(hosting) = self else { return };
+        let hosting = hosting.lock().unwrap();
+        if let Some(peer) = hosting.names.iter().find(|(_, name)| name.as_str() == player).map(|(peer, _)| *peer) {
+            hosting.net.send(peer, &Down::Kicked);
+            hosting.net.kick(peer);
+        }
     }
 
     /// Sends to every guest; does nothing unless this is the host.
@@ -304,7 +424,7 @@ impl Session {
 #[derive(Resource, Default)]
 pub struct Table {
     /// Everyone at the table as the host last told it, and whether it is a Steam table.
-    pub roster: (Vec<(String, String)>, bool),
+    pub roster: Roster,
     /// Things the people of a place will say aloud, in the order they will be said, and the
     /// place they belong to: asked for once, shown one by one.
     pub chatter: (String, std::collections::VecDeque<(String, String)>),
@@ -343,6 +463,10 @@ pub struct Table {
     pub inbox: Vec<(String, Intent)>,
     /// A line for the player about the connection, shown on the lobby screen.
     pub status: Option<T>,
+    /// The line to the host dropped and the table is being tried again.
+    pub rejoin: Option<Rejoin>,
+    /// The table could not be reached again: the game goes on alone.
+    pub lost: bool,
     /// Table talk, oldest first.
     pub chat: Vec<ChatLine>,
     /// On the host: the model's answers a human master has yet to judge, oldest first.
@@ -418,8 +542,38 @@ pub fn my_turn(world: &World, session: &Session, settings: &Settings) -> bool {
     }
 }
 
-pub fn host(port: u16) -> std::io::Result<Session> {
-    Ok(fresh_hosting(Host::listen(("0.0.0.0", port))?))
+/// Hosts on the first free port of the game's, said to every network by a beacon, and in a
+/// Steam lobby as well when Steam is there.
+pub fn host(steam: Option<&net::Steam>, name: &str, port: Option<u16>) -> std::io::Result<Session> {
+    let listener = match port {
+        Some(port) => std::net::TcpListener::bind(("0.0.0.0", port))?,
+        None => net::free_listener()?,
+    };
+    let port = listener.local_addr()?.port();
+    let net = match steam {
+        Some(steam) => Host::listen_both(steam, listener)?,
+        None => Host::serve(listener)?,
+    };
+    let info = net::beacon::TableInfo { protocol: PROTOCOL, name: name.to_string(), port, taken: 1, seats: SEATS as u8, world: String::new(), playing: false };
+    Ok(fresh_hosting(net, Some(net::beacon::Beacon::start(info))))
+}
+
+/// The codes of a table on this port, one for each network this machine is on, named for
+/// the player: the home network, Radmin, ZeroTier.
+pub fn table_codes(port: u16, lang: crate::i18n::Lang) -> Vec<(String, String)> {
+    use net::beacon::NetworkKind;
+    net::beacon::networks()
+        .into_iter()
+        .map(|network| {
+            let name = match network.kind() {
+                NetworkKind::Local => T::NetLocal.text(lang),
+                NetworkKind::Radmin => "Radmin VPN",
+                NetworkKind::ZeroTier => "ZeroTier",
+                NetworkKind::Hamachi => "Hamachi",
+            };
+            (format!("{name} {}", network.address), net::code::encode(std::net::SocketAddrV4::new(network.address, port)))
+        })
+        .collect()
 }
 
 /// Steam, once the multiplayer screen has asked for it. Asking makes Steam show the player
@@ -448,27 +602,33 @@ pub fn invite_friends(link: &SteamLink, session: &Session) {
 /// How often the list of friends hosting is looked up while the lobby screen is open.
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 
-fn fresh_hosting(net: Host<Up, Down>) -> Session {
-    Session::Host(Mutex::new(Hosting { net, names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
-}
-
-/// Hosts in a Steam lobby that the player's friends can see.
-pub fn host_steam(steam: &net::Steam) -> Session {
-    fresh_hosting(Host::listen_steam(steam))
+fn fresh_hosting(net: Host<Up, Down>, beacon: Option<net::beacon::Beacon>) -> Session {
+    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
 }
 
 /// Joins a friend's Steam lobby.
-pub fn join_steam(steam: &net::Steam, lobby: u64, name: &str) -> Session {
+pub fn join_steam(steam: &net::Steam, lobby: u64, name: &str, player: u64) -> Session {
     let net = Client::connect_steam(steam, lobby);
-    net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL });
-    Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default() }))
+    net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player });
+    Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Steam(lobby) }))
 }
 
-pub fn join(address: &str, name: &str) -> std::io::Result<Session> {
-    let address = if address.contains(':') { address.to_string() } else { format!("{address}:{DEFAULT_PORT}") };
+/// Joins a table by its code or its address, with or without a port.
+pub fn join(typed: &str, name: &str, player: u64) -> std::io::Result<Session> {
+    let typed = typed.trim();
+    let address = if net::code::looks_like_code(typed) {
+        match net::code::decode(typed) {
+            Ok(address) => address.to_string(),
+            Err(_) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the code has a typo")),
+        }
+    } else if typed.contains(':') {
+        typed.to_string()
+    } else {
+        format!("{typed}:{DEFAULT_PORT}")
+    };
     let net = Client::connect(&address)?;
-    net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL });
-    Ok(Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default() })))
+    net.send(&Up::Hello { name: name.to_string(), version: PROTOCOL, player });
+    Ok(Session::Client(Mutex::new(Joined { net, since_position: 0.0, served: Arc::default(), way: Way::Address(address) })))
 }
 
 /// The world as a guest should receive it: no tokens of other players in it (they travel
@@ -615,6 +775,8 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                     table.queues.gone_from(&place, name, "");
                 }
                 hosting.names.remove(&peer);
+                hosting.ids.remove(&peer);
+                hosting.ready.remove(&peer);
                 hosting.tokens.remove(&peer);
                 hosting.sent.remove(&peer);
                 // What the guest who left was working on goes to the next one.
@@ -623,23 +785,46 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                     pass_on(&mut hosting, &master.relay, id, Trouble::Network);
                 }
             }
-            HostEvent::Message(peer, Up::Hello { name, version }) => {
+            HostEvent::Message(peer, Up::Hello { name, version, player }) => {
                 if version != PROTOCOL {
                     hosting.net.send(peer, &Down::WrongVersion);
                     hosting.net.kick(peer);
                     continue;
                 }
-                // Two players with one name would share a hero; the later one gets a number.
-                let taken: Vec<&String> = hosting.names.values().collect();
-                let mut unique = name.trim().to_string();
-                let mut n = 2;
-                while unique.is_empty() || taken.contains(&&unique) || unique == player_name(&settings) {
-                    unique = format!("{} {n}", name.trim());
-                    n += 1;
+                // One who comes back takes their seat again; the line they had, if it has not
+                // been noticed to drop yet, is let go.
+                let old = (player != 0).then(|| hosting.ids.iter().find(|(p, id)| **id == player && **p != peer).map(|(p, _)| *p)).flatten();
+                let kept = old.and_then(|old| {
+                    hosting.ids.remove(&old);
+                    hosting.ready.remove(&old);
+                    hosting.tokens.remove(&old);
+                    hosting.sent.remove(&old);
+                    hosting.net.kick(old);
+                    hosting.names.remove(&old)
+                });
+                if kept.is_none() && hosting.names.len() + 1 >= SEATS {
+                    hosting.net.send(peer, &Down::Full);
+                    hosting.net.kick(peer);
+                    continue;
                 }
+                let unique = kept.unwrap_or_else(|| {
+                    // Two players with one name would share a hero; the later one gets a number.
+                    let taken: Vec<&String> = hosting.names.values().collect();
+                    let mut unique = name.trim().to_string();
+                    let mut n = 2;
+                    while unique.is_empty() || taken.contains(&&unique) || unique == player_name(&settings) {
+                        unique = format!("{} {n}", name.trim());
+                        n += 1;
+                    }
+                    unique
+                });
                 hosting.net.send(peer, &Down::Welcome { name: unique.clone() });
                 hosting.names.insert(peer, unique);
+                hosting.ids.insert(peer, player);
                 // The world itself follows from the pump below, as seen from this guest's place.
+            }
+            HostEvent::Message(peer, Up::Ready(ready)) => {
+                hosting.ready.insert(peer, ready);
             }
             HostEvent::Message(peer, Up::Position { x, y, facing }) => {
                 hosting.tokens.insert(peer, (x, y, facing));
@@ -795,28 +980,39 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
 /// The host keeps everyone told who sits at the table.
 fn roster(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, game: Option<Res<Game>>, mut table: ResMut<Table>, mut since: Local<f32>) {
     let Session::Host(hosting) = &*session else {
-        if matches!(*session, Session::Solo) && !table.roster.0.is_empty() {
-            table.roster = (Vec::new(), false);
+        if matches!(*session, Session::Solo) && table.roster != Roster::default() {
+            table.roster = Roster::default();
         }
         return;
     };
     *since += time.delta_secs();
-    if *since < 1.0 {
+    if *since < 0.5 {
         return;
     }
     *since = 0.0;
-    let steam = hosting.lock().unwrap().net.port() == 0;
+    let hosting = hosting.lock().unwrap();
     let hero_of = |name: &str| game.as_ref().and_then(|g| g.world.owners.iter().position(|o| o == name).and_then(|i| g.world.party.get(i)).map(|h| format!("{} {}", h.name, h.level))).unwrap_or_default();
     let me = player_name(&settings);
-    let mut seats = vec![(me.clone(), hero_of(&me))];
-    seats.extend(session.players().into_iter().map(|name| {
-        let hero = hero_of(&name);
-        (name, hero)
-    }));
-    if table.roster != (seats.clone(), steam) {
-        table.roster = (seats.clone(), steam);
+    let mut seats = vec![Seat { name: me.clone(), hero: hero_of(&me), ready: true, host: true }];
+    let mut guests: Vec<(&PeerId, &String)> = hosting.names.iter().collect();
+    guests.sort_by(|a, b| a.1.cmp(b.1));
+    seats.extend(guests.into_iter().map(|(peer, name)| Seat { name: name.clone(), hero: hero_of(name), ready: hosting.ready.get(peer) == Some(&true), host: false }));
+    let port = hosting.net.port();
+    let world = game.as_ref().map(|g| g.world.title.clone()).unwrap_or_default();
+    let roster = Roster { steam: matches!(hosting.net.lobby(), Some(Ok(_))), codes: if port == 0 { Vec::new() } else { table_codes(port, settings.lang) }, world: world.clone(), playing: game.is_some(), seats };
+    if let Some(beacon) = &hosting.beacon {
+        let taken = roster.seats.len() as u8;
+        beacon.update(|info| {
+            info.name = me.clone();
+            info.taken = taken;
+            info.world = world.clone();
+            info.playing = roster.playing;
+        });
     }
-    session.broadcast(&Down::Roster { seats, steam });
+    hosting.net.broadcast(&Down::Roster(roster.clone()));
+    if table.roster != roster {
+        table.roster = roster;
+    }
 }
 
 fn presence(session: Res<Session>, settings: Res<Settings>, mut game: Option<ResMut<Game>>, screen: Res<State<Screen>>, mut next: ResMut<NextState<Screen>>) {
@@ -910,7 +1106,7 @@ fn client_pump(
     mut next: ResMut<NextState<Screen>>,
     mut fx: ResMut<crate::fx::Fx>,
 ) {
-    let (events, serving) = match &*session {
+    let (events, serving, way) = match &*session {
         Session::Client(joined) => {
             let mut joined = joined.lock().unwrap();
             joined.since_position += time.delta_secs();
@@ -921,7 +1117,7 @@ fn client_pump(
             for (id, result) in std::mem::take(&mut *joined.served.lock().unwrap()) {
                 joined.net.send(&Up::Answer { id, result });
             }
-            (joined.net.poll(), joined.served.clone())
+            (joined.net.poll(), joined.served.clone(), joined.way.clone())
         }
         _ => return,
     };
@@ -929,6 +1125,9 @@ fn client_pump(
         let me = player_name(&settings);
         match event {
             ClientEvent::Message(Down::Welcome { name }) => {
+                // Back at the table, if the line had dropped.
+                table.rejoin = None;
+                table.status = None;
                 // The host may have numbered the name; the hero is recorded under what the
                 // host calls this player.
                 if name != me {
@@ -950,7 +1149,15 @@ fn client_pump(
                 play::show(turn, &mut phase, &mut table);
                 redraw.0 = true;
             }
-            ClientEvent::Message(Down::Roster { seats, steam }) => table.roster = (seats, steam),
+            ClientEvent::Message(Down::Roster(roster)) => table.roster = roster,
+            ClientEvent::Message(Down::Kicked | Down::Full) => {
+                // Not a dropped line: there is no coming back by trying again.
+                table.status = Some(T::LobbyKicked);
+                table.rejoin = None;
+                *session = Session::Solo;
+                next.set(Screen::Lobby);
+                return;
+            }
             ClientEvent::Message(Down::Bubble { place, who, text }) => {
                 if game.as_ref().is_some_and(|g| g.world.current == place) {
                     table.bubbles.push((who, text));
@@ -1015,279 +1222,27 @@ fn client_pump(
             ClientEvent::Message(Down::Card(card)) => table.keep_card(&store, card, settings.lang),
             ClientEvent::Message(Down::WrongVersion) => {
                 table.status = Some(T::LobbyWrongVersion);
+                table.rejoin = None;
                 *session = Session::Solo;
                 return;
             }
             ClientEvent::Disconnected => {
-                // The host is gone. What this guest last saw is kept as a save of its own,
-                // so the game can go on alone from here.
+                // The line dropped. What this guest last saw is kept as a save of its own, so
+                // the game can go on alone from here; meanwhile the table is tried again.
                 if let Some(game) = &game
                     && let Err(e) = store.save_game(&game.world_id, &game.world, false)
                 {
                     error!("could not save the game: {e}");
                 }
-                table.status = Some(T::LobbyLost);
+                if table.rejoin.is_none() {
+                    table.rejoin = Some(Rejoin { way: way.clone(), tries: 0, since: 0.0, trying: None });
+                }
                 *session = Session::Solo;
-                *phase = Phase::Walking;
-                next.set(Screen::Lobby);
-                return;
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum LobbyAction {
-    Host,
-    Join,
-    Leave,
-    HostSteam,
-    /// Join the Steam lobby of the friend at this place in the list.
-    JoinSteam(usize),
-    /// Open Steam's overlay to invite friends to the table being hosted.
-    Invite,
-    /// Ask the friend at this place in the list of those online to the table, through chat.
-    Ask(usize),
-}
-
-/// What is typed on the lobby screen: the name, and the address of a table to join.
-#[derive(Resource)]
-struct LobbyFields {
-    name: String,
-    address: String,
-}
-
-/// Steam is looked for when the lobby opens, if it was not when the game started, and the
-/// fields start from the name and the usual address.
-fn lobby_enter(mut commands: Commands, settings: Res<Settings>, mut link: ResMut<SteamLink>) {
-    if !link.tried {
-        link.tried = true;
-        match net::Steam::init() {
-            Ok(steam) => {
-                link.friends = steam.friends_hosting();
-                link.steam = Some(steam);
-            }
-            Err(e) => info!("Steam is not available: {e}"),
-        }
-    }
-    commands.insert_resource(LobbyFields { name: player_name(&settings), address: format!("127.0.0.1:{DEFAULT_PORT}") });
-}
-
-/// The friends hosting and those online are looked up every few seconds while the lobby is open.
-fn lobby_look(time: Res<Time>, mut link: ResMut<SteamLink>) {
-    link.since_look += time.delta_secs();
-    if link.since_look < FRIENDS_LOOK_PERIOD {
-        return;
-    }
-    link.since_look = 0.0;
-    if let Some(steam) = &link.steam {
-        let hosting = steam.friends_hosting();
-        let online = steam.friends_online();
-        if hosting != link.friends {
-            link.friends = hosting;
-        }
-        if online != link.online {
-            link.online = online;
-        }
-    }
-}
-
-/// How this table is held and who sits at it, for the lobby.
-fn table_text(session: &Session, table: &Table, lang: crate::i18n::Lang) -> String {
-    match session {
-        Session::Host(hosting) => {
-            let (port, lobby) = {
-                let hosting = hosting.lock().unwrap();
-                (hosting.net.port(), hosting.net.lobby())
-            };
-            // A host with no port is in a Steam lobby.
-            let how = match (port, lobby) {
-                (0, None) => T::SteamOpening.text(lang).to_string(),
-                (0, Some(Ok(_))) => T::SteamOpen.text(lang).to_string(),
-                (0, Some(Err(why))) => format!("{} {why}", T::SteamRefused.text(lang)),
-                _ => format!("{} {}:{port}", T::LobbyHosting.text(lang), local_address()),
-            };
-            format!("{how}\n{}", seats_text(table, lang))
-        }
-        Session::Client(_) if table.roster.0.is_empty() => T::LobbyJoined.text(lang).to_string(),
-        Session::Client(_) => format!("{}\n{}", T::LobbyAtTable.text(lang), seats_text(table, lang)),
-        Session::Solo => String::new(),
-    }
-}
-
-/// The lobby, drawn with egui. Alone: the name, then a table on Steam and a table by
-/// address, each to start or to join. At a table: who sits there, how others get in, and
-/// the way out.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn lobby_screen(
-    mut egui: bevy_egui::EguiContexts,
-    (mut session, mut settings, mut table, store): (ResMut<Session>, ResMut<Settings>, ResMut<Table>, Res<Store>),
-    (mut link, mut fields): (ResMut<SteamLink>, ResMut<LobbyFields>),
-    (mut next, mut return_to): (ResMut<NextState<Screen>>, ResMut<ReturnTo>),
-) {
-    let lang = settings.lang;
-    let t = |text: T| text.text(lang);
-    let Ok(ctx) = egui.ctx_mut() else { return };
-    let Some(mut ui) = kit::screen_ui(ctx, "lobby") else { return };
-    let alone = matches!(*session, Session::Solo);
-    let hosting_steam = matches!(&*session, Session::Host(hosting) if hosting.lock().unwrap().net.port() == 0);
-    let open = steam_table(&session);
-    let at_table = table_text(&session, &table, lang);
-    let status = table.status.map(|s| s.text(lang).to_string());
-    let mut acts: Vec<LobbyAction> = Vec::new();
-    let mut back = false;
-    let busy = t(T::LobbyAlready);
-    let sheet = Sheet { id: "lobby", title: t(T::Multiplayer), about: t(T::LobbyHelp), max: vec2(440.0, 400.0), top: 0.0, fixed: false };
-    kit::sheet(
-        &mut ui,
-        sheet,
-        |ui| {
-            ui.horizontal(|row| {
-                row.label(t(T::LobbyName));
-                row.add_enabled(alone, egui::TextEdit::singleline(&mut fields.name).desired_width(180.0).char_limit(60));
-            });
-            ui.add_space(4.0);
-            if !alone {
-                // The table this player is at.
-                kit::title(ui, t(T::LobbyRoom), crate::ui::theme::SMALL_TITLE);
-                ui.add(egui::Label::new(RichText::new(&at_table).color(c(WAX_DARK))).wrap());
-                if hosting_steam && link.steam.is_some() {
-                    if ui.add(button(t(T::SteamInvite)).enabled(open, t(T::SteamOpening))).clicked() {
-                        acts.push(LobbyAction::Invite);
-                    }
-                    if open && !link.online.is_empty() {
-                        hint(ui, t(T::SteamAsk));
-                        ui.horizontal_wrapped(|row| {
-                            for (n, (friend, id)) in link.online.iter().enumerate().take(12) {
-                                let mark = if link.asked.contains(id) { "✓ " } else { "" };
-                                if row.add(button(format!("{mark}{friend}"))).clicked() {
-                                    acts.push(LobbyAction::Ask(n));
-                                }
-                            }
-                        });
-                    }
-                }
-                if ui.add(button(t(T::LobbyLeave))).clicked() {
-                    acts.push(LobbyAction::Leave);
-                }
-            }
-            // Alone: the ways to a table. At one, they wait until it is left.
-            if !alone {
-                if let Some(status) = &status {
-                    kit::warning(ui, status.as_str());
+                if matches!(*phase, Phase::Asking { .. } | Phase::Drawing { .. }) {
+                    *phase = Phase::Walking;
                 }
                 return;
             }
-            // Steam first: friends find each other without addresses or open ports.
-            kit::title(ui, "Steam", crate::ui::theme::SMALL_TITLE);
-            if link.steam.is_some() {
-                if ui.add(button(t(T::SteamHost)).enabled(alone, busy)).on_hover_text(t(T::SteamHostHint)).clicked() {
-                    acts.push(LobbyAction::HostSteam);
-                }
-                if link.friends.is_empty() {
-                    hint(ui, t(T::SteamNoFriends));
-                } else {
-                    ui.horizontal_wrapped(|row| {
-                        row.label(t(T::SteamFriends));
-                        for (n, (friend, _)) in link.friends.iter().enumerate() {
-                            if row.add(button(friend.as_str()).enabled(alone, busy)).clicked() {
-                                acts.push(LobbyAction::JoinSteam(n));
-                            }
-                        }
-                    });
-                }
-            } else {
-                hint(ui, t(T::SteamUnavailable));
-            }
-            ui.add_space(4.0);
-            // By address: on one network, or over ZeroTier or Radmin.
-            kit::title(ui, t(T::DirectTitle), crate::ui::theme::SMALL_TITLE);
-            hint(ui, t(T::DirectHint));
-            if ui.add(button(t(T::LobbyHost)).enabled(alone, busy)).clicked() {
-                acts.push(LobbyAction::Host);
-            }
-            ui.horizontal(|row| {
-                row.label(t(T::LobbyAddress));
-                let field = row.add_enabled(alone, egui::TextEdit::singleline(&mut fields.address).desired_width(160.0).char_limit(60));
-                let entered = field.lost_focus() && row.input(|i| i.key_pressed(Key::Enter));
-                let ready = alone && !fields.address.trim().is_empty();
-                let why = if alone { t(T::AddressFirst) } else { busy };
-                if row.add(button(t(T::LobbyJoin)).enabled(ready, why)).clicked() || (entered && ready) {
-                    acts.push(LobbyAction::Join);
-                }
-            });
-            if let Some(status) = &status {
-                kit::warning(ui, status.as_str());
-            }
-        },
-        |footer| {
-            if footer.add(button(t(T::Back)).key("Esc")).clicked() {
-                back = true;
-            }
-        },
-    );
-    if back {
-        next.set(return_to.back());
-        return;
-    }
-    if acts.is_empty() {
-        return;
-    }
-    // The name typed is kept before anything else.
-    let typed = fields.name.trim().to_string();
-    if !typed.is_empty() && typed != settings.player_name {
-        settings.player_name = typed;
-        if let Err(e) = store.save_settings(&settings) {
-            error!("could not save settings: {e}");
-        }
-    }
-    table.status = None;
-    for act in acts {
-        match act {
-            LobbyAction::Host => match host(DEFAULT_PORT) {
-                Ok(hosting) => {
-                    direct_name(&mut settings, link.steam.as_ref());
-                    *session = hosting
-                }
-                Err(e) => {
-                    error!("could not host: {e}");
-                    table.status = Some(T::LobbyHostFailed);
-                }
-            },
-            LobbyAction::Join => {
-                let address = fields.address.trim().to_string();
-                direct_name(&mut settings, link.steam.as_ref());
-                match join(&address, &player_name(&settings)) {
-                    Ok(joined) => *session = joined,
-                    Err(e) => {
-                        error!("could not join {address}: {e}");
-                        table.status = Some(T::LobbyJoinFailed);
-                    }
-                }
-            }
-            LobbyAction::Leave => *session = Session::Solo,
-            LobbyAction::HostSteam => {
-                if let Some(steam) = &link.steam {
-                    // At a Steam table one goes by one's Steam name.
-                    settings.player_name = steam.name();
-                    *session = host_steam(steam);
-                }
-            }
-            LobbyAction::JoinSteam(n) => {
-                if let (Some(steam), Some((_, lobby))) = (&link.steam, link.friends.get(n)) {
-                    settings.player_name = steam.name();
-                    *session = join_steam(steam, *lobby, &player_name(&settings));
-                }
-            }
-            LobbyAction::Ask(n) => {
-                if let (Some(steam), Session::Host(hosting), Some((_, friend))) = (&link.steam, &*session, link.online.get(n).cloned())
-                    && let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby()
-                {
-                    steam.invite_friend(friend, lobby);
-                    link.asked.push(friend);
-                }
-            }
-            LobbyAction::Invite => invite_friends(&link, &session),
         }
     }
 }
@@ -1299,20 +1254,6 @@ fn direct_name(settings: &mut Settings, steam: Option<&net::Steam>) {
     if typed.is_empty() || steam.is_some_and(|s| s.name() == typed) {
         settings.player_name = computer_name();
     }
-}
-
-/// Who sits at the table, a line each: the host first, then the guests, each with their
-/// hero when they have one, and how the table is joined.
-fn seats_text(table: &Table, lang: crate::i18n::Lang) -> String {
-    let (seats, steam) = &table.roster;
-    let via = if *steam { "Steam" } else { T::LobbyDirect.text(lang) };
-    let mut lines = vec![format!("{} ({via}, {}/5):", T::LobbyPlayers.text(lang), seats.len())];
-    for (n, (name, hero)) in seats.iter().enumerate() {
-        let role = if n == 0 { format!(" — {}", T::LobbyHostWord.text(lang)) } else { String::new() };
-        let hero = if hero.is_empty() { format!(" · {}", T::LobbyNoHero.text(lang)) } else { format!(" · {hero}") };
-        lines.push(format!("  {}. {name}{role}{hero}", n + 1));
-    }
-    lines.join("\n")
 }
 
 /// The name of this machine, for a table joined by address.
@@ -1364,16 +1305,11 @@ fn steam_invites(time: Res<Time>, link: Res<SteamLink>, mut session: ResMut<Sess
     let Some(lobby) = steam.asked_into() else { return };
     info!("invited through Steam into lobby {lobby}");
     settings.player_name = steam.name();
-    *session = join_steam(steam, lobby, &steam.name());
+    *session = join_steam(steam, lobby, &steam.name(), settings.player_id);
     next.set(Screen::Lobby);
 }
 
-/// The address other machines on the same network can reach this one at.
-fn local_address() -> String {
-    // No packet is sent: connecting a datagram socket only asks the system which of this
-    // machine's addresses would be used.
-    std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| s.connect("192.0.2.1:9").and_then(|_| s.local_addr())).map(|a| a.ip().to_string()).unwrap_or_else(|_| "127.0.0.1".to_string())
-}
+mod lobby;
 
 pub struct CoopPlugin;
 
@@ -1382,13 +1318,12 @@ impl Plugin for CoopPlugin {
         app.init_resource::<Session>()
             .init_resource::<Table>()
             .init_resource::<SteamLink>()
-            .add_systems(OnEnter(Screen::Lobby), lobby_enter)
-            .add_systems(PreUpdate, (host_pump, client_pump, presence, roster).chain())
+            .add_plugins(lobby::LobbyPlugin)
+            .add_systems(PreUpdate, (host_pump, client_pump, rejoin, presence, roster).chain())
             .add_systems(Startup, steam_start)
             .add_systems(Update, steam_invites)
             .add_systems(bevy_egui::EguiPrimaryContextPass, keys_vote.in_set(crate::ui::UiSet::Screens))
-            .add_systems(Update, lobby_look.run_if(in_state(Screen::Lobby)))
-            .add_systems(bevy_egui::EguiPrimaryContextPass, lobby_screen.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Lobby)).run_if(resource_exists::<LobbyFields>));
+;
     }
 }
 
@@ -1435,7 +1370,7 @@ mod tests {
         let ann = Settings { player_name: "Ann".into(), ..Settings::default() };
         let bob = Settings { player_name: "Bob".into(), ..Settings::default() };
         assert!(my_turn(&w, &Session::Solo, &bob));
-        let table = host(0).unwrap();
+        let table = host(None, "Ann", Some(0)).unwrap();
         assert!(my_turn(&w, &table, &ann));
         assert!(!my_turn(&w, &table, &bob));
         assert_eq!(owner_name(&Session::Solo, &ann), "");
@@ -1445,7 +1380,19 @@ mod tests {
     #[test]
     fn an_address_without_a_port_gets_the_usual_one() {
         // Nothing listens there: what matters is that the address was understood.
-        let error = join("127.0.0.1", "Ann").err().expect("nobody is listening");
+        let error = join("127.0.0.1:1", "Ann", 7).err().expect("nobody is listening");
         assert_ne!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn a_table_is_joined_by_its_code_and_a_typo_is_told_without_trying() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let code = net::code::encode(std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port));
+        assert!(join(&code, "Ann", 7).is_ok());
+        let mut typo: Vec<char> = code.chars().collect();
+        typo[0] = if typo[0] == 'Z' { 'Y' } else { 'Z' };
+        let typo: String = typo.into_iter().collect();
+        assert_eq!(join(&typo, "Ann", 7).err().map(|e| e.kind()), Some(std::io::ErrorKind::InvalidInput));
     }
 }
