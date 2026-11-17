@@ -79,9 +79,40 @@ pub fn base_for(model: &str) -> String {
     models().ok().and_then(|models| models.into_iter().find(|m| m.id == model)).map_or_else(|| CHAT_BASE.to_string(), |m| m.base)
 }
 
-/// The game as it names itself to OpenCode.
+/// Where OpenCode's released client is published: its version is asked for there.
+const RELEASES: &str = "https://registry.npmjs.org/opencode-ai/latest";
+/// The version of OpenCode's client when this build was made, for when the registry
+/// cannot be reached.
+const KNOWN_VERSION: &str = "1.19.6";
+/// How long a version asked for is believed.
+const VERSION_FRESH_FOR: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// The version of OpenCode's released client, asked of the registry now and then.
+fn opencode_version() -> String {
+    static VERSION: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+    let slot = VERSION.get_or_init(Mutex::default);
+    if let Some((when, version)) = slot.lock().unwrap().as_ref()
+        && when.elapsed() < VERSION_FRESH_FOR
+    {
+        return version.clone();
+    }
+    let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(5)).timeout(Duration::from_secs(10)).build();
+    let asked = agent.get(RELEASES).call().ok().and_then(|r| r.into_string().ok()).and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok()).and_then(|v| v["version"].as_str().map(str::to_string));
+    let version = asked.clone().unwrap_or_else(|| slot.lock().unwrap().as_ref().map_or_else(|| KNOWN_VERSION.to_string(), |(_, v)| v.clone()));
+    // Asked again sooner when the registry did not answer.
+    let when = if asked.is_some() { Instant::now() } else { Instant::now() - VERSION_FRESH_FOR + Duration::from_secs(300) };
+    *slot.lock().unwrap() = Some((when, version.clone()));
+    version
+}
+
+/// How OpenCode's client names itself, `opencode/<channel>/<version>/<app>`, with the
+/// version of its latest release: Go is asked as that client asks.
 fn user_agent() -> String {
-    format!("pixelgm/{}", env!("CARGO_PKG_VERSION"))
+    user_agent_of(&opencode_version())
+}
+
+fn user_agent_of(version: &str) -> String {
+    format!("opencode/latest/{version}/opencode")
 }
 
 /// A session of the shape OpenCode's client makes (`ses_` and 64 hex digits), new for every
@@ -111,7 +142,7 @@ pub fn session_of(words: &str) -> String {
 }
 
 /// The headers OpenCode's client sends with every request of a session, the same names and
-/// the same values, but for its own name and version.
+/// the same values.
 pub fn headers(session: &str) -> Vec<(&'static str, String)> {
     vec![
         ("x-opencode-session-id", session.to_string()),
@@ -120,7 +151,7 @@ pub fn headers(session: &str) -> Vec<(&'static str, String)> {
         ("User-Agent", user_agent()),
         ("x-opencode-project", "global".to_string()),
         ("x-opencode-session", session.to_string()),
-        ("x-opencode-client", "pixelgm".to_string()),
+        ("x-opencode-client", "opencode".to_string()),
     ]
 }
 
@@ -162,5 +193,7 @@ mod tests {
             assert!(headers.iter().any(|(n, v)| *n == name && v == "ses_1"), "{name}");
         }
         assert!(headers.iter().any(|(n, v)| *n == "x-opencode-project" && v == "global"));
+        assert!(headers.iter().any(|(n, v)| *n == "x-opencode-client" && v == "opencode"));
+        assert_eq!(user_agent_of("1.19.6"), "opencode/latest/1.19.6/opencode");
     }
 }
