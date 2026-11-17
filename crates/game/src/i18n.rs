@@ -477,6 +477,27 @@ texts! {
     Seconds: "с", "s";
 
     SetLanguage: "Язык", "Language";
+    SettingsAbout: "Всё меняется сразу и сохраняется само. Значение меняют ◀ ▶, щелчок, колесо или стрелки.", "Everything takes effect at once and is saved by itself. ◀ ▶, a click, the wheel or the arrows change a value.";
+    TabGame: "Игра", "Game";
+    TabScreen: "Экран", "Screen";
+    TabSound: "Звук", "Sound";
+    TabMaster: "Мастер", "Master";
+    SetScreen: "Экран интерфейса", "Interface for";
+    ScreenAuto: "Авто", "Auto";
+    ScreenFhd: "Full HD", "Full HD";
+    Screen2k: "2K", "2K";
+    Screen4k: "4K", "4K";
+    ScreenHint: "Под какой экран рисовать меню и надписи. «Авто» — по высоте окна.", "Which screen the menus and words are drawn for. Auto goes by the window's height.";
+    SetUiSize: "Размер интерфейса", "Interface size";
+    UiSmaller: "Мельче", "Smaller";
+    UiNormal: "Обычный", "Normal";
+    UiLarger: "Крупнее", "Larger";
+    UiSizeHint: "Крупнее или мельче все меню, кнопки и надписи.", "All menus, buttons and words larger or smaller.";
+    LanguageHint: "Язык меню и рассказа мастера.", "The language of the menus and of the master's telling.";
+    WindowHint: "Во весь экран или в окне. F11 — переключить в любой момент.", "Full screen or in a window. F11 switches at any time.";
+    SizeHint: "Размер окна, когда игра не во весь экран.", "The window's size when not in full screen.";
+    MusicHint: "Громкость музыки.", "How loud the music is.";
+    SoundHint: "Громкость звуков: шаги, удары, кнопки.", "How loud the sounds are: steps, blows, buttons.";
     LanguageName: "Русский", "English";
     SetWindow: "Окно", "Window";
     SetOnlineMusic: "Музыка из сети", "Music from the network";
