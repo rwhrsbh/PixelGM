@@ -2,13 +2,12 @@
 //! small scene beside the list shows at once what each choice looks like — a camp with a
 //! fire and water, a hero walking on the spot, at the hour and in the weather picked for it.
 
-use crate::art::Art;
 use crate::i18n::{Lang, T};
-use crate::menu::{Backdrop, Nav, Screen};
+use crate::menu::{Backdrop, Screen};
 use crate::post::Grade;
 use crate::store::{Settings, Store};
-use crate::theme::*;
-use crate::widgets::{Activate, button, panel_backing, text_button};
+use crate::ui::egui::{Rect as URect, vec2};
+use crate::ui::kit::{self, button, hint};
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
@@ -49,24 +48,7 @@ const AT: Vec2 = Vec2::new(12.0, 12.0);
 struct PreviewThing;
 
 #[derive(Component)]
-struct GfxPanel;
-
-#[derive(Component)]
 struct WalkingHero(Vec<Handle<Image>>);
-
-#[derive(Component, Clone, Copy)]
-enum Pick {
-    Grade,
-    Bloom,
-    Vignette,
-    ScanLines,
-    Glass,
-    Weather,
-    Night,
-    CellHint,
-    Hour,
-    Sky,
-}
 
 pub struct GraphicsPlugin;
 
@@ -76,7 +58,7 @@ impl Plugin for GraphicsPlugin {
             .add_systems(OnEnter(Screen::Graphics), enter)
             .add_systems(OnExit(Screen::Graphics), leave)
             .add_systems(Update, (build, walk, escape).run_if(in_state(Screen::Graphics)))
-            .add_observer(on_activate);
+            .add_systems(bevy_egui::EguiPrimaryContextPass, panel.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Graphics)));
     }
 }
 
@@ -88,7 +70,7 @@ fn enter(mut backdrop: Query<&mut Visibility, With<Backdrop>>, mut preview: ResM
     preview.built = None;
 }
 
-fn leave(mut commands: Commands, mut backdrop: Query<&mut Visibility, With<Backdrop>>, things: Query<Entity, Or<(With<PreviewThing>, With<GfxPanel>)>>) {
+fn leave(mut commands: Commands, mut backdrop: Query<&mut Visibility, With<Backdrop>>, things: Query<Entity, With<PreviewThing>>) {
     for mut v in &mut backdrop {
         *v = Visibility::Inherited;
     }
@@ -159,11 +141,9 @@ fn build(
     mut commands: Commands,
     settings: Res<Settings>,
     lang: Res<Lang>,
-    art: Res<Art>,
-    fonts: Res<Fonts>,
     mut preview: ResMut<Preview>,
     mut images: ResMut<Assets<Image>>,
-    old: Query<Entity, Or<(With<PreviewThing>, With<GfxPanel>)>>,
+    old: Query<Entity, With<PreviewThing>>,
 ) {
     let key = (settings.grade, settings.gfx, preview.hour, preview.weather, *lang);
     if preview.built == Some(key) {
@@ -177,7 +157,6 @@ fn build(
         commands.entity(thing).despawn();
     }
     let gfx = settings.gfx;
-    let ru = *lang == Lang::Ru;
     let p = preview.scene.as_ref().expect("painted above");
     // The scene: a crop of the place, and what stands in it.
     commands.spawn((PreviewThing, Sprite { rect: Some(CROP), ..Sprite::from_image(p.ground[0].clone()) }, Anchor::TOP_LEFT, Transform::from_translation(corner(0.0))));
@@ -222,39 +201,67 @@ fn build(
     }
     crate::weather::preview(&mut commands, preview.weather, gfx.weather, Rect { min: AT, max: AT + size }, p.water.clone(), PreviewThing);
 
-    // The list of choices.
-    let on = |b: bool| if b { "[x]" } else { "[ ]" }.to_string();
-    let hour = |n: usize| if ru { HOURS[n].1 } else { HOURS[n].2 }.to_string();
-    let rows: Vec<(T, String, Pick)> = vec![
-        (T::SetGrade, settings.grade.label().text(*lang).to_string(), Pick::Grade),
-        (T::GfxBloom, on(gfx.bloom), Pick::Bloom),
-        (T::GfxVignette, on(gfx.vignette), Pick::Vignette),
-        (T::GfxScanLines, on(gfx.scan_lines), Pick::ScanLines),
-        (T::GfxGlass, on(gfx.glass), Pick::Glass),
-        (T::GfxWeather, on(gfx.weather), Pick::Weather),
-        (T::GfxNight, on(gfx.night), Pick::Night),
-        (T::GfxCellHint, on(gfx.cell_hint), Pick::CellHint),
-        (T::GfxPreviewHour, hour(preview.hour), Pick::Hour),
-        (T::GfxPreviewSky, crate::weather::Sky::ALL[preview.weather % crate::weather::Sky::ALL.len()].label().text(*lang).to_string(), Pick::Sky),
-    ];
-    commands.spawn((GfxPanel, Node { position_type: PositionType::Absolute, left: px(252), top: px(6), width: px(222), padding: UiRect::all(px(10)), flex_direction: FlexDirection::Column, row_gap: px(3), ..default() })).with_children(|panel| {
-        panel.spawn(panel_backing(&art));
-        panel.spawn((Text::new(T::Graphics.text(*lang)), fonts.title(1), TextColor(color(INK))));
-        for (n, (label, value, pick)) in rows.into_iter().enumerate() {
-            // The last two rows choose only what the preview shows.
-            if n == 8 {
-                panel.spawn((Text::new(T::GfxPreviewOnly.text(*lang)), fonts.body(), TextColor(color(FADED))));
+}
+
+/// The list of choices, drawn with egui at the right; the scene at the left shows them.
+#[allow(clippy::too_many_arguments)]
+fn panel(mut egui: bevy_egui::EguiContexts, mut settings: ResMut<Settings>, lang: Res<Lang>, mut preview: ResMut<Preview>, store: Res<Store>, mut next: ResMut<NextState<Screen>>) {
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let Some(mut ui) = kit::screen_ui(ctx, "graphics") else { return };
+    let lang = *lang;
+    let t = |text: T| text.text(lang);
+    let ru = lang == Lang::Ru;
+    let screen = ui.max_rect();
+    // The interface's grid is 480 by 270; the scene takes its left half.
+    let unit = vec2(screen.width() / crate::screen::UI.x as f32, screen.height() / crate::screen::UI.y as f32);
+    let rect = URect::from_min_max(screen.min + vec2(252.0 * unit.x, 6.0 * unit.y), screen.min + vec2(474.0 * unit.x, 264.0 * unit.y));
+    let mut changed = false;
+    let mut back = false;
+    let mut edited = settings.clone();
+    kit::sheet_at(
+        &mut ui,
+        "graphics",
+        rect,
+        t(T::Graphics).trim_end_matches('…'),
+        |ui| {
+            hint(ui, t(T::GfxAbout));
+            let grades: Vec<&str> = crate::post::Grade::ALL.iter().map(|g| g.label().text(lang)).collect();
+            let mut at = crate::post::Grade::ALL.iter().position(|g| *g == edited.grade).unwrap_or(0);
+            if kit::choice(ui, t(T::SetGrade), &grades, &mut at).changed() {
+                edited.grade = crate::post::Grade::ALL[at];
+                changed = true;
             }
-            panel.spawn(Node { justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                line.spawn((Text::new(label.text(*lang)), fonts.body(), TextColor(color(INK)), TextLayout::no_wrap()));
-                text_button(line, &art, &fonts, value, pick);
-            });
+            hint(ui, t(T::GradeHint));
+            let g = &mut edited.gfx;
+            for (name, on) in [(T::GfxBloom, &mut g.bloom), (T::GfxVignette, &mut g.vignette), (T::GfxScanLines, &mut g.scan_lines), (T::GfxGlass, &mut g.glass), (T::GfxWeather, &mut g.weather), (T::GfxNight, &mut g.night), (T::GfxCellHint, &mut g.cell_hint)] {
+                changed |= kit::toggle(ui, t(name), on).changed();
+            }
+            // The last two choose only what the preview shows.
+            ui.add_space(4.0);
+            hint(ui, t(T::GfxPreviewOnly));
+            let hours: Vec<&str> = HOURS.iter().map(|h| if ru { h.1 } else { h.2 }).collect();
+            kit::choice(ui, t(T::GfxPreviewHour), &hours, &mut preview.hour);
+            let skies: Vec<&str> = crate::weather::Sky::ALL.iter().map(|s| s.label().text(lang)).collect();
+            let mut sky = preview.weather % skies.len();
+            if kit::choice(ui, t(T::GfxPreviewSky), &skies, &mut sky).changed() {
+                preview.weather = sky;
+            }
+        },
+        |footer| {
+            if footer.add(button(t(T::Back)).key("Esc")).clicked() {
+                back = true;
+            }
+        },
+    );
+    if changed {
+        *settings = edited;
+        if let Err(e) = store.save_settings(&settings) {
+            error!("could not save settings: {e}");
         }
-        panel.spawn(Node { margin: UiRect::top(px(4)), ..default() }).with_children(|slot| button(slot, &art, &fonts, T::Back, true, Nav::Go(Screen::Settings)));
-    });
-    commands.spawn((GfxPanel, Node { position_type: PositionType::Absolute, left: px(8), top: px(208), width: px(236), ..default() })).with_children(|n| {
-        n.spawn((Text::new(T::GradeHint.text(*lang)), fonts.body(), TextColor(color(PARCHMENT))));
-    });
+    }
+    if back {
+        next.set(Screen::Settings);
+    }
 }
 
 /// The hero in the preview walks on the spot.
@@ -266,31 +273,5 @@ fn walk(time: Res<Time>, mut heroes: Query<(&WalkingHero, &mut Sprite)>, mut clo
         if sprite.image != *frame {
             sprite.image = frame.clone();
         }
-    }
-}
-
-fn on_activate(used: On<Activate>, picks: Query<&Pick>, mut settings: ResMut<Settings>, mut preview: ResMut<Preview>, store: Res<Store>) {
-    let Ok(pick) = picks.get(used.entity) else { return };
-    let g = &mut settings.gfx;
-    match pick {
-        Pick::Grade => settings.grade = settings.grade.next(),
-        Pick::Bloom => g.bloom = !g.bloom,
-        Pick::Vignette => g.vignette = !g.vignette,
-        Pick::ScanLines => g.scan_lines = !g.scan_lines,
-        Pick::Glass => g.glass = !g.glass,
-        Pick::Weather => g.weather = !g.weather,
-        Pick::Night => g.night = !g.night,
-        Pick::CellHint => g.cell_hint = !g.cell_hint,
-        Pick::Hour => {
-            preview.hour = (preview.hour + 1) % HOURS.len();
-            return;
-        }
-        Pick::Sky => {
-            preview.weather = (preview.weather + 1) % crate::weather::Sky::ALL.len();
-            return;
-        }
-    }
-    if let Err(e) = store.save_settings(&settings) {
-        error!("could not save settings: {e}");
     }
 }

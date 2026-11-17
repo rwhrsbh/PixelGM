@@ -251,6 +251,7 @@ texts! {
     SlotShield: "Щит", "Shield";
     SlotBody: "Доспех", "Armour";
     Graphics: "Графика…", "Graphics…";
+    GfxAbout: "Слева сразу видно, как выглядит каждая настройка.", "The scene at the left shows at once what each setting looks like.";
     GfxBloom: "Свечение", "Glow";
     GfxVignette: "Виньетка", "Vignette";
     GfxScanLines: "Строки экрана", "Scan lines";
@@ -484,9 +485,6 @@ texts! {
     TabMaster: "Мастер", "Master";
     SetScreen: "Экран интерфейса", "Interface for";
     ScreenAuto: "Авто", "Auto";
-    ScreenFhd: "Full HD", "Full HD";
-    Screen2k: "2K", "2K";
-    Screen4k: "4K", "4K";
     ScreenHint: "Под какой экран рисовать меню и надписи. «Авто» — по высоте окна.", "Which screen the menus and words are drawn for. Auto goes by the window's height.";
     SetUiSize: "Размер интерфейса", "Interface size";
     UiSmaller: "Мельче", "Smaller";
