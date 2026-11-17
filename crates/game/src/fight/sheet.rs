@@ -25,6 +25,9 @@ const HUD: f32 = HUD_HEIGHT * crate::screen::UI_PIXEL;
 const PARTY: f32 = crate::view::COLUMN * crate::screen::UI_PIXEL;
 const LEFT_COLUMN: f32 = 300.0;
 const CELL: f32 = 50.0;
+/// How tall the fight's sheet under the map is at least and at most, in units.
+const FIGHT_LEAST: f32 = 64.0;
+const FIGHT_MOST: f32 = 120.0;
 
 #[allow(clippy::too_many_arguments)]
 pub fn sheet(
@@ -47,10 +50,9 @@ pub fn sheet(
     let Ok(ctx) = egui.ctx_mut() else { return };
     let Some(mut ui) = kit::screen_ui(ctx, "fight_sheet") else { return };
     let screen = ui.max_rect();
-    // As tall as what it holds needs, and never taller than the story's panel is set to be:
-    // the map stays as large as it can.
-    let most = crate::play::STORY_HEIGHTS[settings.narration.min(2) as usize];
-    let height = needed.clamp(crate::play::STORY_HEIGHTS[0], most);
+    // As tall as what it holds needs, and never more than a strip: in a fight the map is
+    // what the player looks at.
+    let height = needed.clamp(FIGHT_LEAST, FIGHT_MOST);
     if slot.0 != height {
         slot.0 = height;
     }
@@ -165,9 +167,8 @@ pub fn sheet(
                     hint(ui, t(T::OthersTurn));
                 } else {
                     match &view.mode {
-                        Mode::Menu => {
-                            hint(ui, t(T::FightKeys));
-                        }
+                        // The keys are written on the buttons themselves.
+                        Mode::Menu => {}
                         Mode::Spells => {
                             hint(ui, t(T::SpellsAbout));
                             ui.horizontal_wrapped(|ui| {

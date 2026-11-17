@@ -172,10 +172,11 @@ fn draw(
     let cell = crate::bag_ui::draw::cell_for(inner.width(), foot.min_rect().top() - top - INFO - 12.0, BAG_H as f32);
     let grid = Rect::from_min_size(Pos2::new(inner.left(), top), vec2(BAG_W as f32 * cell, BAG_H as f32 * cell));
     let painter = ui.painter().clone();
-    painter.rect_filled(grid.expand(2.0), 0.0, c(WOOD_DEEP));
+    painter.rect_stroke(grid, 0.0, Stroke::new(1.0, c(WOOD_DEEP)), egui::StrokeKind::Outside);
     for y in 0..BAG_H {
         for x in 0..BAG_W {
-            painter.rect_filled(Rect::from_min_size(grid.min + vec2(x as f32 * cell, y as f32 * cell), vec2(cell, cell)).shrink(1.0), 0.0, c(WOOD_DARK));
+            let shade = if (x + y) % 2 == 0 { WOOD_DARK } else { [0x4a, 0x2e, 0x1d, 0xff] };
+            painter.rect_filled(Rect::from_min_size(grid.min + vec2(x as f32 * cell, y as f32 * cell), vec2(cell, cell)), 0.0, c(shade));
         }
     }
     let mut over = None;

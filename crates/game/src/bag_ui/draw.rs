@@ -278,13 +278,14 @@ pub fn draw(
     let grid = Rect::from_min_size(Pos2::new(inner.left(), top + gear_row + 6.0), vec2(BAG_W as f32 * GRID_CELL, BAG_H as f32 * GRID_CELL));
     let response = ui.interact(grid, egui::Id::new("bag_grid"), Sense::click());
     let painter = ui.painter().clone();
-    painter.rect_filled(grid.expand(2.0), 0.0, c(WOOD_DEEP));
+    // A frame round the grid, and the cells in two close shades with no lines between them.
+    painter.rect_stroke(grid, 0.0, Stroke::new(1.0, c(WOOD_DEEP)), egui::StrokeKind::Outside);
     let cell_rect =
         |x: u8, y: u8, w: u8, hh: u8| Rect::from_min_size(Pos2::new(grid.left() + x as f32 * GRID_CELL, grid.top() + y as f32 * GRID_CELL), vec2(w as f32 * GRID_CELL, hh as f32 * GRID_CELL));
     for y in 0..BAG_H {
         for x in 0..BAG_W {
-            let shade = if (x + y) % 2 == 0 { WOOD_DARK } else { [0x3c, 0x24, 0x17, 0xff] };
-            painter.rect_filled(cell_rect(x, y, 1, 1).shrink(0.5), 0.0, c(shade));
+            let shade = if (x + y) % 2 == 0 { WOOD_DARK } else { [0x4a, 0x2e, 0x1d, 0xff] };
+            painter.rect_filled(cell_rect(x, y, 1, 1), 0.0, c(shade));
         }
     }
     for (i, (x, y), (w, hh), (id, _)) in &placed {

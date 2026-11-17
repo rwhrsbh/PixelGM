@@ -31,7 +31,7 @@ struct Faces(HashMap<String, (egui::TextureId, Vec2)>);
 /// The width of the column, in units of the interface.
 const WIDTH: f32 = crate::view::COLUMN * crate::screen::UI_PIXEL;
 /// Where on a figure the head and shoulders are, in its pixels.
-const FACE: (f32, f32, f32, f32) = (6.0, 2.0, 26.0, 22.0);
+const FACE: (f32, f32, f32, f32) = (4.0, 7.0, 28.0, 31.0);
 
 #[allow(clippy::too_many_arguments)]
 fn column(mut egui: EguiContexts, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, lang: Res<Lang>, mut images: ResMut<Assets<Image>>, mut faces: Local<Faces>) {
