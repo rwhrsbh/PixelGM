@@ -170,6 +170,8 @@ texts! {
     PlayAloneHint: "Продолжить со своей копии мира, без стола", "Go on from your copy of the world, without the table";
     ToMenu: "В меню", "To the menu";
     NetLocal: "Локальная сеть", "Local network";
+    NetInternet: "Интернет", "Internet";
+    InternetClosed: "Роутер не открыл порт: из интернета войдут только через Steam, ZeroTier или Radmin.", "The router did not open the port: from the internet only Steam, ZeroTier or Radmin get in.";
     LobbyJoinFailed: "Не удалось подключиться.", "Could not connect.";
     TableTalk: "Столу", "To the table";
     WritingHintTable: "Enter — мастеру, это тратит ход. «Столу» — только игрокам: мастер не слышит.", "Enter sends it to the game master and spends a turn. \"To the table\" is for the players only: the master does not hear it.";

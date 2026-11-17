@@ -270,6 +270,9 @@ fn screen(
             if roster.steam {
                 hint(&mut left, t(T::SteamOpen));
             }
+            if hosting && roster.internet == Some(false) {
+                hint(&mut left, t(T::InternetClosed));
+            }
             // Alone: on the way back to a table, or with no table of one's own.
             if !hosting && !guest && table.rejoin.is_some() {
                 hint(&mut left, t(T::Rejoining));

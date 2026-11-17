@@ -244,7 +244,14 @@ pub struct Roster {
     pub world: String,
     /// Whether the game has begun.
     pub playing: bool,
+    /// Whether friends across the internet can come in by the code: none while the router
+    /// is being asked.
+    pub internet: Option<bool>,
 }
+
+/// How often where everybody is goes over the wire: twenty times a second, so another
+/// player's figure walks smoothly between the words of where it is.
+const POSITIONS_EVERY: f32 = 0.05;
 
 /// The most players at a table, the host among them; a master of flesh and blood sits apart.
 pub const SEATS: usize = 5;
@@ -257,6 +264,8 @@ pub struct Hosting {
     ready: HashMap<PeerId, bool>,
     /// Says where the table is to every network this machine is on; none for Steam alone.
     beacon: Option<net::beacon::Beacon>,
+    /// The port held open on the home router for friends across the internet.
+    upnp: Option<net::upnp::Upnp>,
     names: HashMap<PeerId, String>,
     tokens: HashMap<PeerId, (f32, f32, (i32, i32))>,
     /// The world as last sent to each guest, to tell when it has changed. Each guest is
@@ -559,7 +568,12 @@ pub fn host(steam: Option<&net::Steam>, name: &str, port: Option<u16>) -> std::i
         None => Host::serve(listener)?,
     };
     let info = net::beacon::TableInfo { protocol: PROTOCOL, name: name.to_string(), port, taken: 1, seats: SEATS as u8, world: String::new(), playing: false };
-    Ok(fresh_hosting(net, Some(net::beacon::Beacon::start(info))))
+    let session = fresh_hosting(net, Some(net::beacon::Beacon::start(info)));
+    // The router is asked to let friends across the internet in as well.
+    if let (Session::Host(hosting), Some(local)) = (&session, net::beacon::networks().into_iter().find(|n| n.kind() == net::beacon::NetworkKind::Local).map(|n| n.address)) {
+        hosting.lock().unwrap().upnp = Some(net::upnp::Upnp::open(local, port));
+    }
+    Ok(session)
 }
 
 /// The codes of a table on this port, one for each network this machine is on, named for
@@ -607,7 +621,7 @@ pub fn invite_friends(link: &SteamLink, session: &Session) {
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 
 fn fresh_hosting(net: Host<Up, Down>, beacon: Option<net::beacon::Beacon>) -> Session {
-    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
+    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new() }))
 }
 
 /// Joins a friend's Steam lobby.
@@ -949,7 +963,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
         return;
     }
     hosting.since_positions += time.delta_secs();
-    if playing && hosting.since_positions >= 0.1 {
+    if playing && hosting.since_positions >= POSITIONS_EVERY {
         hosting.since_positions = 0.0;
         tokens.push(Token { name: player_name(&settings), x: game.world.player.x, y: game.world.player.y, place: game.world.current.clone(), facing: game.world.facing });
         hosting.net.broadcast(&Down::Positions(tokens));
@@ -1003,7 +1017,13 @@ fn roster(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, game:
     seats.extend(guests.into_iter().map(|(peer, name)| Seat { name: name.clone(), hero: hero_of(name), ready: hosting.ready.get(peer) == Some(&true), host: false }));
     let port = hosting.net.port();
     let world = game.as_ref().map(|g| g.world.title.clone()).unwrap_or_default();
-    let roster = Roster { steam: matches!(hosting.net.lobby(), Some(Ok(_))), codes: if port == 0 { Vec::new() } else { table_codes(port, settings.lang) }, world: world.clone(), playing: game.is_some(), seats };
+    let mut codes = if port == 0 { Vec::new() } else { table_codes(port, settings.lang) };
+    let opened = hosting.upnp.as_ref().and_then(|u| u.opened.lock().unwrap().clone());
+    if let Some(Ok(ip)) = &opened {
+        codes.push((format!("{} {ip}", T::NetInternet.text(settings.lang)), net::code::encode(std::net::SocketAddrV4::new(*ip, port))));
+    }
+    let internet = opened.map(|o| o.is_ok());
+    let roster = Roster { steam: matches!(hosting.net.lobby(), Some(Ok(_))), codes, world: world.clone(), playing: game.is_some(), internet, seats };
     if let Some(beacon) = &hosting.beacon {
         let taken = roster.seats.len() as u8;
         beacon.update(|info| {
@@ -1114,7 +1134,7 @@ fn client_pump(
         Session::Client(joined) => {
             let mut joined = joined.lock().unwrap();
             joined.since_position += time.delta_secs();
-            if let (true, Some(game)) = (joined.since_position >= 0.1 && *screen.get() == Screen::Play, &game) {
+            if let (true, Some(game)) = (joined.since_position >= POSITIONS_EVERY && *screen.get() == Screen::Play, &game) {
                 joined.since_position = 0.0;
                 joined.net.send(&Up::Position { x: game.world.player.x, y: game.world.player.y, facing: game.world.facing });
             }

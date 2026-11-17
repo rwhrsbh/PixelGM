@@ -9,6 +9,7 @@
 pub mod beacon;
 pub mod code;
 pub mod steam;
+pub mod upnp;
 pub use steam::bring_overlay;
 pub use steam::Steam;
 
