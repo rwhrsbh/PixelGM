@@ -15,6 +15,8 @@ pub mod prompt;
 pub mod story;
 pub mod turn;
 pub mod walk;
+#[cfg(test)]
+mod scenarios;
 
 pub use build::{LocationDraft, WorldDraft, build_location, build_world, extract_json, read_answer};
 pub use model::{Companion, Difficulty, Quest, Task, Wanderer};
