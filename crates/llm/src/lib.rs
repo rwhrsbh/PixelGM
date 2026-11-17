@@ -7,6 +7,7 @@ pub mod client;
 pub mod dispatch;
 pub mod openai;
 pub mod pool;
+pub mod opencode_go;
 pub mod providers;
 pub mod thinking;
 
