@@ -2,20 +2,18 @@
 //! to do and are sent what happened. A game played alone is the same game with nobody
 //! connected.
 
-use crate::art::Art;
 use crate::fight::FightView;
 use crate::gm::{Gm, Trouble};
 use crate::i18n::{Lang, T};
 use crate::master::{Master, Relay, Relayed, Served, serve_for_host};
-use crate::menu::{Nav, Screen, screen_root, spawn_panel};
+use crate::menu::{ReturnTo, Screen};
 use crate::play::{self, Game, Phase, Redraw};
 use crate::store::{Settings, Store};
 use crate::theme::*;
-use crate::widgets::{Activate, BUTTON_HEIGHT, backing, button, text_button};
-use bevy::input_focus::AutoFocus;
+use crate::ui::egui::{self, Key, RichText, vec2};
+use crate::ui::kit::{self, Sheet, button, hint};
+use crate::ui::theme::c;
 use bevy::prelude::*;
-use bevy::text::{EditableText, TextCursorStyle};
-use bevy::ui::auto_directional_navigation::AutoDirectionalNavigation;
 use net::{Client, ClientEvent, Host, HostEvent, PeerId};
 use rules::{Ability, Character, Event};
 use serde::{Deserialize, Serialize};
@@ -433,8 +431,6 @@ pub struct SteamLink {
     /// Friends hosting right now, as last looked up: their names and lobbies.
     friends: Vec<(String, u64)>,
     since_look: f32,
-    /// Whether the Steam lobby being hosted was open when the screen was last drawn.
-    lobby_open: bool,
     /// Friends who are online, to be asked to the table one by one, and those asked already.
     online: Vec<(String, u64)>,
     asked: Vec<u64>,
@@ -1040,7 +1036,7 @@ fn client_pump(
     }
 }
 
-#[derive(Component, Clone, Copy)]
+#[derive(Clone, Copy)]
 enum LobbyAction {
     Host,
     Join,
@@ -1054,32 +1050,16 @@ enum LobbyAction {
     Ask(usize),
 }
 
-#[derive(Component)]
-struct NameField;
-
-#[derive(Component)]
-struct AddressField;
-
-#[derive(Component)]
-struct LobbyStatus;
-
-fn field(parent: &mut ChildSpawnerCommands, art: &Art, fonts: &Fonts, initial: &str, marker: impl Bundle) {
-    parent.spawn(Node { width: px(180), height: px(BUTTON_HEIGHT), padding: UiRect::axes(px(5), px(0)), align_items: AlignItems::Center, overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }).with_children(|slot| {
-        slot.spawn(backing(art.field.clone(), 4.0));
-        slot.spawn((
-            marker,
-            AutoDirectionalNavigation::default(),
-            Node { width: percent(100), ..default() },
-            EditableText { allow_newlines: false, max_characters: Some(60), ..EditableText::new(initial) },
-            TextLayout::no_wrap(),
-            fonts.body(),
-            TextColor(color(INK)),
-            TextCursorStyle { color: color(INK), selection_color: color(BRASS_LIGHT), ..default() },
-        ));
-    });
+/// What is typed on the lobby screen: the name, and the address of a table to join.
+#[derive(Resource)]
+struct LobbyFields {
+    name: String,
+    address: String,
 }
 
-fn spawn_lobby(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>, session: Res<Session>, mut link: ResMut<SteamLink>) {
+/// Steam is looked for when the lobby opens, if it was not when the game started, and the
+/// fields start from the name and the usual address.
+fn lobby_enter(mut commands: Commands, settings: Res<Settings>, mut link: ResMut<SteamLink>) {
     if !link.tried {
         link.tried = true;
         match net::Steam::init() {
@@ -1090,65 +1070,226 @@ fn spawn_lobby(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, setting
             Err(e) => info!("Steam is not available: {e}"),
         }
     }
-    build_lobby(&mut commands, &art, &fonts, &settings, &session, &link);
+    commands.insert_resource(LobbyFields { name: player_name(&settings), address: format!("127.0.0.1:{DEFAULT_PORT}") });
 }
 
-fn build_lobby(commands: &mut Commands, art: &Art, fonts: &Fonts, settings: &Settings, session: &Session, link: &SteamLink) {
-    let ink = TextColor(color(INK));
-    let faded = TextColor(color(FADED));
+/// The friends hosting and those online are looked up every few seconds while the lobby is open.
+fn lobby_look(time: Res<Time>, mut link: ResMut<SteamLink>) {
+    link.since_look += time.delta_secs();
+    if link.since_look < FRIENDS_LOOK_PERIOD {
+        return;
+    }
+    link.since_look = 0.0;
+    if let Some(steam) = &link.steam {
+        let hosting = steam.friends_hosting();
+        let online = steam.friends_online();
+        if hosting != link.friends {
+            link.friends = hosting;
+        }
+        if online != link.online {
+            link.online = online;
+        }
+    }
+}
+
+/// How this table is held and who sits at it, for the lobby.
+fn table_text(session: &Session, table: &Table, lang: crate::i18n::Lang) -> String {
+    match session {
+        Session::Host(hosting) => {
+            let (port, lobby) = {
+                let hosting = hosting.lock().unwrap();
+                (hosting.net.port(), hosting.net.lobby())
+            };
+            // A host with no port is in a Steam lobby.
+            let how = match (port, lobby) {
+                (0, None) => T::SteamOpening.text(lang).to_string(),
+                (0, Some(Ok(_))) => T::SteamOpen.text(lang).to_string(),
+                (0, Some(Err(why))) => format!("{} {why}", T::SteamRefused.text(lang)),
+                _ => format!("{} {}:{port}", T::LobbyHosting.text(lang), local_address()),
+            };
+            format!("{how}\n{}", seats_text(table, lang))
+        }
+        Session::Client(_) if table.roster.0.is_empty() => T::LobbyJoined.text(lang).to_string(),
+        Session::Client(_) => format!("{}\n{}", T::LobbyAtTable.text(lang), seats_text(table, lang)),
+        Session::Solo => String::new(),
+    }
+}
+
+/// The lobby, drawn with egui. Alone: the name, then a table on Steam and a table by
+/// address, each to start or to join. At a table: who sits there, how others get in, and
+/// the way out.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn lobby_screen(
+    mut egui: bevy_egui::EguiContexts,
+    (mut session, mut settings, mut table, store): (ResMut<Session>, ResMut<Settings>, ResMut<Table>, Res<Store>),
+    (mut link, mut fields): (ResMut<SteamLink>, ResMut<LobbyFields>),
+    (mut next, mut return_to): (ResMut<NextState<Screen>>, ResMut<ReturnTo>),
+) {
+    let lang = settings.lang;
+    let t = |text: T| text.text(lang);
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let Some(mut ui) = kit::screen_ui(ctx, "lobby") else { return };
     let alone = matches!(*session, Session::Solo);
-    commands.spawn(screen_root(Screen::Lobby)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(8)), width: px(420), flex_direction: FlexDirection::Column, row_gap: px(5), ..default() };
-        spawn_panel(root, art, sheet, |sheet| {
-            sheet.spawn((Text::default(), T::Multiplayer, fonts.title(1), ink));
-            sheet.spawn((Text::default(), T::LobbyHelp, fonts.body(), faded));
-            sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                line.spawn((Node { width: px(90), flex_shrink: 0.0, ..default() }, Text::default(), T::LobbyName, fonts.body(), ink));
-                field(line, art, fonts, &player_name(settings), (NameField, AutoFocus));
+    let hosting_steam = matches!(&*session, Session::Host(hosting) if hosting.lock().unwrap().net.port() == 0);
+    let open = steam_table(&session);
+    let at_table = table_text(&session, &table, lang);
+    let status = table.status.map(|s| s.text(lang).to_string());
+    let mut acts: Vec<LobbyAction> = Vec::new();
+    let mut back = false;
+    let busy = t(T::LobbyAlready);
+    let sheet = Sheet { id: "lobby", title: t(T::Multiplayer), about: t(T::LobbyHelp), max: vec2(440.0, 400.0), top: 0.0, fixed: false };
+    kit::sheet(
+        &mut ui,
+        sheet,
+        |ui| {
+            ui.horizontal(|row| {
+                row.label(t(T::LobbyName));
+                row.add_enabled(alone, egui::TextEdit::singleline(&mut fields.name).desired_width(180.0).char_limit(60));
             });
-            // Steam first: friends find each other without addresses or open ports.
-            if link.steam.is_some() {
-                sheet.spawn(Node { column_gap: px(6), row_gap: px(2), flex_wrap: FlexWrap::Wrap, align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                    button(line, art, fonts, T::SteamHost, alone, LobbyAction::HostSteam);
-                    let open = matches!(session, Session::Host(hosting) if matches!(hosting.lock().unwrap().net.lobby(), Some(Ok(_))));
-                    if matches!(session, Session::Host(hosting) if hosting.lock().unwrap().net.port() == 0) {
-                        button(line, art, fonts, T::SteamInvite, open, LobbyAction::Invite);
+            ui.add_space(4.0);
+            if !alone {
+                // The table this player is at.
+                kit::title(ui, t(T::LobbyRoom), crate::ui::theme::SMALL_TITLE);
+                ui.add(egui::Label::new(RichText::new(&at_table).color(c(WAX_DARK))).wrap());
+                if hosting_steam && link.steam.is_some() {
+                    if ui.add(button(t(T::SteamInvite)).enabled(open, t(T::SteamOpening))).clicked() {
+                        acts.push(LobbyAction::Invite);
                     }
-                    // Friends online, each asked with a press: this needs no overlay.
-                    if open {
-                        line.spawn((Node { width: percent(100), ..default() }, Text::default(), T::SteamAsk, fonts.body(), faded));
-                        for (n, (friend, id)) in link.online.iter().enumerate().take(12) {
-                            let mark = if link.asked.contains(id) { "✓ " } else { "" };
-                            text_button(line, art, fonts, format!("{mark}{friend}"), (LobbyAction::Ask(n), PixelButtonState(true)));
-                        }
+                    if open && !link.online.is_empty() {
+                        hint(ui, t(T::SteamAsk));
+                        ui.horizontal_wrapped(|row| {
+                            for (n, (friend, id)) in link.online.iter().enumerate().take(12) {
+                                let mark = if link.asked.contains(id) { "✓ " } else { "" };
+                                if row.add(button(format!("{mark}{friend}"))).clicked() {
+                                    acts.push(LobbyAction::Ask(n));
+                                }
+                            }
+                        });
                     }
-                    if link.friends.is_empty() {
-                        line.spawn((Text::default(), T::SteamNoFriends, fonts.body(), faded));
-                    } else {
-                        line.spawn((Text::default(), T::SteamFriends, fonts.body(), ink));
-                        for (n, (friend, _)) in link.friends.iter().enumerate() {
-                            let joinable = PixelButtonState(alone);
-                            text_button(line, art, fonts, friend.clone(), (LobbyAction::JoinSteam(n), joinable));
-                        }
-                    }
-                });
-            } else {
-                sheet.spawn((Text::default(), T::SteamUnavailable, fonts.body(), faded));
+                }
+                if ui.add(button(t(T::LobbyLeave))).clicked() {
+                    acts.push(LobbyAction::Leave);
+                }
             }
-            sheet.spawn((Text::default(), T::DirectTitle, fonts.body(), faded));
-            sheet.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|line| {
-                line.spawn((Node { width: px(90), flex_shrink: 0.0, ..default() }, Text::default(), T::LobbyAddress, fonts.body(), ink));
-                field(line, art, fonts, &format!("127.0.0.1:{DEFAULT_PORT}"), AddressField);
-                button(line, art, fonts, T::LobbyJoin, alone, LobbyAction::Join);
+            // Alone: the ways to a table. At one, they wait until it is left.
+            if !alone {
+                if let Some(status) = &status {
+                    kit::warning(ui, status.as_str());
+                }
+                return;
+            }
+            // Steam first: friends find each other without addresses or open ports.
+            kit::title(ui, "Steam", crate::ui::theme::SMALL_TITLE);
+            if link.steam.is_some() {
+                if ui.add(button(t(T::SteamHost)).enabled(alone, busy)).on_hover_text(t(T::SteamHostHint)).clicked() {
+                    acts.push(LobbyAction::HostSteam);
+                }
+                if link.friends.is_empty() {
+                    hint(ui, t(T::SteamNoFriends));
+                } else {
+                    ui.horizontal_wrapped(|row| {
+                        row.label(t(T::SteamFriends));
+                        for (n, (friend, _)) in link.friends.iter().enumerate() {
+                            if row.add(button(friend.as_str()).enabled(alone, busy)).clicked() {
+                                acts.push(LobbyAction::JoinSteam(n));
+                            }
+                        }
+                    });
+                }
+            } else {
+                hint(ui, t(T::SteamUnavailable));
+            }
+            ui.add_space(4.0);
+            // By address: on one network, or over ZeroTier or Radmin.
+            kit::title(ui, t(T::DirectTitle), crate::ui::theme::SMALL_TITLE);
+            hint(ui, t(T::DirectHint));
+            if ui.add(button(t(T::LobbyHost)).enabled(alone, busy)).clicked() {
+                acts.push(LobbyAction::Host);
+            }
+            ui.horizontal(|row| {
+                row.label(t(T::LobbyAddress));
+                let field = row.add_enabled(alone, egui::TextEdit::singleline(&mut fields.address).desired_width(160.0).char_limit(60));
+                let entered = field.lost_focus() && row.input(|i| i.key_pressed(Key::Enter));
+                let ready = alone && !fields.address.trim().is_empty();
+                let why = if alone { t(T::AddressFirst) } else { busy };
+                if row.add(button(t(T::LobbyJoin)).enabled(ready, why)).clicked() || (entered && ready) {
+                    acts.push(LobbyAction::Join);
+                }
             });
-            sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                button(line, art, fonts, T::LobbyHost, alone, LobbyAction::Host);
-                button(line, art, fonts, T::LobbyLeave, !alone, LobbyAction::Leave);
-            });
-            sheet.spawn((Text::default(), LobbyStatus, fonts.body(), TextColor(color(WAX_DARK))));
-            sheet.spawn(Node::default()).with_children(|slot| button(slot, art, fonts, T::Back, true, Nav::Back));
-        });
-    });
+            if let Some(status) = &status {
+                kit::warning(ui, status.as_str());
+            }
+        },
+        |footer| {
+            if footer.add(button(t(T::Back)).key("Esc")).clicked() {
+                back = true;
+            }
+        },
+    );
+    if back {
+        next.set(return_to.0.take().unwrap_or(Screen::Main));
+        return;
+    }
+    if acts.is_empty() {
+        return;
+    }
+    // The name typed is kept before anything else.
+    let typed = fields.name.trim().to_string();
+    if !typed.is_empty() && typed != settings.player_name {
+        settings.player_name = typed;
+        if let Err(e) = store.save_settings(&settings) {
+            error!("could not save settings: {e}");
+        }
+    }
+    table.status = None;
+    for act in acts {
+        match act {
+            LobbyAction::Host => match host(DEFAULT_PORT) {
+                Ok(hosting) => {
+                    direct_name(&mut settings, link.steam.as_ref());
+                    *session = hosting
+                }
+                Err(e) => {
+                    error!("could not host: {e}");
+                    table.status = Some(T::LobbyHostFailed);
+                }
+            },
+            LobbyAction::Join => {
+                let address = fields.address.trim().to_string();
+                direct_name(&mut settings, link.steam.as_ref());
+                match join(&address, &player_name(&settings)) {
+                    Ok(joined) => *session = joined,
+                    Err(e) => {
+                        error!("could not join {address}: {e}");
+                        table.status = Some(T::LobbyJoinFailed);
+                    }
+                }
+            }
+            LobbyAction::Leave => *session = Session::Solo,
+            LobbyAction::HostSteam => {
+                if let Some(steam) = &link.steam {
+                    // At a Steam table one goes by one's Steam name.
+                    settings.player_name = steam.name();
+                    *session = host_steam(steam);
+                }
+            }
+            LobbyAction::JoinSteam(n) => {
+                if let (Some(steam), Some((_, lobby))) = (&link.steam, link.friends.get(n)) {
+                    settings.player_name = steam.name();
+                    *session = join_steam(steam, *lobby, &player_name(&settings));
+                }
+            }
+            LobbyAction::Ask(n) => {
+                if let (Some(steam), Session::Host(hosting), Some((_, friend))) = (&link.steam, &*session, link.online.get(n).cloned())
+                    && let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby()
+                {
+                    steam.invite_friend(friend, lobby);
+                    link.asked.push(friend);
+                }
+            }
+            LobbyAction::Invite => invite_friends(&link, &session),
+        }
+    }
 }
 
 /// At a table joined by address one goes by the name typed, or by this machine's name when
@@ -1159,10 +1300,6 @@ fn direct_name(settings: &mut Settings, steam: Option<&net::Steam>) {
         settings.player_name = computer_name();
     }
 }
-
-/// Whether a friend's button may be pressed: only while not at a table already.
-#[derive(Component)]
-struct PixelButtonState(bool);
 
 /// Who sits at the table, a line each: the host first, then the guests, each with their
 /// hero when they have one, and how the table is joined.
@@ -1183,24 +1320,9 @@ fn computer_name() -> String {
     std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "Player".to_string())
 }
 
-/// A button, anywhere, that opens Steam's overlay to invite friends to the table.
-#[derive(Component, Clone, Copy)]
-pub struct InviteButton;
-
 /// Whether this table is hosted in a Steam lobby that is open.
 pub fn steam_table(session: &Session) -> bool {
     matches!(session, Session::Host(hosting) if matches!(hosting.lock().unwrap().net.lobby(), Some(Ok(_))))
-}
-
-fn on_invite(used: On<Activate>, buttons: Query<&InviteButton>, link: Res<SteamLink>, session: Res<Session>) {
-    if buttons.get(used.entity).is_err() {
-        return;
-    }
-    if let (Some(steam), Session::Host(hosting)) = (&link.steam, &*session) {
-        if let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby() {
-            steam.invite(lobby);
-        }
-    }
 }
 
 /// Steam is asked for when the game starts, so that an invitation accepted in Steam finds
@@ -1253,158 +1375,6 @@ fn local_address() -> String {
     std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| s.connect("192.0.2.1:9").and_then(|_| s.local_addr())).map(|a| a.ip().to_string()).unwrap_or_else(|_| "127.0.0.1".to_string())
 }
 
-fn lobby_status(session: Res<Session>, table: Res<Table>, settings: Res<Settings>, mut line: Query<&mut Text, With<LobbyStatus>>) {
-    let lang = settings.lang;
-    let text = match &*session {
-        Session::Host(hosting) => {
-            let (port, lobby) = {
-                let hosting = hosting.lock().unwrap();
-                (hosting.net.port(), hosting.net.lobby())
-            };
-            let players = session.players();
-            // A host with no port is in a Steam lobby.
-            let how = match (port, lobby) {
-                (0, None) => T::SteamOpening.text(lang).to_string(),
-                (0, Some(Ok(_))) => T::SteamOpen.text(lang).to_string(),
-                (0, Some(Err(why))) => format!("{} {why}", T::SteamRefused.text(lang)),
-                _ => format!("{} {}:{port}", T::LobbyHosting.text(lang), local_address()),
-            };
-            let _ = players;
-            format!("{how}\n{}", seats_text(&table, lang))
-        }
-        Session::Client(_) if table.roster.0.is_empty() => T::LobbyJoined.text(lang).to_string(),
-        Session::Client(_) => format!("{}\n{}", T::LobbyAtTable.text(lang), seats_text(&table, lang)),
-        Session::Solo => table.status.map_or(String::new(), |t| t.text(lang).to_string()),
-    };
-    for mut shown in &mut line {
-        if shown.0 != text {
-            shown.0 = text.clone();
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn on_activate(
-    used: On<Activate>,
-    buttons: Query<&LobbyAction>,
-    name: Query<&EditableText, (With<NameField>, Without<AddressField>)>,
-    address: Query<&EditableText, (With<AddressField>, Without<NameField>)>,
-    mut session: ResMut<Session>,
-    mut settings: ResMut<Settings>,
-    mut table: ResMut<Table>,
-    store: Res<Store>,
-    mut next: ResMut<NextState<Screen>>,
-    mut link: ResMut<SteamLink>,
-    friends: Query<&PixelButtonState>,
-) {
-    let Ok(action) = buttons.get(used.entity) else { return };
-    // A friend's button is only live while this player is not at a table.
-    if friends.get(used.entity).is_ok_and(|live| !live.0) {
-        return;
-    }
-    if let Ok(name) = name.single() {
-        let typed = name.value().to_string();
-        if !typed.trim().is_empty() && typed.trim() != settings.player_name {
-            settings.player_name = typed.trim().to_string();
-            if let Err(e) = store.save_settings(&settings) {
-                error!("could not save settings: {e}");
-            }
-        }
-    }
-    table.status = None;
-    match action {
-        LobbyAction::Host => match host(DEFAULT_PORT) {
-            Ok(hosting) => {
-                direct_name(&mut settings, link.steam.as_ref());
-                *session = hosting
-            }
-            Err(e) => {
-                error!("could not host: {e}");
-                table.status = Some(T::LobbyHostFailed);
-            }
-        },
-        LobbyAction::Join => {
-            let typed = address.single().map(|a| a.value().to_string()).unwrap_or_default();
-            direct_name(&mut settings, link.steam.as_ref());
-            match join(typed.trim(), &player_name(&settings)) {
-                Ok(joined) => *session = joined,
-                Err(e) => {
-                    error!("could not join {typed}: {e}");
-                    table.status = Some(T::LobbyJoinFailed);
-                }
-            }
-        }
-        LobbyAction::Leave => *session = Session::Solo,
-        LobbyAction::HostSteam => {
-            if let Some(steam) = &link.steam {
-                // At a Steam table one goes by one's Steam name.
-                settings.player_name = steam.name();
-                *session = host_steam(steam);
-            }
-        }
-        LobbyAction::JoinSteam(n) => {
-            if let (Some(steam), Some((_, lobby))) = (&link.steam, link.friends.get(*n)) {
-                settings.player_name = steam.name();
-                *session = join_steam(steam, *lobby, &player_name(&settings));
-            }
-        }
-        LobbyAction::Ask(n) => {
-            if let (Some(steam), Session::Host(hosting), Some((_, friend))) = (&link.steam, &*session, link.online.get(*n).cloned()) {
-                if let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby() {
-                    steam.invite_friend(friend, lobby);
-                    link.asked.push(friend);
-                }
-            }
-        }
-        LobbyAction::Invite => {
-            if let (Some(steam), Session::Host(hosting)) = (&link.steam, &*session) {
-                if let Some(Ok(lobby)) = hosting.lock().unwrap().net.lobby() {
-                    steam.invite(lobby);
-                }
-            }
-            return;
-        }
-    }
-    // The buttons depend on the session: draw the screen again.
-    next.set(Screen::Lobby);
-}
-
-/// Re-entering the same screen does not rebuild it, so the lobby redraws itself when the
-/// session changes or another friend starts or stops hosting.
-#[allow(clippy::too_many_arguments)]
-fn refresh_lobby(
-    mut commands: Commands,
-    time: Res<Time>,
-    session: Res<Session>,
-    mut link: ResMut<SteamLink>,
-    roots: Query<Entity, With<DespawnOnExit<Screen>>>,
-    art: Res<Art>,
-    fonts: Res<Fonts>,
-    settings: Res<Settings>,
-) {
-    link.since_look += time.delta_secs();
-    let mut friends_changed = false;
-    if link.since_look >= FRIENDS_LOOK_PERIOD {
-        link.since_look = 0.0;
-        if let Some(steam) = &link.steam {
-            let now = steam.friends_hosting();
-            let online = steam.friends_online();
-            friends_changed = now != link.friends || online != link.online;
-            link.friends = now;
-            link.online = online;
-        }
-    }
-    let open = matches!(&*session, Session::Host(hosting) if matches!(hosting.lock().unwrap().net.lobby(), Some(Ok(_))));
-    let opened = std::mem::replace(&mut link.lobby_open, open) != open;
-    if !(friends_changed || opened || session.is_changed() && !session.is_added()) {
-        return;
-    }
-    for root in &roots {
-        commands.entity(root).despawn();
-    }
-    build_lobby(&mut commands, &art, &fonts, &settings, &session, &link);
-}
-
 pub struct CoopPlugin;
 
 impl Plugin for CoopPlugin {
@@ -1412,14 +1382,13 @@ impl Plugin for CoopPlugin {
         app.init_resource::<Session>()
             .init_resource::<Table>()
             .init_resource::<SteamLink>()
-            .add_systems(OnEnter(Screen::Lobby), spawn_lobby)
+            .add_systems(OnEnter(Screen::Lobby), lobby_enter)
             .add_systems(PreUpdate, (host_pump, client_pump, presence, roster).chain())
             .add_systems(Startup, steam_start)
             .add_systems(Update, steam_invites)
             .add_systems(bevy_egui::EguiPrimaryContextPass, keys_vote.in_set(crate::ui::UiSet::Screens))
-            .add_systems(Update, (lobby_status, refresh_lobby).run_if(in_state(Screen::Lobby)))
-            .add_observer(on_invite)
-            .add_observer(on_activate);
+            .add_systems(Update, lobby_look.run_if(in_state(Screen::Lobby)))
+            .add_systems(bevy_egui::EguiPrimaryContextPass, lobby_screen.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Lobby)).run_if(resource_exists::<LobbyFields>));
     }
 }
 
