@@ -24,6 +24,7 @@ use world::{CreatureCard, LocationDraft, Speaker, TILE, Turn, TurnDraft, Whisper
 
 mod hud;
 mod sheets;
+pub use sheets::STORY_HEIGHTS;
 
 /// The game being played.
 #[derive(Resource)]

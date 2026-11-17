@@ -14,8 +14,6 @@ use world::TILE;
 
 /// The width of the column of party portraits, in pixels of the interface.
 pub const COLUMN: f32 = 46.0;
-/// The heights the window of the telling can take.
-pub const HEIGHTS: [f32; 3] = [80.0, 130.0, 190.0];
 /// How much larger than the canvas the map is drawn; the first is "the whole map".
 pub const ZOOMS: [f32; 4] = [0.0, 1.0, 1.5, 2.0];
 
