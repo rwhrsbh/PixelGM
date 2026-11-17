@@ -135,6 +135,11 @@ texts! {
     SteamOpen: "Steam: лобби открыто. Друзья увидят игру в этом меню у себя.", "Steam: the lobby is open. Friends will see the game in this menu.";
     SteamRefused: "Steam не дал открыть лобби:", "Steam refused the lobby:";
     DirectTitle: "Напрямую, по адресу", "Directly, by address";
+    DirectHint: "Для одной сети, ZeroTier или Radmin VPN: один создаёт игру и называет адрес, остальные вписывают его и подключаются.", "For one network, ZeroTier or Radmin VPN: one hosts and tells the address, the others type it in and join.";
+    LobbyAlready: "Ты уже за столом: сначала отключись.", "You are at a table already: leave it first.";
+    LobbyRoom: "Стол", "The table";
+    SteamHostHint: "Друзья увидят игру в этом меню у себя — без адресов и портов.", "Friends will see the game in this menu — no addresses, no ports.";
+    AddressFirst: "Сначала впиши адрес хоста.", "Type the host's address first.";
     LobbyLeave: "Отключиться", "Leave";
     LobbyHosting: "Игра создана. Адрес для друзей:", "Hosting. Address for friends:";
     LobbyPlayers: "За столом", "At the table";
