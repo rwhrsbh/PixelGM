@@ -138,7 +138,7 @@ fn form(ui: &mut Ui, making: &mut Making, can_ask: bool, lang: Lang) -> Option<F
             let forward = if last { button(t(T::CreateWorld)).primary().enabled(can_ask, t(T::NeedKey)) } else { button(t(T::NwNext)).primary() };
             // Ctrl+Enter from the wish's field: Enter there is a new line.
             let enter = footer.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl);
-            if footer.add(forward.key("Ctrl+Enter")).clicked() || enter && (!last || can_ask) {
+            if kit::right(footer, |r| r.add(forward.key("Ctrl+Enter"))).clicked() || enter && (!last || can_ask) {
                 act = Some(FormAct::Create);
             }
         },
@@ -187,7 +187,7 @@ fn waiting(ui: &mut Ui, making: &Making, now: u64, keys_label: T, lang: Lang) ->
                 if footer.add(button(t(keys_label))).clicked() {
                     act = Some(WaitAct::Keys);
                 }
-                if footer.add(button(t(T::Recheck)).primary()).clicked() {
+                if kit::right(footer, |r| r.add(button(t(T::Recheck)).primary())).clicked() {
                     act = Some(WaitAct::Retry);
                 }
             }

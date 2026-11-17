@@ -578,13 +578,15 @@ fn hero_screen(
             if footer.add(button(t(T::Back)).key("Esc")).clicked() {
                 leave = true;
             }
-            if footer.add(button(t(T::CreateHero)).primary()).clicked() {
-                create = true;
-            }
-            // What is wrong with the hero, beside the button that would make it.
-            if !problem.is_empty() {
-                kit::warning(footer, problem.as_str());
-            }
+            kit::right(footer, |r| {
+                if r.add(button(t(T::CreateHero)).primary()).clicked() {
+                    create = true;
+                }
+                // What is wrong with the hero, beside the button that would make it.
+                if !problem.is_empty() {
+                    kit::warning(r, problem.as_str());
+                }
+            });
         },
     );
     if leave {

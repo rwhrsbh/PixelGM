@@ -319,6 +319,13 @@ pub fn toggle(ui: &mut Ui, name: &str, on: &mut bool) -> Response {
 }
 
 /// Words in the faded ink of hints.
+/// The main action of a sheet, at the right end of its footer: every sheet keeps Back and
+/// Cancel at the left and what moves the player on at the right, so each is always found
+/// in the same place. Added last in the footer.
+pub fn right<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.with_layout(Layout::right_to_left(Align::Center), add).inner
+}
+
 pub fn hint(ui: &mut Ui, text: impl Into<String>) -> Response {
     ui.add(egui::Label::new(egui::RichText::new(text.into()).color(c(FADED))).wrap())
 }
@@ -385,7 +392,16 @@ fn sheet_with<R>(ui: &mut Ui, sheet: Sheet, body: impl FnOnce(&mut Ui) -> R, foo
 /// A sheet in a place of the caller's choosing: the panel of the story under the map.
 /// Gives what the body gave and how tall the contents would have the sheet be.
 pub fn sheet_at<R>(ui: &mut Ui, id: &str, rect: Rect, title: &str, body: impl FnOnce(&mut Ui) -> R, mut footer: impl FnMut(&mut Ui)) -> (R, f32) {
-    fill(ui, id, rect, title, "", body, Some(&mut footer))
+    let (out, needed) = fill(ui, id, rect, title, "", body, Some(&mut footer));
+    ui.data_mut(|d| d.insert_temp(egui::Id::new(SHEET_AT_NEEDED), needed));
+    (out, needed)
+}
+
+const SHEET_AT_NEEDED: &str = "how tall the last sheet in a place wanted to be";
+
+/// How tall the last sheet laid out in a place of the caller's choosing wanted to be.
+pub fn last_needed(ctx: &egui::Context) -> Option<f32> {
+    ctx.data(|d| d.get_temp(egui::Id::new(SHEET_AT_NEEDED)))
 }
 
 fn fill<R>(ui: &mut Ui, id: &str, rect: Rect, title_text: &str, about: &str, body: impl FnOnce(&mut Ui) -> R, footer: Option<&mut dyn FnMut(&mut Ui)>) -> (R, f32) {
