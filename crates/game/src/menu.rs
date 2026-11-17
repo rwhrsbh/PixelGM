@@ -30,7 +30,19 @@ pub enum Screen {
 /// Set by a screen that opens another one and wants to be returned to: the key screen opened
 /// from a running game goes back to the game, not to the main menu.
 #[derive(Resource, Default)]
-pub struct ReturnTo(pub Option<Screen>);
+pub struct ReturnTo(Vec<Screen>);
+
+impl ReturnTo {
+    /// The screen being left is to be come back to.
+    pub fn push(&mut self, screen: Screen) {
+        self.0.push(screen);
+    }
+
+    /// Where Back leads: the last screen that asked to be come back to, or the main menu.
+    pub fn back(&mut self) -> Screen {
+        self.0.pop().unwrap_or(Screen::Main)
+    }
+}
 
 /// The table and candles behind the menus. Hidden while a game is on screen.
 #[derive(Component)]
@@ -130,7 +142,7 @@ fn escape_goes_back(
 ) {
     let back = keys.just_pressed(KeyCode::Escape) || gamepads.iter().any(|pad| pad.just_pressed(GamepadButton::East));
     if back && matches!(screen.get(), Screen::Keys | Screen::Settings | Screen::Load | Screen::Lobby) {
-        next.set(return_to.0.take().unwrap_or(Screen::Main));
+        next.set(return_to.back());
     }
 }
 
@@ -140,6 +152,8 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<Screen>()
             .init_resource::<ReturnTo>()
+            // The main menu is where every way back ends: nothing is left to come back to.
+            .add_systems(OnEnter(Screen::Main), |mut return_to: ResMut<ReturnTo>| return_to.0.clear())
             .add_systems(Startup, spawn_backdrop)
             .add_systems(bevy_egui::EguiPrimaryContextPass, main_menu.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Main)))
             .add_systems(Update, (flicker, breathe, escape_goes_back));

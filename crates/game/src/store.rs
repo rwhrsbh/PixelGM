@@ -178,6 +178,7 @@ impl Settings {
             Some(Kind::OpenRouter) => T::MasterOpenRouter,
             Some(Kind::Cloudflare) => T::MasterCloudflare,
             Some(Kind::Custom) => T::MasterCustom,
+            Some(Kind::OpenCodeGo) => T::MasterOpenCodeGo,
         }
     }
 

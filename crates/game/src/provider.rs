@@ -8,12 +8,126 @@ use crate::i18n::{Lang, T};
 use crate::menu::{ReturnTo, Screen};
 use crate::store::{Settings, Store};
 use crate::theme::*;
-use crate::ui::egui::{self, Key, RichText, Ui, vec2};
+use crate::ui::egui::{self, RichText, Ui, vec2};
 use crate::ui::kit::{self, Sheet, button, hint};
 use crate::ui::theme::c;
 use bevy::prelude::*;
 use llm::providers::{Kind, Rotation};
 use std::sync::{Arc, Mutex};
+
+/// The parts every master's screen is made of, in the same order on each, so that what is
+/// looked for is always in the same place: whether it runs the game, its keys, its models,
+/// and how it answers.
+pub mod parts {
+    use crate::i18n::{Lang, T};
+    use crate::theme::*;
+    use crate::ui::egui::{self, Key, RichText, Ui};
+    use crate::ui::kit::{self, button, hint};
+    use crate::ui::theme::c;
+
+    /// Whether this master runs the game, or a button to make it. Gives true on the press.
+    pub fn status(ui: &mut Ui, runs: bool, lang: Lang) -> bool {
+        let mut pressed = false;
+        ui.horizontal(|row| {
+            if runs {
+                row.label(RichText::new(T::RunsGame.text(lang)).color(c(MOSS)));
+            } else {
+                pressed = row.add(button(T::MakeMaster.text(lang)).primary()).on_hover_text(T::MakeMasterHint.text(lang)).clicked();
+                hint(row, T::MakeMasterHint.text(lang));
+            }
+        });
+        pressed
+    }
+
+    /// The title of a part of the screen.
+    pub fn section(ui: &mut Ui, title: T, lang: Lang) {
+        ui.add_space(6.0);
+        kit::title(ui, title.text(lang), crate::ui::theme::SMALL_TITLE);
+    }
+
+    /// The field a key is pasted in, and its button. Gives true when it is to be added.
+    pub fn key_field(ui: &mut Ui, typed: &mut String, lang: Lang) -> bool {
+        let mut add = false;
+        ui.horizontal(|row| {
+            let field = row.add(egui::TextEdit::singleline(typed).desired_width((row.available_width() - 140.0).max(120.0)).char_limit(2000));
+            let ready = !typed.trim().is_empty();
+            let entered = field.lost_focus() && row.input(|i| i.key_pressed(Key::Enter)) && ready;
+            add = row.add(button(T::Add.text(lang)).enabled(ready, T::KeyTypeFirst.text(lang)).key("Enter")).clicked() || entered;
+        });
+        add
+    }
+
+    /// What a press on a key's line asks for.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum KeyPress {
+        Remove,
+        Recheck,
+    }
+
+    /// A key's line: its end, how it is, and its buttons.
+    pub fn key_row(ui: &mut Ui, shown: &str, state: Option<(&str, Rgba)>, recheck: bool, lang: Lang) -> Option<KeyPress> {
+        let mut press = None;
+        ui.horizontal(|row| {
+            row.label(shown);
+            if let Some((said, tint)) = state {
+                row.label(RichText::new(said).color(c(tint)));
+            }
+            row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |row| {
+                if row.add(button(T::Remove.text(lang))).clicked() {
+                    press = Some(KeyPress::Remove);
+                }
+                if recheck && row.add(button(T::Recheck.text(lang))).clicked() {
+                    press = Some(KeyPress::Recheck);
+                }
+            });
+        });
+        press
+    }
+
+    /// What a press on a model's line asks for.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum ModelPress {
+        Up,
+        Down,
+        /// Off the list (a provider's), or not asked (Gemini's).
+        Drop,
+    }
+
+    /// A model's line: its place and name, how it is, and the buttons that move it or take
+    /// it off. `switch` names the last button when it switches rather than drops: whether
+    /// the model is asked now.
+    #[allow(clippy::too_many_arguments)]
+    pub fn model_row(ui: &mut Ui, place: Option<usize>, id: &str, state: Option<(&str, Rgba)>, can_up: bool, can_down: bool, switch: Option<bool>, lang: Lang) -> Option<ModelPress> {
+        let mut press = None;
+        ui.horizontal(|row| {
+            let name = match place {
+                Some(n) => format!("{n:>2}. {id}"),
+                None => format!(" ·  {id}"),
+            };
+            row.label(RichText::new(name).color(c(if place.is_some() { INK } else { FADED })));
+            if let Some((said, tint)) = state {
+                row.label(RichText::new(said).color(c(tint)));
+            }
+            row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |row| {
+                let last = match switch {
+                    Some(true) => row.add(button(T::ModelOffShort.text(lang))).on_hover_text(T::ModelSwitchHint.text(lang)),
+                    Some(false) => row.add(button(T::ModelOn.text(lang))).on_hover_text(T::ModelSwitchHint.text(lang)),
+                    None => row.add(button("×")).on_hover_text(T::ModelDropHint.text(lang)),
+                };
+                if last.clicked() {
+                    press = Some(ModelPress::Drop);
+                }
+                if row.add(button("▼").enabled(can_down, "")).on_hover_text(T::ModelDownHint.text(lang)).clicked() {
+                    press = Some(ModelPress::Down);
+                }
+                if row.add(button("▲").enabled(can_up, "")).on_hover_text(T::ModelUpHint.text(lang)).clicked() {
+                    press = Some(ModelPress::Up);
+                }
+            });
+        });
+        press
+    }
+}
 
 /// What a press on the screen asks for.
 #[derive(Clone, Copy)]
@@ -136,11 +250,12 @@ fn arrived(mut desk: ResMut<Desk>, lang: Res<Lang>) {
     }
 }
 
-/// The screen of another master, drawn with egui: whether it runs the game, its keys, its
-/// models for the telling or for the voice in the order they are tried, those it offers,
-/// and a test.
+/// The screen of another master, drawn with egui in the order every master's screen has:
+/// whether it runs the game, its address and keys, its models (for the telling or for the
+/// voice) in the order they are tried, how it answers.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang): (ResMut<Settings>, Res<Store>, Res<Lang>), mut desk: ResMut<Desk>, (mut next, mut return_to): (ResMut<NextState<Screen>>, ResMut<ReturnTo>)) {
+    use parts::{KeyPress, ModelPress};
     let lang = *lang;
     let t = |text: T| text.text(lang);
     let tab = desk.tab;
@@ -157,91 +272,85 @@ fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang
     let mut pressed: Vec<Act> = Vec::new();
     let mut to_tab = None;
     let mut edited = false;
+    let mut answer = settings.clone();
+    let mut answer_changed = false;
     let desk = &mut *desk;
-    let sheet = Sheet { id: "provider", title: t(T::AiTitle), about: t(T::ProviderAbout), max: vec2(480.0, 420.0), top: 0.0, fixed: true };
+    let sheet = Sheet { id: "provider", title: t(T::AiTitle), about: t(T::ProviderAbout), max: vec2(480.0, 470.0), top: 0.0, fixed: true };
     kit::sheet(
         &mut ui,
         sheet,
         |ui| {
             to_tab = tabs(ui, &settings, Some(tab), lang);
-            let mut runs = this.on;
-            if kit::toggle(ui, t(T::ProviderUse), &mut runs).changed() {
+            if parts::status(ui, this.on, lang) {
                 acts.push(Act::Toggle);
             }
-            if !this.on {
-                hint(ui, t(T::ProvOne));
-            }
+            parts::section(ui, T::SectionKeys, lang);
+            hint(ui, t(if tab == Kind::OpenCodeGo { T::GoKeysHelp } else { T::ProvKeysHelp }));
             // What only this provider needs.
             let address = match tab {
-                Kind::Cloudflare => Some((T::ProvAccount, &mut this.account)),
-                Kind::Custom => Some((T::ProviderUrl, &mut this.url)),
+                Kind::Cloudflare => Some((T::ProvAccount, &mut this.account, None)),
+                Kind::Custom => Some((T::ProviderUrl, &mut this.url, None)),
+                Kind::OpenCodeGo => Some((T::ProviderUrl, &mut this.url, Some(llm::providers::OPENCODE_GO))),
                 _ => None,
             };
-            if let Some((label, value)) = address {
+            if let Some((label, value, usual)) = address {
                 ui.horizontal(|row| {
                     row.label(t(label));
-                    edited |= row.add(egui::TextEdit::singleline(value).desired_width(260.0).char_limit(300)).changed();
-                });
-            }
-            // The keys take turns; a press on one takes it away.
-            ui.horizontal_wrapped(|row| {
-                row.label(format!("{} {}", t(T::ProvKeys), keys.len()));
-                for (n, key) in keys.iter().enumerate().take(8) {
-                    if row.add(button(format!("{} ×", tail(key)))).on_hover_text(t(T::ProvDropKey)).clicked() {
-                        acts.push(Act::DropKey(n));
+                    let mut field = egui::TextEdit::singleline(value).desired_width(300.0).char_limit(300);
+                    if let Some(usual) = usual {
+                        field = field.hint_text(usual);
                     }
+                    edited |= row.add(field).changed();
+                });
+                if tab == Kind::OpenCodeGo {
+                    hint(ui, t(T::GoUrlHint));
                 }
-            });
-            ui.horizontal(|row| {
-                let field = row.add(egui::TextEdit::singleline(&mut desk.typed_key).desired_width(220.0).char_limit(2000));
-                let ready = !desk.typed_key.trim().is_empty();
-                let entered = field.lost_focus() && row.input(|i| i.key_pressed(Key::Enter)) && ready;
-                if row.add(button(t(T::ProvAddKey)).enabled(ready, t(T::KeyTypeFirst))).clicked() || entered {
-                    acts.push(Act::AddKey);
+            }
+            if keys.is_empty() {
+                kit::warning(ui, t(T::NoKeys));
+            }
+            for (n, key) in keys.iter().enumerate().take(8) {
+                if parts::key_row(ui, &tail(key), None, false, lang) == Some(KeyPress::Remove) {
+                    acts.push(Act::DropKey(n));
                 }
-            });
+            }
+            if parts::key_field(ui, &mut desk.typed_key, lang) {
+                acts.push(Act::AddKey);
+            }
             if tab == Kind::Nim {
                 ui.add(egui::Label::new(RichText::new(t(T::ProvNimSlow)).color(c(WAX_DARK))).wrap());
             }
-            ui.add_space(4.0);
-            ui.horizontal(|row| {
-                for (section, label) in [(false, T::ProvChat), (true, T::ProvVoice)] {
-                    let mut b = button(t(label));
-                    if section == voices {
-                        b = b.primary();
+            parts::section(ui, T::SectionModels, lang);
+            // The telling's models, or the voice's where this provider has any.
+            if !matches!(tab, Kind::Nim | Kind::OpenCodeGo) {
+                ui.horizontal(|row| {
+                    for (section, label) in [(false, T::ProvChat), (true, T::ProvVoice)] {
+                        let mut b = button(t(label));
+                        if section == voices {
+                            b = b.primary();
+                        }
+                        if row.add(b).clicked() && section != voices {
+                            acts.push(Act::Section(section));
+                        }
                     }
-                    if row.add(b).clicked() && section != voices {
-                        acts.push(Act::Section(section));
+                    if voices {
+                        row.label(t(T::ProvVoiceName));
+                        edited |= row.add(egui::TextEdit::singleline(&mut this.voice).desired_width(90.0).char_limit(100)).changed();
                     }
-                }
-                if voices {
-                    row.label(t(T::ProvVoiceName));
-                    edited |= row.add(egui::TextEdit::singleline(&mut this.voice).desired_width(90.0).char_limit(100)).changed();
-                } else {
-                    hint(row, t(T::ProvOrder));
-                }
-            });
-            // Those chosen, the first asked first.
+                });
+            }
             let chosen = if voices { &this.voices } else { &this.models };
-            egui::ScrollArea::vertical().id_salt("chosen").max_height(64.0).show(ui, |ui| {
-                if chosen.is_empty() {
-                    hint(ui, t(T::ProvNone));
+            if chosen.is_empty() {
+                hint(ui, t(T::ProvNone));
+            }
+            for (n, model) in chosen.iter().enumerate() {
+                match parts::model_row(ui, Some(n + 1), model, None, n > 0, n + 1 < chosen.len(), None, lang) {
+                    Some(ModelPress::Up) => acts.push(Act::Up(n)),
+                    Some(ModelPress::Down) => acts.push(Act::Down(n)),
+                    Some(ModelPress::Drop) => acts.push(Act::Drop(n)),
+                    None => {}
                 }
-                for (n, model) in chosen.iter().enumerate() {
-                    ui.horizontal(|row| {
-                        if row.add(button("▲").enabled(n > 0, "")).clicked() {
-                            acts.push(Act::Up(n));
-                        }
-                        if row.add(button("▼").enabled(n + 1 < chosen.len(), "")).clicked() {
-                            acts.push(Act::Down(n));
-                        }
-                        if row.add(button("×")).clicked() {
-                            acts.push(Act::Drop(n));
-                        }
-                        row.label(format!("{}. {model}", n + 1));
-                    });
-                }
-            });
+            }
             ui.horizontal(|row| {
                 row.add(egui::TextEdit::singleline(&mut desk.typed_model).desired_width(220.0).char_limit(300));
                 if row.add(button(t(T::ProvAdd)).enabled(!desk.typed_model.trim().is_empty(), t(T::ModelTypeFirst))).clicked() {
@@ -264,8 +373,11 @@ fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang
                     }
                 });
             });
+            parts::section(ui, T::SectionAnswer, lang);
+            answer_changed = crate::settings::answer_settings(ui, &mut answer, false);
             // What the last fetch or test came to.
             if !note.is_empty() {
+                ui.add_space(4.0);
                 ui.add(egui::Label::new(RichText::new(&note).color(c(WAX_DARK))).wrap());
             }
         },
@@ -278,6 +390,11 @@ fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang
             }
         },
     );
+    if answer_changed {
+        settings.thinking = answer.thinking;
+        settings.first_token = answer.first_token;
+        settings.lowest_tier = answer.lowest_tier;
+    }
     if edited {
         let kept = settings.provider_mut(tab);
         kept.account = this.account.clone();
@@ -288,6 +405,7 @@ fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang
         Some(None) => next.set(Screen::Keys),
         Some(Some(kind)) => {
             desk.tab = kind;
+            desk.voices = false;
             desk.typed_key.clear();
             desk.typed_model.clear();
             desk.note.lock().unwrap().clear();
@@ -295,7 +413,7 @@ fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang
         None => {}
     }
     acts.extend(pressed);
-    let save = edited || !acts.is_empty();
+    let save = edited || answer_changed || !acts.is_empty();
     for act in acts {
         do_act(act, &mut settings, desk, &shown, tab, voices, lang, &mut next, &mut return_to);
     }
@@ -312,10 +430,7 @@ fn do_act(act: Act, settings: &mut Settings, desk: &mut Desk, shown: &[String], 
         if voices { &mut this.voices } else { &mut this.models }
     }
     match act {
-        Act::Toggle => {
-            let on = !this.on;
-            settings.set_master(on.then_some(tab));
-        }
+        Act::Toggle => settings.set_master(Some(tab)),
         Act::AddKey => {
             // Several keys may be pasted at once, parted by spaces, commas or new lines.
             let pasted = std::mem::take(&mut desk.typed_key);
@@ -404,6 +519,6 @@ fn do_act(act: Act, settings: &mut Settings, desk: &mut Desk, shown: &[String], 
                 *note.lock().unwrap() = said;
             });
         }
-        Act::Back => next.set(return_to.0.take().unwrap_or(Screen::Main)),
+        Act::Back => next.set(return_to.back()),
     }
 }

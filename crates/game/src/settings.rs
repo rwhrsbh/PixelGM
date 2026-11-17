@@ -210,18 +210,41 @@ fn first_token_text(settings: &Settings) -> String {
 }
 
 /// The tabs of the screen, and the settings on each.
-const TABS: [(T, &[Choice]); 4] = [
-    (T::TabGame, &[Choice::Language, Choice::Initiative]),
+const TABS: [(T, &[Choice]); 3] = [
+    (T::TabGame, &[Choice::Language, Choice::Initiative, Choice::Predraw]),
     (T::TabScreen, &[Choice::Screen, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill]),
     (T::TabSound, &[Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice]),
-    (T::TabMaster, &[Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw]),
 ];
+
+/// How the models answer: on the master's screen, beside the models themselves. Gemini
+/// alone has tiers to fall back through.
+const ANSWER: [Choice; 3] = [Choice::Thinking, Choice::FirstToken, Choice::Fallback];
+
+/// The settings of how the master's models answer, a row and its line each. Gives whether
+/// one changed.
+pub fn answer_settings(ui: &mut Ui, settings: &mut Settings, gemini: bool) -> bool {
+    let lang = settings.lang;
+    let mut changed = false;
+    for choice in ANSWER.iter().filter(|c| gemini || **c != Choice::Fallback) {
+        let values = choice.cycle(settings, lang);
+        let names: Vec<&str> = values.iter().map(|(v, _)| v.as_str()).collect();
+        let mut index = 0;
+        if kit::choice(ui, choice.label().text(lang), &names, &mut index).changed() && index != 0 {
+            *settings = values[index].1.clone();
+            changed = true;
+        }
+        hint(ui, choice.hint().text(lang));
+        ui.add_space(3.0);
+    }
+    changed
+}
 
 /// What the player did on the settings screen besides changing a setting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsAct {
     Back,
     Graphics,
+    Master,
 }
 
 impl Choice {
@@ -297,6 +320,9 @@ pub fn settings_ui(ui: &mut Ui, settings: &mut Settings, tab: &mut usize) -> (bo
             if footer.add(button(t(T::Graphics))).clicked() {
                 act = Some(SettingsAct::Graphics);
             }
+            if footer.add(button(t(T::MasterSettings))).clicked() {
+                act = Some(SettingsAct::Master);
+            }
         },
     );
     (changed, act)
@@ -315,8 +341,13 @@ fn settings_screen(mut egui: bevy_egui::EguiContexts, mut settings: ResMut<Setti
         }
     }
     match act {
-        Some(SettingsAct::Back) => next.set(return_to.0.take().unwrap_or(Screen::Main)),
+        Some(SettingsAct::Back) => next.set(return_to.back()),
         Some(SettingsAct::Graphics) => next.set(Screen::Graphics),
+        // The master's screen comes back here.
+        Some(SettingsAct::Master) => {
+            return_to.push(Screen::Settings);
+            next.set(if settings.active_provider().is_some() { Screen::Provider } else { Screen::Keys });
+        }
         None => {}
     }
 }
@@ -410,7 +441,7 @@ mod tests {
 
     /// Every setting on the screen, from all the tabs.
     fn all() -> Vec<Choice> {
-        TABS.iter().flat_map(|(_, choices)| choices.iter().copied()).collect()
+        TABS.iter().flat_map(|(_, choices)| choices.iter().copied()).chain(ANSWER).collect()
     }
 
     #[test]
@@ -456,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn every_setting_is_on_a_tab_and_says_what_it_does() {
+    fn every_setting_is_on_a_tab_or_the_masters_screen_and_says_what_it_does() {
         let shown = all();
         for choice in [Choice::Language, Choice::Screen, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw, Choice::Initiative] {
             assert!(shown.contains(&choice), "{choice:?} is on no tab");

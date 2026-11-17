@@ -56,7 +56,7 @@ fn load_screen(mut egui: bevy_egui::EguiContexts, listed: Res<Listed>, store: Re
     if let Some(path) = chosen {
         load(&path, &store, &mut commands, &mut next);
     } else if back {
-        next.set(return_to.0.take().unwrap_or(Screen::Main));
+        next.set(return_to.back());
     }
 }
 

@@ -227,13 +227,13 @@ fn form_screen(
     let Some(mut ui) = kit::screen_ui(ctx, "new_world") else { return };
     let can = can_ask(&master, &book, &session, &settings);
     match form(&mut ui, &mut making, can, settings.lang) {
-        Some(FormAct::Back) => next.set(return_to.0.take().unwrap_or(Screen::Main)),
+        Some(FormAct::Back) => next.set(return_to.back()),
         Some(FormAct::Create) => {
             start_making(&mut making, &gm, &store, &settings, &master);
             next.set(Screen::Creating);
         }
         Some(FormAct::Keys) => {
-            return_to.0 = Some(Screen::NewGame);
+            return_to.push(Screen::NewGame);
             next.set(keys_screen(&settings));
         }
         None => {}
@@ -290,7 +290,7 @@ fn waiting_screen(
         }
         Some(WaitAct::Retry) => start_making(&mut making, &gm, &store, &settings, &master),
         Some(WaitAct::Keys) => {
-            return_to.0 = Some(Screen::NewGame);
+            return_to.push(Screen::NewGame);
             next.set(keys_screen(&settings));
         }
         None => {}
