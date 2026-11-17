@@ -147,6 +147,9 @@ fn keys_screen(
             }
             parts::section(ui, T::SectionAnswer, lang);
             answer_changed = crate::settings::answer_settings(ui, &mut edited, true);
+            parts::section(ui, T::SectionMemory, lang);
+            let limit = crate::master::context_limit(&edited, &gm);
+            answer_changed |= crate::settings::memory_section(ui, &mut edited, &limit);
             // What the last test of the master came to.
             ui.add_space(4.0);
             ui.add(egui::Label::new(RichText::new(&said).color(c(said_tint))).wrap());

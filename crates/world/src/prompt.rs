@@ -533,13 +533,18 @@ pub fn draw_things(world: &World, things: &[crate::bag::Undrawn]) -> String {
         .iter()
         .map(|t| format!("- \"{}\"{}{}: {} by {} cells", t.name, if t.kind.is_empty() { String::new() } else { format!(" ({})", t.kind) }, if t.description.trim().is_empty() { String::new() } else { format!(" — {}", t.description.trim()) }, t.size.0, t.size.1))
         .collect();
+    let palette: String = world.palette.colors.iter().enumerate().map(|(i, [r, g, b])| format!(" {}=#{r:02x}{g:02x}{b:02x}", char_of(i as u8 + 1))).collect();
     format!(
-        "World: {}. {}\n\nThese things are carried, lie about or are sold here, and have no picture yet. Draw each as an icon for the bag, recognisable at a glance, in this world's palette: 16 rows of 16 palette characters for every cell of its size ('0' transparent), so a thing 1 by 2 cells is 16 across and 32 down, filling most of its cells, outlined in colour 1. A long thing (a spear, a staff, a sword) stands upright. You may correct the size where it is plainly wrong (a potion 1 by 1, a dagger 1 by 2, a sword 1 by 3, a bow or armour 2 by 3, a spear 1 by 4).\n\n{}\n\nAnswer with this JSON object, one entry for every thing, with its name exactly as given:\n{{\"things\": [{{\"name\": \"…\", \"size\": [1, 2], \"rows\": [\"…\"]}}]}}",
+        "World: {}. {}\nPALETTE (0 is transparent):{palette}\n\nThese things are carried, lie about or are sold here, and have no picture yet. Draw each as an icon for the bag, recognisable at a glance, in this world's palette: 16 rows of 16 palette characters for every cell of its size ('0' transparent), so a thing 1 by 2 cells is 16 across and 32 down, filling most of its cells, outlined in colour 1. A long thing (a spear, a staff, a sword) stands upright. You may correct the size where it is plainly wrong (a potion 1 by 1, a dagger 1 by 2, a sword 1 by 3, a bow or armour 2 by 3, a spear 1 by 4).\n\n{}\n\nAnswer with this JSON object, one entry for every thing, with its name exactly as given:\n{{\"things\": [{{\"name\": \"…\", \"size\": [1, 2], \"rows\": [\"…\"]}}]}}",
         world.title,
         world.summary,
         list.join("\n")
     )
 }
+
+/// What the master is told it is when it only draws things: short, so a drawing does not
+/// carry the rules of the whole game.
+pub const DRAWER: &str = "You draw pixel-art icons for a tabletop role-playing game. A picture is a list of rows; a row is a string; each character is one pixel holding a palette index: 0 is transparent, then 1-9, then a-v. You answer with ONE JSON object and nothing else.";
 
 /// A player who reads another language than the world is told in asks for a translation.
 pub fn translate(texts: &[String], language: &str) -> String {
@@ -653,13 +658,81 @@ pub fn chatter(world: &World) -> String {
 
 /// The story has grown long: the master writes the older part up as a chapter.
 pub fn chapter(world: &World) -> String {
+    chapter_upto(world, world.story.log.len().saturating_sub(KEPT_LINES))
+}
+
+/// A chapter of the first `upto` lines of the word-for-word story: the rest waits for a
+/// later one, so that the request fits what the model reads.
+pub fn chapter_upto(world: &World, upto: usize) -> String {
     let mut older = world.clone();
-    let keep_from = older.story.log.len().saturating_sub(KEPT_LINES);
-    older.story.log.truncate(keep_from);
+    older.story.log.truncate(upto);
     format!(
         "{}\nThe story above has grown long. Write it up as one chapter so that nothing which matters later is lost: who was met and what they want, what was learned, what was gained and lost, what was promised, what was left unfinished, in the order it happened. Be detailed; this chapter replaces the story above. Then list as \"facts\" anything that must hold true for the rest of the campaign and is not yet among the facts.\n\nAnswer with this JSON object:\n{{\"chapter\": \"…\", \"facts\": [\"…\"]}}",
         situation(&older, 0..)
     )
+}
+
+/// The oldest `count` chapters, written up as one, so that the chapters themselves do not
+/// outgrow what the model reads.
+pub fn merge_chapters(world: &World, count: usize) -> String {
+    let count = count.min(world.story.chapters.len());
+    let chapters: Vec<String> = world.story.chapters[..count].iter().enumerate().map(|(n, c)| format!("CHAPTER {}:\n{c}", n + 1)).collect();
+    format!(
+        "World: {}. {}\n\nFACTS:\n{}\n\nThese are the oldest chapters of the campaign so far:\n\n{}\n\nWrite them up as ONE chapter that keeps everything which matters later — who was met and what they want, what was learned, gained, lost and promised, what is unfinished — in the order it happened, as detailed as it needs to be but shorter than all of them together. Then list as \"facts\" anything that must hold true for the rest of the campaign and is not yet among the facts.\n\nAnswer with this JSON object:\n{{\"chapter\": \"…\", \"facts\": [\"…\"]}}",
+        world.title,
+        world.summary,
+        world.story.facts.join("\n"),
+        chapters.join("\n\n")
+    )
+}
+
+/// A rough count of the tokens a text takes: three characters to a token is close for
+/// mixed text and errs on the side of writing the story up early.
+pub fn tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(3)
+}
+
+/// What writing the story up shorter takes next: a chapter of the first lines of the
+/// word-for-word story, or the oldest chapters into one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compaction {
+    Chapter { upto: usize },
+    Merge { count: usize },
+}
+
+/// Share of what the model reads at which the story is written up shorter.
+pub const COMPACT_AT: f32 = 0.85;
+
+/// Whether the story should be written up shorter for a request of a turn to stay within
+/// `room` tokens (what the model reads, less what is kept for its answer), and how: a piece
+/// small enough that the request to write it up fits in `room` too, so that no story is ever
+/// too long to go on with. `urgent` when a turn would not fit at all.
+pub fn compaction(world: &World, room: usize) -> Option<(Compaction, bool)> {
+    let turn = tokens(&play_prompt(world)) + tokens(&turn(world, "", None));
+    let urgent = turn >= room;
+    if (turn as f32) < room as f32 * COMPACT_AT {
+        return None;
+    }
+    let fits = |prompt: &str| tokens(&play_prompt(world)) + tokens(prompt) <= room * 9 / 10;
+    let story = &world.story;
+    // Chapters that have grown to more than a third of the room are written up first.
+    let chapters: usize = story.chapters.iter().map(|c| tokens(c)).sum();
+    let merge = |story: &crate::story::Story| -> Option<Compaction> {
+        (2..=story.chapters.len()).rev().find(|&count| fits(&merge_chapters(world, count))).or((story.chapters.len() >= 2).then_some(2)).map(|count| Compaction::Merge { count })
+    };
+    if chapters * 3 > room && story.chapters.len() >= 2 {
+        return merge(story).map(|m| (m, urgent));
+    }
+    let most = story.log.len().saturating_sub(KEPT_LINES);
+    if most == 0 {
+        return merge(story).map(|m| (m, urgent));
+    }
+    // As much of the oldest story as one request can carry: halved until it fits.
+    let mut upto = most;
+    while upto > 1 && !fits(&chapter_upto(world, upto)) {
+        upto /= 2;
+    }
+    Some((Compaction::Chapter { upto }, urgent))
 }
 
 /// A request to draw a place that so far is only a name. `from` is where the party walks in

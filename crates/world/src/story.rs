@@ -553,6 +553,29 @@ impl Story {
         self.log.len() > KEPT_LINES && self.log_tokens() * 5 >= budget_tokens * 4
     }
 
+    /// Replaces the first `upto` lines with a chapter the master wrote about them.
+    pub fn close_chapter_upto(&mut self, upto: usize, chapter: &str, facts: &[String]) {
+        if !chapter.trim().is_empty() {
+            self.chapters.push(chapter.trim().to_string());
+            let upto = upto.min(self.log.len());
+            self.log.drain(..upto);
+        }
+        for fact in facts {
+            self.remember(fact);
+        }
+    }
+
+    /// Replaces the oldest `count` chapters with one the master wrote of them, kept first.
+    pub fn merge_chapters(&mut self, count: usize, chapter: &str, facts: &[String]) {
+        if !chapter.trim().is_empty() && count >= 1 {
+            let count = count.min(self.chapters.len());
+            self.chapters.splice(..count, [chapter.trim().to_string()]);
+        }
+        for fact in facts {
+            self.remember(fact);
+        }
+    }
+
     /// Replaces all but the newest lines with a chapter the master wrote about them.
     pub fn close_chapter(&mut self, chapter: &str, facts: &[String]) {
         if !chapter.trim().is_empty() {

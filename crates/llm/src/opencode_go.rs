@@ -40,6 +40,9 @@ pub fn read_catalog(json: &str) -> Result<Vec<Model>, String> {
         .filter(|(_, model)| model["status"].as_str() != Some("deprecated"))
         .filter_map(|(id, model)| {
             let base = model["api"]["chat-completions"]["base_url"].as_str()?.trim().trim_end_matches('/');
+            if let Some(tokens) = crate::context::read(model) {
+                crate::context::remember(id, tokens);
+            }
             (!base.is_empty()).then(|| Model { id: id.clone(), base: base.to_string() })
         })
         .collect();

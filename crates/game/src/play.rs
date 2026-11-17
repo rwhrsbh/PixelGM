@@ -412,6 +412,12 @@ struct Background {
     things_tried: Vec<String>,
     things_asked: bool,
     things_rest: f32,
+    /// The story is too long for a turn to be asked at all: turns wait until it is written
+    /// up shorter.
+    urgent: bool,
+    /// The lengths of the story when it was last measured against the model: measured
+    /// again only when they change.
+    compact_seen: Option<(usize, usize, u32)>,
     /// Sounds, and a die to throw, asked for by code that has only this at hand.
     cues: Vec<Sfx>,
     die: Option<u32>,
@@ -2289,14 +2295,20 @@ fn receive(
                     finish(&mut desk, "", &draft);
                 }
             }
-            Answer::Chapter(draft) => {
+            Answer::Chapter { what, draft } => {
                 background.chapter_asked = false;
+                background.compact_seen = None;
                 match draft {
                     Ok(draft) if !draft.chapter.trim().is_empty() => {
-                        game.world.story.close_chapter(&draft.chapter, &draft.facts);
+                        match what {
+                            world::prompt::Compaction::Chapter { upto } => game.world.story.close_chapter_upto(upto, &draft.chapter, &draft.facts),
+                            world::prompt::Compaction::Merge { count } => game.world.story.merge_chapters(count, &draft.chapter, &draft.facts),
+                        }
+                        info!("the story was written up: {what:?}");
                         autosave(&store, &game);
                     }
-                    _ => background.chapter_rest = BACKGROUND_REST,
+                    // When a turn cannot go until it is done, it is asked again soon.
+                    _ => background.chapter_rest = if background.urgent { 20.0 } else { BACKGROUND_REST },
                 }
             }
             Answer::Card { for_player, card } => {
@@ -2335,6 +2347,21 @@ fn background_work(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, g
             master.ask(&gm, &store, &settings, Ask::Things { world: Box::new(game.world.clone()), things });
         }
     }
+    // The story is measured against what the model reads, whenever it grew; past 85% the
+    // oldest part is written up, a piece that fits at a time, whatever the screen shows.
+    let limit = crate::master::context_limit(&settings, &gm);
+    let seen = (game.world.story.log.len(), game.world.story.chapters.len(), limit.tokens);
+    if !background.chapter_asked && background.chapter_rest == 0.0 && background.compact_seen != Some(seen) {
+        background.compact_seen = Some(seen);
+        match world::prompt::compaction(&game.world, limit.room()) {
+            Some((what, urgent)) => {
+                background.urgent = urgent;
+                background.chapter_asked = true;
+                master.ask(&gm, &store, &settings, Ask::Chapter { world: Box::new(game.world.clone()), what });
+            }
+            None => background.urgent = false,
+        }
+    }
     if *phase != Phase::Walking {
         return;
     }
@@ -2362,10 +2389,6 @@ fn background_work(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, g
     }
     background.quiet += dt;
     let world = &game.world;
-    if !background.chapter_asked && background.chapter_rest == 0.0 && world.story.needs_chapter(settings.memory_budget) {
-        background.chapter_asked = true;
-        master.ask(&gm, &store, &settings, Ask::Chapter { world: Box::new(world.clone()) });
-    }
     if settings.predraw && background.ahead_rest == 0.0 && !master.is_drawing_anything() {
         // Exits are tried in the order the master listed them.
         if let Some(exit) = world.here().exits.iter().find(|e| world.stubs.contains_key(&e.to)) {
@@ -2671,7 +2694,7 @@ fn tell_refusal(player: &str, why: &str, me: &str, session: &Session, phase: &mu
 /// is asked one question at a time, of everything that gathered there; places are asked
 /// side by side.
 #[allow(clippy::too_many_arguments)]
-fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: ResMut<Phase>, session: Res<Session>, settings: Res<Settings>, master: Res<Master>, gm: Res<Gm>, store: Res<Store>) {
+fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: ResMut<Phase>, session: Res<Session>, settings: Res<Settings>, master: Res<Master>, gm: Res<Gm>, store: Res<Store>, background: Res<Background>) {
     if session.is_client() {
         return;
     }
@@ -2689,8 +2712,10 @@ fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: Res
         let there = usize::from(game.world.current == place) + guests.iter().filter(|g| game.world.place_of(g) == place).count();
         outs.extend(table.queues.submit(&place, &want.player, &want.said, want.near, want.follows, there <= 1, now).1);
     }
-    // A human master reads one answer at a time: nothing more is asked while one waits.
-    if table.drafts.is_empty() {
+    // A human master reads one answer at a time: nothing more is asked while one waits. A
+    // story too long for the model to read is written up shorter first: what was done
+    // waits in the queue meanwhile, and is asked as soon as it fits.
+    if table.drafts.is_empty() && !background.urgent {
         outs.extend(table.queues.tick(now));
     }
     for out in outs {

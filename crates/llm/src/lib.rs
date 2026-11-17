@@ -4,6 +4,7 @@
 
 pub mod catalog;
 pub mod client;
+pub mod context;
 pub mod dispatch;
 pub mod openai;
 pub mod pool;

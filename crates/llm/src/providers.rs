@@ -218,6 +218,12 @@ impl Provider {
 pub fn read_models(body: &str) -> Result<Vec<String>, String> {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("not JSON: {e}"))?;
     let list = value.get("data").or_else(|| value.get("result")).and_then(|l| l.as_array()).ok_or("the answer lists no models")?;
+    // How much each model reads at once, where the list says.
+    for entry in list {
+        if let (Some(id), Some(tokens)) = (entry.get("id").or_else(|| entry.get("name")).and_then(|i| i.as_str()), crate::context::read(entry)) {
+            crate::context::remember(id, tokens);
+        }
+    }
     let mut ids: Vec<String> = list.iter().filter_map(|m| m.get("id").or_else(|| m.get("name")).and_then(|id| id.as_str())).filter(|id| id.starts_with('@') || !id.contains(' ')).map(str::to_string).collect();
     // Cloudflare gives both an id and a name; the name is what is asked with.
     if list.iter().any(|m| m.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.starts_with("@cf/") || n.starts_with("@hf/"))) {
@@ -273,6 +279,7 @@ pub fn read_sound(bytes: Vec<u8>, kind: &str) -> Result<Vec<u8>, String> {
 const THOUGHTS_ENOUGH: usize = 60_000;
 
 pub fn gather_stream(lines: impl Iterator<Item = std::io::Result<String>>) -> std::io::Result<String> {
+    let mut usage = serde_json::Value::Null;
     let mut text = String::new();
     let mut thought = false;
     let mut thoughts = 0;
@@ -293,6 +300,10 @@ pub fn gather_stream(lines: impl Iterator<Item = std::io::Result<String>>) -> st
         if piece.get("error").is_some() {
             return Ok(piece.to_string());
         }
+        // The last piece says what the request cost, when asked to.
+        if piece.get("usage").is_some_and(|u| !u.is_null()) {
+            usage = piece["usage"].clone();
+        }
         let delta = &piece["choices"][0]["delta"];
         if let Some(part) = delta["content"].as_str() {
             text.push_str(part);
@@ -308,7 +319,7 @@ pub fn gather_stream(lines: impl Iterator<Item = std::io::Result<String>>) -> st
     if text.is_empty() && !thought && !whole.trim().is_empty() {
         return Ok(whole);
     }
-    Ok(serde_json::json!({ "choices": [{ "message": { "role": "assistant", "content": text } }], "thought": thought }).to_string())
+    Ok(serde_json::json!({ "choices": [{ "message": { "role": "assistant", "content": text } }], "thought": thought, "usage": usage }).to_string())
 }
 
 pub struct Network;
@@ -450,6 +461,8 @@ impl Rotation {
                             "messages": [provider.system_message(system), { "role": "user", "content": prompt }],
                             "temperature": 0.9,
                             "stream": true,
+                            // What the request cost, and how much of it the cache saved.
+                            "stream_options": { "include_usage": true },
                         });
                         if room.get() > 0 {
                             body["max_tokens"] = serde_json::json!(room.get());
@@ -512,11 +525,15 @@ impl Rotation {
                     }
                     match answer {
                         Ok(answer) => match crate::openai::read_answer(&answer) {
-                            Ok(text) => return Ok((text, label)),
+                            Ok(text) => {
+                                crate::context::spent(&label, &crate::context::Spent::of_openai(&answer));
+                                return Ok((text, label));
+                            }
                             Err(why) => tried.push(format!("{label} ({}): {why}", tail(key))),
                         },
                         Err(refusal) => {
                             tried.push(format!("{label} ({}): {} {}", tail(key), refusal.status, refusal.text.chars().take(120).collect::<String>()));
+                            crate::context::learn(model, &refusal.text);
                             self.note(provider.kind, key, model, &refusal);
                             // A model that is not there is not there for any key.
                             if matches!(refusal.status, 0 | 400 | 404 | 410 | 413 | 422) || self.model_rests(provider.kind, model) {

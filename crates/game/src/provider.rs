@@ -254,7 +254,7 @@ fn arrived(mut desk: ResMut<Desk>, lang: Res<Lang>) {
 /// whether it runs the game, its address and keys, its models (for the telling or for the
 /// voice) in the order they are tried, how it answers.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang): (ResMut<Settings>, Res<Store>, Res<Lang>), mut desk: ResMut<Desk>, (mut next, mut return_to): (ResMut<NextState<Screen>>, ResMut<ReturnTo>)) {
+fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang, gm): (ResMut<Settings>, Res<Store>, Res<Lang>, Res<crate::gm::Gm>), mut desk: ResMut<Desk>, (mut next, mut return_to): (ResMut<NextState<Screen>>, ResMut<ReturnTo>)) {
     use parts::{KeyPress, ModelPress};
     let lang = *lang;
     let t = |text: T| text.text(lang);
@@ -375,6 +375,9 @@ fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang
             });
             parts::section(ui, T::SectionAnswer, lang);
             answer_changed = crate::settings::answer_settings(ui, &mut answer, false);
+            parts::section(ui, T::SectionMemory, lang);
+            let limit = crate::master::context_limit(&answer, &gm);
+            answer_changed |= crate::settings::memory_section(ui, &mut answer, &limit);
             // What the last fetch or test came to.
             if !note.is_empty() {
                 ui.add_space(4.0);
@@ -394,6 +397,7 @@ fn provider_screen(mut egui: bevy_egui::EguiContexts, (mut settings, store, lang
         settings.thinking = answer.thinking;
         settings.first_token = answer.first_token;
         settings.lowest_tier = answer.lowest_tier;
+        settings.context_smallest = answer.context_smallest;
     }
     if edited {
         let kept = settings.provider_mut(tab);
