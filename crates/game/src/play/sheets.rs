@@ -170,7 +170,10 @@ pub fn overlay(
                         all_shown = true;
                     }
                     for (n, option) in turn.options.iter().enumerate() {
-                        // A choice that needs the party beside something far off: the hero walks there first.
+                        // A choice offered to another player's hero is shown with that hero's
+                        // name, and cannot be taken here.
+                        let mine = crate::play::mine_to_take(option, &game.world, &me, solo);
+                        let whose = option.for_hero.as_deref().map(|h| format!(" — {h}")).unwrap_or_default();
                         let far = option.near.as_deref().and_then(|id| far_from(&game.world, id));
                         let (label, action) = match far {
                             Some(name) => (format!("{}. {} ({} {name})", n + 1, option.label, t(T::WalkUpTo)), PlayAction::Approach(n)),
@@ -179,7 +182,8 @@ pub fn overlay(
                                 (format!("{}. {}{chance}", n + 1, option.label), PlayAction::Choose(n))
                             }
                         };
-                        if ui.add(button(label).wide()).clicked() {
+                        let why = format!("{}{whose}", t(T::OfferForOther));
+                        if ui.add(button(format!("{label}{whose}")).wide().enabled(mine, &why)).clicked() {
                             pressed.borrow_mut().push(action);
                         }
                     }
@@ -204,7 +208,7 @@ pub fn overlay(
                 fields.letters = f32::MAX;
             }
             if no_typing {
-                if let Some(n) = digit.filter(|n| *n < turn.options.len()) {
+                if let Some(n) = digit.filter(|n| *n < turn.options.len() && crate::play::mine_to_take(&turn.options[*n], &game.world, &me, solo)) {
                     let far = turn.options[n].near.as_deref().and_then(|id| far_from(&game.world, id)).is_some();
                     pressed.borrow_mut().push(if far { PlayAction::Approach(n) } else { PlayAction::Choose(n) });
                 } else if ui.input(|i| i.key_pressed(Key::Enter)) && ui.memory(|m| m.focused().is_none()) {

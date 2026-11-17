@@ -2859,7 +2859,9 @@ fn on_activate(
             }
         }
         (PlayAction::Choose(index), Phase::Reading { turn }) => {
-            if let Some(option) = turn.options.get(index) {
+            let me = player_name(&settings);
+            let solo = matches!(*session, Session::Solo);
+            if let Some(option) = turn.options.get(index).filter(|o| mine_to_take(o, &game.world, &me, solo)) {
                 // The outcome happens at once; the master is asked what follows it.
                 let outcome = game.world.choose(option);
                 redraw.0 = true;
@@ -2877,6 +2879,16 @@ fn on_activate(
 }
 
 /// The name of the hero a player plays, if they have one in this world.
+/// Whether a player may take a choice: one offered to a character is that character's
+/// player's alone; alone at the table, every hero is the player's.
+pub fn mine_to_take(option: &world::Action, world: &World, player: &str, solo: bool) -> bool {
+    match &option.for_hero {
+        None => true,
+        Some(_) if solo => true,
+        Some(hero) => hero_of(world, player).is_some_and(|mine| mine.trim().eq_ignore_ascii_case(hero.trim())),
+    }
+}
+
 fn hero_of<'a>(world: &'a World, player: &str) -> Option<&'a str> {
     let index = world.owners.iter().position(|o| o == player)?;
     world.party.get(index).map(|h| h.name.as_str())
@@ -3018,6 +3030,12 @@ fn guests(
             }
             Intent::Choose { index, label } => {
                 let place = game.world.current.clone();
+                // A choice offered to somebody else's hero is not this guest's to take.
+                let theirs = table.options.get(&place).and_then(|offered| offered.iter().find(|o| o.label == label)).filter(|o| !mine_to_take(o, &game.world, &player, false)).and_then(|o| o.for_hero.clone());
+                if let Some(hero) = theirs {
+                    session.send_to(&player, &Down::Trouble(format!("{} {hero}.", T::OfferForOther.text(settings.lang))));
+                    continue;
+                }
                 match table.options.get_mut(&place).and_then(|offered| take_offer(offered, index, &label)) {
                     Some(option) => {
                         let outcome = game.world.choose(&option);
@@ -3860,6 +3878,24 @@ mod tests {
 
     fn offer(label: &str) -> world::Action {
         serde_json::from_value(serde_json::json!({ "label": label, "outcome": format!("{label}, done"), "effects": [] })).expect("a choice as it is kept")
+    }
+
+    #[test]
+    fn a_choice_for_one_hero_is_that_heros_players_alone() {
+        let mut w = world();
+        let skills: Vec<String> = vec!["athletics".into(), "perception".into()];
+        w.party.push(rules::Character::create("Bora", "", "human", "fighter", [15, 12, 14, 8, 10, 13], &skills, &[]).unwrap());
+        w.party.push(rules::Character::create("Tikhon", "", "human", "fighter", [15, 12, 14, 8, 10, 13], &skills, &[]).unwrap());
+        w.owners = vec!["Ann".into(), "Bob".into()];
+        let mut for_bora = offer("Turn the key");
+        for_bora.for_hero = Some("bora".into());
+        assert!(mine_to_take(&for_bora, &w, "Ann", false), "the name is read whatever its case");
+        assert!(!mine_to_take(&for_bora, &w, "Bob", false));
+        assert!(mine_to_take(&for_bora, &w, "Bob", true), "alone, every hero is the player's");
+        assert!(mine_to_take(&offer("Run"), &w, "Bob", false));
+        // The master writes it as "for".
+        let drafts: Vec<world::story::ActionDraft> = serde_json::from_value(serde_json::json!([{ "label": "Turn the key", "outcome": "It turns.", "for": "Bora" }])).unwrap();
+        assert_eq!(world::story::read_actions(&drafts, &mut Vec::new())[0].for_hero.as_deref(), Some("Bora"));
     }
 
     #[test]

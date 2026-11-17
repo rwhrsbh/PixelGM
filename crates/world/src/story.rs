@@ -340,6 +340,10 @@ pub struct Action {
     /// Whether doing it uses that thing up.
     #[serde(default)]
     pub spends: bool,
+    /// The character it is offered to, by name: only that character's player may take it.
+    /// None for everyone.
+    #[serde(default)]
+    pub for_hero: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
@@ -351,6 +355,9 @@ pub struct ActionDraft {
     pub near: String,
     pub needs: String,
     pub spends: bool,
+    /// The character it is offered to.
+    #[serde(rename = "for")]
+    pub for_hero: String,
 }
 
 const MAX_ACTIONS: usize = 5;
@@ -381,6 +388,7 @@ pub fn read_actions(drafts: &[ActionDraft], notes: &mut Vec<String>) -> Vec<Acti
             near: Some(slug(&d.near)).filter(|id| !id.is_empty()),
             needs: Some(d.needs.trim().to_string()).filter(|n| !n.is_empty()),
             spends: d.spends,
+            for_hero: Some(d.for_hero.trim().to_string()).filter(|h| !h.is_empty()),
         })
         .collect()
 }

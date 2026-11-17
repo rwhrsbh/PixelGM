@@ -165,6 +165,7 @@ texts! {
     Close: "Закрыть", "Close";
     Rejoining: "Связь с хостом потеряна. Подключаюсь…", "Lost the host. Connecting…";
     LedThere: "Мастер ведёт твоего героя — WASD, чтобы остановиться.", "The master leads your hero — WASD to stop.";
+    OfferForOther: "Этот вариант для героя:", "This choice is for the hero";
     PlayAlone: "Играть одному", "Play alone";
     PlayAloneHint: "Продолжить со своей копии мира, без стола", "Go on from your copy of the world, without the table";
     ToMenu: "В меню", "To the menu";
