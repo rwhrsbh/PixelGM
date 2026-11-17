@@ -1,14 +1,13 @@
 //! Playing: the current location on screen, the party walking about it, the passage from one
 //! place to the next, and the conversation with the game master.
 
-use crate::art::Art;
 use crate::audio::Sfx;
 use crate::coop::{Down, DraftView, GmAct, Held, Intent, Session, Table, Want, player_name};
 use crate::fx::{Actor, Fx};
 use crate::gm::{Gm, Trouble, trouble_text};
 use crate::i18n::{Lang, T};
 use crate::master::{Answer, Ask, Master};
-use crate::menu::{Backdrop, ReturnTo, Screen, spawn_panel};
+use crate::menu::{Backdrop, ReturnTo, Screen};
 use crate::screen::CANVAS;
 use crate::shot::Warp;
 use crate::store::{Initiative, Settings, Store};
@@ -23,6 +22,7 @@ use rules::dice::Edge;
 use rules::{Ability, Rng, Roll, Side, tr};
 use world::{CreatureCard, LocationDraft, Speaker, TILE, Turn, TurnDraft, Whisper, World, fake};
 
+mod hud;
 mod sheets;
 
 /// The game being played.
@@ -197,98 +197,6 @@ fn forget_going_on(phase: Res<Phase>, mut table: ResMut<Table>) {
 }
 
 /// Things gained and lost, a line each in the corner for a few seconds.
-#[derive(Component)]
-struct FeedLine(f32);
-
-/// The one column the lines of the corner stand in, the newest lowest. They are laid out
-/// one under another by the interface itself, so a line that wraps onto two rows pushes
-/// the others up instead of lying over them.
-#[derive(Component)]
-struct FeedColumn;
-
-fn feed(frame: Res<crate::view::View>, mut table: ResMut<Table>, mut commands: Commands, time: Res<Time>, game: Res<Game>, session: Res<Session>, settings: Res<Settings>, fonts: Res<Fonts>, mut seen: Local<Option<std::collections::BTreeMap<String, i64>>>, mut lines: Query<(Entity, &mut FeedLine, &mut TextColor)>, mut columns: Query<(Entity, &mut Node), With<FeedColumn>>) {
-    let me = player_name(&settings);
-    let column = match columns.single_mut() {
-        Ok((column, mut node)) => {
-            // Just above whatever sheet lies under the map.
-            let bottom = px(frame.bottom + 4.0);
-            if node.bottom != bottom {
-                node.bottom = bottom;
-            }
-            column
-        }
-        Err(_) => commands
-            .spawn((
-                FeedColumn,
-                DespawnOnExit(Screen::Play),
-                Node { position_type: PositionType::Absolute, left: px(6), bottom: px(frame.bottom + 4.0), max_width: px(300), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexStart, row_gap: px(2), ..default() },
-                GlobalZIndex(9),
-                Pickable::IGNORE,
-            ))
-            .id(),
-    };
-    let hero = my_hero(&game.world, &me, matches!(*session, Session::Solo)).unwrap_or(0);
-    let now: std::collections::BTreeMap<String, i64> = game.world.story.bags.get(hero).map(|b| {
-        let mut counts = std::collections::BTreeMap::new();
-        for item in &b.inventory {
-            *counts.entry(item.name.clone()).or_insert(0) += item.count as i64;
-        }
-        counts
-    }).unwrap_or_default();
-    if let Some(before) = seen.as_ref() {
-        let mut changes: Vec<(String, i64)> = Vec::new();
-        for (name, n) in &now {
-            let was = before.get(name).copied().unwrap_or(0);
-            if *n != was {
-                changes.push((name.clone(), n - was));
-            }
-        }
-        for (name, was) in before {
-            if !now.contains_key(name) {
-                changes.push((name.clone(), -was));
-            }
-        }
-        for (n, (name, delta)) in changes.into_iter().enumerate() {
-            let (sign, tint) = if delta > 0 { ("+", Color::srgb(0.55, 0.9, 0.5)) } else { ("−", Color::srgb(0.95, 0.5, 0.4)) };
-            let count = if delta.abs() > 1 { format!(" ×{}", delta.abs()) } else { String::new() };
-            commands.entity(column).with_child((
-                FeedLine(-(n as f32) * 0.15),
-                Node { padding: UiRect::axes(px(4), px(1)), ..default() },
-                BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.8)),
-                Text::new(format!("{sign} {name}{count}")),
-                fonts.body(),
-                TextColor(tint),
-                Pickable::IGNORE,
-            ));
-        }
-    }
-    *seen = Some(now);
-    // What fellow players have set about, in the same corner.
-    for (n, said) in std::mem::take(&mut table.notices).into_iter().enumerate() {
-        let said = said.replace(world::prompt::GO_ON, "");
-        let short: String = said.trim().chars().take(90).collect();
-        commands.entity(column).with_child((
-            FeedLine(-2.5 - n as f32 * 0.15),
-            Node { padding: UiRect::axes(px(4), px(1)), ..default() },
-            BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.8)),
-            Text::new(format!("» {short}")),
-            fonts.body(),
-            TextColor(color(BRASS_LIGHT)),
-            Pickable::IGNORE,
-        ));
-    }
-    // Each line fades and goes; the column closes up behind it.
-    for (entity, mut line, mut tint) in &mut lines {
-        line.0 += time.delta_secs();
-        if line.0 > 4.0 {
-            commands.entity(entity).despawn();
-            continue;
-        }
-        let fade = (4.0 - line.0).clamp(0.0, 1.0);
-        tint.0 = tint.0.with_alpha(fade);
-    }
-}
-
 /// The arrow over a way out, bobbing towards where it leads.
 #[derive(Component)]
 struct ExitMarker {
@@ -479,18 +387,6 @@ pub struct Fellow(pub String);
 #[derive(Component)]
 struct Veil;
 
-#[derive(Component)]
-struct PlaceName;
-
-#[derive(Component)]
-struct HudHint;
-
-#[derive(Component)]
-struct ArrivalSheet;
-
-#[derive(Component)]
-struct ArrivalText;
-
 /// What the master's panel can do. The panel's text field is each tool's parameter.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tool {
@@ -564,10 +460,6 @@ fn brush_paint(phase: Res<Phase>, panel: Res<Panel>, mouse: Res<ButtonInput<Mous
 
 /// How far from the master's token "nearest" reaches when removing a thing.
 const REMOVE_REACH: f32 = 48.0;
-
-/// The last things said at the table, in a corner of the screen.
-#[derive(Component)]
-struct ChatLog;
 
 /// How long a line of table talk stays on screen, and how many are shown at once.
 const CHAT_SECONDS: f32 = 14.0;
@@ -684,7 +576,7 @@ fn autosave(store: &Store, game: &Game) {
     }
 }
 
-fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<Res<Game>>, store: Res<Store>, mut next: ResMut<NextState<Screen>>, mut backdrop: Query<&mut Visibility, With<Backdrop>>) {
+fn enter(mut commands: Commands, game: Option<Res<Game>>, store: Res<Store>, mut next: ResMut<NextState<Screen>>, mut backdrop: Query<&mut Visibility, With<Backdrop>>) {
     let Some(game) = game else {
         next.set(Screen::Main);
         return;
@@ -699,23 +591,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
 
     let full = Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), ..default() };
     commands.spawn((DespawnOnExit(Screen::Play), Veil, full.clone(), BackgroundColor(Color::BLACK), GlobalZIndex(5)));
-    commands.spawn((
-        DespawnOnExit(Screen::Play),
-        ChatLog,
-        Node { position_type: PositionType::Absolute, left: px(4), top: px(44), max_width: px(230), padding: UiRect::axes(px(3), px(1)), display: Display::None, ..default() },
-        BackgroundColor(Color::srgba(0.1, 0.07, 0.06, 0.82)),
-        GlobalZIndex(9),
-        Text::default(),
-        fonts.body(),
-        TextColor(color(PARCHMENT)),
-    ));
     commands.spawn((DespawnOnExit(Screen::Play), GlobalZIndex(10), Pickable::IGNORE, Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..full })).with_children(|root| {
-        root.spawn((ArrivalSheet, Node { margin: UiRect::top(px(8)), ..default() })).with_children(|slot| {
-            spawn_panel(slot, &art, Node { width: px(380), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }, |sheet| {
-                sheet.spawn((Text::default(), PlaceName, fonts.title(1), TextColor(color(INK))));
-                sheet.spawn((Text::default(), ArrivalText, fonts.body(), TextColor(color(INK))));
-            });
-        });
         // Pinned to the bottom edge: it must not move when the arrival sheet above it goes away.
         root.spawn((
             Node {
@@ -731,11 +607,7 @@ fn enter(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, game: Option<
             },
             BackgroundColor(color(INK)),
         ))
-        .with_children(|strip| {
-            // Neither line may wrap: the name gives way, cut at its edge, before the keys do.
-            strip.spawn((Node { flex_shrink: 1.0, min_width: px(0), max_width: px(100), overflow: Overflow::clip(), margin: UiRect::right(px(8)), ..default() }, Text::default(), TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT))));
-            strip.spawn((Node { flex_shrink: 0.0, ..default() }, Text::default(), HudHint, TextLayout::no_wrap(), fonts.body(), TextColor(color(PARCHMENT_SHADE))));
-        });
+        ;
     });
 }
 
@@ -2340,100 +2212,6 @@ fn veil(phase: Res<Phase>, mut veils: Query<&mut BackgroundColor, With<Veil>>) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn hud(
-    time: Res<Time>,
-    game: Res<Game>,
-    phase: Res<Phase>,
-    lang: Res<Lang>,
-    mut toast: ResMut<Toast>,
-    mut arrival: ResMut<Arrival>,
-    mut names: Query<&mut Text, (With<PlaceName>, Without<HudHint>, Without<ArrivalText>)>,
-    mut hints: Query<&mut Text, (With<HudHint>, Without<PlaceName>, Without<ArrivalText>)>,
-    mut described: Query<&mut Text, (With<ArrivalText>, Without<PlaceName>, Without<HudHint>)>,
-    mut sheets: Query<&mut Node, With<ArrivalSheet>>,
-    session: Res<Session>,
-    settings: Res<Settings>,
-    mut translator: ResMut<Translator>,
-    mut shown_place: ResMut<ShownPlace>,
-) {
-    let world = &game.world;
-    let here = world.here();
-    // A player who reads another language than the world is told in reads translations.
-    let other_tongue = foreign(world, *lang);
-    let translator = translator.bypass_change_detection();
-    let mut read = |text: &str| translator.read(other_tongue, text);
-    // The name of the place is shown whole, with the day and the hour, at the top of the map;
-    // the strip at the bottom is left to the things at hand and the keys.
-    let full = read(&here.name);
-    if shown_place.0 != full {
-        shown_place.0 = full.clone();
-    }
-    for mut text in &mut names {
-        if text.0 != full {
-            text.0 = full.clone();
-        }
-    }
-    toast.left = (toast.left - time.delta_secs()).max(0.0);
-    let thing_name = world.thing_near(THING_REACH).and_then(|id| here.props.iter().map(|p| (&p.id, &p.name)).chain(here.creatures.iter().map(|c| (&c.id, &c.name))).find(|(i, _)| i.as_str() == id).map(|(_, name)| name.clone()));
-    let lying = world.lying_near().and_then(|n| here.items.get(n)).map(|l| l.item.name.clone());
-    let hint = match (toast.text.filter(|_| toast.left > 0.0), thing_name, world.exit_near(EXIT_HINT_REACH)) {
-        (Some(said), _, _) => said.text(*lang).to_string(),
-        (None, _, _) if lying.is_some() => format!("E: {} {}", T::PickUp.text(*lang), lying.unwrap_or_default()),
-        (None, Some(name), _) => format!("E: {}", read(&name)),
-        (None, None, Some(exit)) if exit.label.is_empty() => format!("E: → {}", read(world.place_name(&exit.to))),
-        (None, None, Some(exit)) => format!("E: {} → {}", read(&exit.label), read(world.place_name(&exit.to))),
-        (None, None, None) if my_offer(world, &player_name(&settings), matches!(*session, Session::Solo)).is_some() => T::FeatOffer.text(*lang).to_string(),
-        (None, None, None) if seat_state(world, &session, &player_name(&settings)) == SeatState::Mine => format!("{}{}", T::HudHint.text(*lang), T::HudMaster.text(*lang)),
-        (None, None, None) => T::HudHint.text(*lang).to_string(),
-    };
-    for mut text in &mut hints {
-        if text.0 != hint {
-            text.0 = hint.clone();
-        }
-    }
-    arrival.age += time.delta_secs();
-    let description = read(&here.description);
-    let letters = description.chars().count();
-    let shown: String = description.chars().take((arrival.age * LETTERS_PER_SECOND) as usize).collect();
-    for mut text in &mut described {
-        if text.0 != shown {
-            text.0 = shown.clone();
-        }
-    }
-    // The sheet is for the place the party is in; it steps aside for any other sheet.
-    let in_the_open = matches!(*phase, Phase::Walking | Phase::Arriving { .. });
-    let visible = in_the_open && arrival.age < letters as f32 / LETTERS_PER_SECOND + ARRIVAL_LINGER;
-    for mut node in &mut sheets {
-        let display = if visible { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
-    }
-}
-
-/// Table talk fades from the corner of the screen a while after it was said.
-fn chat_log(time: Res<Time>, mut table: ResMut<Table>, mut logs: Query<(&mut Text, &mut Node), With<ChatLog>>) {
-    if table.chat.is_empty() {
-        return;
-    }
-    let table = table.bypass_change_detection();
-    for line in &mut table.chat {
-        line.age += time.delta_secs();
-    }
-    let fresh: Vec<String> = table.chat.iter().filter(|l| l.age < CHAT_SECONDS).map(|l| format!("{}: {}", l.from, l.text)).collect();
-    let shown = fresh[fresh.len().saturating_sub(CHAT_LINES)..].join("\n");
-    for (mut text, mut node) in &mut logs {
-        let display = if shown.is_empty() { Display::None } else { Display::Flex };
-        if node.display != display {
-            node.display = display;
-        }
-        if text.0 != shown {
-            text.0 = shown.clone();
-        }
-    }
-}
-
 /// Which sheet, if any, lies over the game, with everything it shows: when this value
 /// changes the sheet is rebuilt.
 #[derive(Clone, PartialEq, Default, Debug)]
@@ -2456,6 +2234,8 @@ enum Sheet {
     Folded,
     /// Nothing is being asked or read: the last thing told stays in sight.
     Last(String),
+    /// Just walked into a place: its name, and as much of its description as is written out.
+    Arrival(String, String),
     Refused(String),
     Journal { quests: Vec<String>, carried: String, lines: Vec<(Speaker, String)> },
     /// What is being rolled, in words.
@@ -3097,40 +2877,6 @@ fn run_clock(time: Res<Time>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, 
     }
 }
 
-#[derive(Component)]
-struct ClockFace;
-
-/// The day and the hour, in the corner of the map by the party.
-fn clock_face(mut commands: Commands, game: Res<Game>, lang: Res<Lang>, fonts: Res<Fonts>, place: Res<ShownPlace>, mut faces: Query<&mut Text, With<ClockFace>>) {
-    let (day, hour, minute) = game.world.time();
-    let mark = match game.world.daylight() {
-        "day" => "",
-        "dusk" => " ~",
-        _ => " *",
-    };
-    let shown = format!("{} · {} {day} · {hour:02}:{minute:02}{mark}", place.0, T::DayWord.text(*lang));
-    match faces.single_mut() {
-        Ok(mut text) => {
-            if text.0 != shown {
-                text.0 = shown;
-            }
-        }
-        Err(_) => {
-            commands.spawn((
-                ClockFace,
-                DespawnOnExit(Screen::Play),
-                Node { position_type: PositionType::Absolute, left: px(3), top: px(3), padding: UiRect::axes(px(4), px(1)), ..default() },
-                BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.72)),
-                Text::new(shown),
-                fonts.body(),
-                TextColor(color(PARCHMENT)),
-                GlobalZIndex(7),
-                Pickable::IGNORE,
-            ));
-        }
-    }
-}
-
 /// The main quest and the open side tasks, a line each, for the journal.
 fn quest_lines(world: &World, lang: Lang) -> Vec<String> {
     let quest = &world.quest;
@@ -3163,55 +2909,6 @@ fn quest_lines(world: &World, lang: Lang) -> Vec<String> {
 
 /// The goal of the main quest, always in sight in the corner of the map; a change of goal or
 /// a new task is also called out in the corner feed.
-#[derive(Component)]
-struct GoalLine;
-
-fn goal_line(mut commands: Commands, game: Res<Game>, lang: Res<Lang>, fonts: Res<Fonts>, mut table: ResMut<Table>, old: Query<Entity, With<GoalLine>>, mut shown: Local<Option<(String, Vec<(String, bool)>)>>) {
-    let quest = &game.world.quest;
-    let text = match quest.done {
-        _ if !quest.is_set() => String::new(),
-        Some(true) => format!("{}: {}", T::QuestWon.text(*lang), quest.title),
-        Some(false) => format!("{}: {}", T::QuestLost.text(*lang), quest.title),
-        None => format!("{} {}", T::Goal.text(*lang), quest.goal),
-    };
-    let tasks: Vec<(String, bool)> = quest.tasks.iter().map(|t| (t.name.clone(), t.done)).collect();
-    let now = (text.clone(), tasks.clone());
-    if shown.as_ref() == Some(&now) && (text.is_empty() || !old.is_empty()) {
-        return;
-    }
-    // What changed is called out, except when a game has just been opened.
-    if let Some((before, tasks_before)) = shown.as_ref() {
-        if *before != text && !text.is_empty() {
-            table.notices.push(if quest.done.is_some() { text.clone() } else { format!("{} {}", T::NewGoal.text(*lang), quest.goal) });
-        }
-        for (name, done) in &tasks {
-            match tasks_before.iter().find(|(n, _)| n == name) {
-                None => table.notices.push(format!("{} {name}", T::NewTask.text(*lang))),
-                Some((_, false)) if *done => table.notices.push(format!("{} {name}", T::TaskDone.text(*lang))),
-                _ => {}
-            }
-        }
-    }
-    *shown = Some(now);
-    for entity in &old {
-        commands.entity(entity).despawn();
-    }
-    if text.is_empty() {
-        return;
-    }
-    commands.spawn((
-        GoalLine,
-        DespawnOnExit(Screen::Play),
-        Node { position_type: PositionType::Absolute, left: px(3), top: px(16), max_width: px(300), padding: UiRect::axes(px(4), px(1)), ..default() },
-        BackgroundColor(Color::srgba(0.06, 0.04, 0.03, 0.92)),
-        Text::new(text),
-        fonts.body(),
-        TextColor(color(BRASS_LIGHT)),
-        GlobalZIndex(7),
-        Pickable::IGNORE,
-    ));
-}
-
 /// What a prepared action of a thing here is called.
 fn action_label(world: &World, thing: &str, index: usize) -> Option<String> {
     let here = world.here();
@@ -3935,8 +3632,7 @@ impl Plugin for PlayPlugin {
             .add_systems(Update, ambush_ask.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, brush_paint.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (place_allies, live_world, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
-            .add_systems(Update, (run_clock, clock_face).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
-            .add_systems(Update, goal_line.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, run_clock.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, keep_facing.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .init_resource::<Dolls>()
             .init_resource::<Background>()
@@ -3945,12 +3641,14 @@ impl Plugin for PlayPlugin {
             .add_systems(OnExit(Screen::Play), leave)
             .add_systems(
                 Update,
-                (keys, walk, approach_work, advance, receive, guests, master_queue, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, hud, chat_log, veil).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
+                (keys, walk, approach_work, advance, receive, guests, master_queue, background_work, cues, draw, place_hero, place_fellows, water, lighting, walk_grid, veil).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>),
             )
-            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, feed, forget_going_on, notice, relocate, redress).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (fold_keys, roofs, exit_markers, exits_seen, bag_work, forget_going_on, notice, relocate, redress).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_observer(on_activate)
             .add_observer(on_master_activate)
             .init_resource::<sheets::Fields>()
+            .init_resource::<hud::Notices>()
+            .add_systems(bevy_egui::EguiPrimaryContextPass, hud::hud.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(bevy_egui::EguiPrimaryContextPass, sheets::overlay.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>));
     }
 }

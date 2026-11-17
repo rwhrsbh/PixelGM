@@ -42,7 +42,7 @@ pub fn overlay(
     mut commands: Commands,
     (phase, game, gm, lang, session, table, panel): (Res<Phase>, Res<Game>, Res<Gm>, Res<Lang>, Res<Session>, Res<Table>, Res<Panel>),
     (mut settings, store, mut folded, use_for, link): (ResMut<Settings>, Res<Store>, ResMut<Folded>, Res<UseFor>, Res<crate::coop::SteamLink>),
-    (time, mut slot): (Res<Time>, ResMut<crate::view::StoryPanel>),
+    (time, mut slot, arrival): (Res<Time>, ResMut<crate::view::StoryPanel>, Res<Arrival>),
     mut translator: ResMut<Translator>,
     mut fields: ResMut<Fields>,
     mut was: Local<Option<std::mem::Discriminant<Phase>>>,
@@ -83,9 +83,21 @@ pub fn overlay(
     let pressed: std::cell::RefCell<Vec<PlayAction>> = std::cell::RefCell::new(Vec::new());
     let mut size_pressed = false;
     let mut invite = false;
-    let low = matches!(sheet, Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Folded | Sheet::Last(_) | Sheet::Rolling(_) | Sheet::Judging(_) | Sheet::Master(_));
+    let low = matches!(sheet, Sheet::Arrival(..) | Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Folded | Sheet::Last(_) | Sheet::Rolling(_) | Sheet::Judging(_) | Sheet::Master(_));
+    // Just walked in: the place's name, and its description written out, where the story is.
+    let here = game.world.here();
+    let description = translator.bypass_change_detection().read(foreign(&game.world, lang), &here.description);
+    let letters = description.chars().count();
+    let arriving = matches!(*phase, Phase::Walking | Phase::Arriving { .. }) && matches!(sheet, Sheet::None | Sheet::Last(_)) && arrival.age < letters as f32 / LETTERS_PER_SECOND + ARRIVAL_LINGER;
+    let sheet = if arriving {
+        let name = translator.bypass_change_detection().read(foreign(&game.world, lang), &here.name);
+        Sheet::Arrival(name, description.chars().take((arrival.age * LETTERS_PER_SECOND) as usize).collect())
+    } else {
+        sheet
+    };
     let screen = ui.max_rect();
     let panel_height = match &sheet {
+        Sheet::Arrival(..) => 64.0,
         Sheet::None => 0.0,
         Sheet::Folded => 28.0,
         Sheet::Last(_) => 36.0,
@@ -101,6 +113,12 @@ pub fn overlay(
     let digit = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6].iter().position(|k| ui.input(|i| i.key_pressed(*k)));
     match &sheet {
         Sheet::None => {}
+        Sheet::Arrival(name, shown) => {
+            kit::plate(ui.painter(), story_rect, kit::Look::Parchment, true);
+            let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(story_rect.shrink(8.0)));
+            kit::title(&mut inner, name.as_str(), crate::ui::theme::SMALL_TITLE);
+            inner.add(egui::Label::new(egui::RichText::new(shown).color(c(crate::theme::INK))).wrap());
+        }
         Sheet::Last(text) => {
             kit::plate(ui.painter(), story_rect, kit::Look::Parchment, true);
             let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(story_rect.shrink(8.0)));
