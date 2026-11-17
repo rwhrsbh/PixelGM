@@ -35,6 +35,8 @@ const HUD: f32 = HUD_HEIGHT * crate::screen::UI_PIXEL;
 const PARTY: f32 = crate::view::COLUMN * crate::screen::UI_PIXEL;
 /// How tall the story's panel is, at each of its three sizes.
 pub const STORY_HEIGHTS: [f32; 3] = [96.0, 168.0, 260.0];
+/// The least a sheet under the map is, whatever it holds.
+const STORY_LEAST: f32 = 64.0;
 
 #[allow(clippy::too_many_arguments)]
 pub fn overlay(
@@ -101,7 +103,18 @@ pub fn overlay(
         Sheet::None => 0.0,
         Sheet::Folded => 28.0,
         Sheet::Last(_) => 36.0,
-        _ if low => STORY_HEIGHTS[settings.narration.min(2) as usize],
+        // The telling is as tall as it will be when all of it is written out, so the map does
+        // not shrink with every line as the letters come: what is still to come is measured
+        // beside what the sheet holds now.
+        Sheet::Reading(turn) => {
+            let width = screen.width() - PARTY - 24.0;
+            let tall = |text: String| ui.fonts_mut(|f| f.layout(text, egui::FontId::proportional(crate::ui::theme::BODY), egui::Color32::WHITE, width)).size().y;
+            let shown: String = if fields.telling == turn.narration { turn.narration.chars().take(fields.letters as usize).collect() } else { String::new() };
+            let to_come = (tall(turn.narration.clone()) - tall(shown)).max(0.0);
+            STORY_HEIGHTS[settings.narration.min(2) as usize].min(kit::last_needed(ctx).map_or(f32::MAX, |n| n + to_come).max(STORY_LEAST))
+        }
+        // The rest are no taller than what they hold: a thing with two actions leaves the map large.
+        _ if low => STORY_HEIGHTS[settings.narration.min(2) as usize].min(kit::last_needed(ctx).unwrap_or(f32::MAX).max(STORY_LEAST)),
         _ => 0.0,
     };
     // The map is seen above the panel: the camera is told how much of the screen it takes.
@@ -172,9 +185,6 @@ pub fn overlay(
                     if !turn.options.is_empty() && footer.add(button(t(T::OwnAction))).clicked() {
                         pressed.borrow_mut().push(PlayAction::Own);
                     }
-                    if footer.add(button(t(T::Onward)).primary().key("Enter")).clicked() {
-                        pressed.borrow_mut().push(PlayAction::Close);
-                    }
                     if footer.add(button(t(T::SheetSize))).clicked() {
                         size_pressed = true;
                     }
@@ -182,6 +192,9 @@ pub fn overlay(
                         folded.0 = true;
                     }
                     hint(footer, t(T::StoryKeys));
+                    if kit::right(footer, |r| r.add(button(t(T::Onward)).primary().key("Enter"))).clicked() {
+                        pressed.borrow_mut().push(PlayAction::Close);
+                    }
                 },
             );
             if all_shown {
@@ -240,7 +253,7 @@ pub fn overlay(
                     if *at_table && footer.add(button(t(T::TableTalk))).clicked() {
                         pressed.borrow_mut().push(PlayAction::Talk);
                     }
-                    if footer.add(button(t(T::Say)).primary().key("Enter")).clicked() {
+                    if kit::right(footer, |r| r.add(button(t(T::Say)).primary().key("Enter"))).clicked() {
                         pressed.borrow_mut().push(PlayAction::Send);
                     }
                 },
@@ -294,7 +307,7 @@ pub fn overlay(
         }
         Sheet::Rolling(what) => {
             kit::sheet_at(&mut ui, "rolling", story_rect, t(T::CheckTitle), |ui| ui.label(what.as_str()), |footer| {
-                if footer.add(button(t(T::RollDie)).primary().key("Enter")).clicked() {
+                if kit::right(footer, |r| r.add(button(t(T::RollDie)).primary().key("Enter"))).clicked() {
                     pressed.borrow_mut().push(PlayAction::Roll);
                 }
             });
@@ -335,7 +348,7 @@ pub fn overlay(
                     if footer.add(button(t(T::Reject))).clicked() {
                         pressed.borrow_mut().push(PlayAction::Judge(false));
                     }
-                    if footer.add(button(t(T::Accept)).primary()).clicked() {
+                    if kit::right(footer, |r| r.add(button(t(T::Accept)).primary())).clicked() {
                         pressed.borrow_mut().push(PlayAction::Judge(true));
                     }
                 },

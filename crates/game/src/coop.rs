@@ -716,7 +716,7 @@ fn keys_vote(
                     if footer.add(button(t(T::KeysOutWait))).clicked() {
                         chose = Some(false);
                     }
-                    if footer.add(button(t(T::KeysOutEnter)).primary()).clicked() {
+                    if kit::right(footer, |r| r.add(button(t(T::KeysOutEnter)).primary())).clicked() {
                         chose = Some(true);
                     }
                 }

@@ -347,14 +347,14 @@ fn screen(
             }
             if guest {
                 let label = if lobby.ready { t(T::NotReadyAction) } else { t(T::ReadyAction) };
-                if footer.add(button(label).primary()).clicked() {
+                if kit::right(footer, |r| r.add(button(label).primary())).clicked() {
                     ready_pressed = true;
                 }
             }
             if hosting {
                 let label = if game.is_some() { t(T::BackToGame) } else { t(T::Begin) };
                 let all_ready = roster.seats.iter().all(|s| s.ready);
-                let pressed = footer.add(button(label).primary().key("Enter"));
+                let pressed = kit::right(footer, |r| r.add(button(label).primary().key("Enter")));
                 let pressed = if all_ready { pressed } else { pressed.on_hover_text(t(T::NotAllReady)) };
                 if pressed.clicked() {
                     begin = true;

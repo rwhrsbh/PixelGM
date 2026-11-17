@@ -121,17 +121,17 @@ pub fn sheet(
             },
             |footer| {
                 if summary.won || casual || session.is_client() {
-                    if footer.add(button(t(T::Onward)).primary().key("Enter")).clicked() || enter {
+                    if kit::right(footer, |r| r.add(button(t(T::Onward)).primary().key("Enter"))).clicked() || enter {
                         pressed.borrow_mut().push(FightAction::Onward);
                     }
                 } else {
                     // What becomes of a beaten party is the host's call; on the hardest
                     // setting there is no going back to an earlier save.
-                    if footer.add(button(t(T::MasterDecides)).primary()).clicked() {
-                        pressed.borrow_mut().push(FightAction::MasterDecides);
-                    }
                     if world.table.difficulty != world::Difficulty::Hardcore && footer.add(button(t(T::LoadGame))).clicked() {
                         pressed.borrow_mut().push(FightAction::Load);
+                    }
+                    if kit::right(footer, |r| r.add(button(t(T::MasterDecides)).primary())).clicked() {
+                        pressed.borrow_mut().push(FightAction::MasterDecides);
                     }
                 }
             },
