@@ -98,7 +98,9 @@ impl World {
         let known = |id: &str| {
             matches!(id, "" | "self" | "party" | "hero" | "heroes" | "player" | "players" | "everyone" | "all") || heroes.iter().any(|h| h == id) || spawned.iter().any(|s| s == id) || here.props.iter().any(|p| p.id == id) || here.creatures.iter().any(|c| c.id == id)
         };
-        let drawn_tiles: Vec<String> = draft.tiles.iter().map(|t| slug(&t.id)).collect();
+        // A ground drawn with a picture that cannot be read is not drawn at all.
+        let colours = self.palette.len() + draft.palette.len();
+        let drawn_tiles: Vec<String> = draft.tiles.iter().filter(|t| crate::build::tile_from(&t.rows, colours).is_some()).map(|t| slug(&t.id)).collect();
         let drawn_sprites: Vec<String> = draft.sprites.iter().map(|s| slug(&s.id)).collect();
         for effect in &all {
             let op = text(effect, "op");

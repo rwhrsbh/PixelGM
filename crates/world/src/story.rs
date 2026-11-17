@@ -785,6 +785,11 @@ impl World {
         let acting = self.acting.filter(|a| *a < self.party.len()).unwrap_or(0);
         let bag_of = |to: &str| names.iter().position(|n| !to.trim().is_empty() && *n == slug(to)).unwrap_or(acting);
         let mut moved: Vec<(usize, (usize, usize))> = Vec::new();
+        // The heroes here: what is used up is taken from their bags, never from one far off.
+        let with_us: Vec<bool> = (0..self.party.len()).map(|h| self.takes_part(h)).collect();
+        // Where the story puts heroes, settled once all the ground of the answer is laid:
+        // a bridge laid after the step onto it in the list is still stepped onto.
+        let mut hero_moves: Vec<(Vec<usize>, (usize, usize))> = Vec::new();
         let mut travel: Option<(String, String, Vec<usize>)> = None;
         let mut travel_look = String::new();
         let most_better = if !self.limited() {
@@ -926,9 +931,9 @@ impl World {
                     }
                 }
                 Effect::Take { name, from } => {
-                    // The named hero's bag first, then the one who acted, then anyone's.
+                    // The named hero's bag first, then the one who acted, then any of those here.
                     let first = bag_of(from);
-                    let order: Vec<usize> = std::iter::once(first).chain(0..self.story.bags.len()).collect();
+                    let order: Vec<usize> = std::iter::once(first).chain((0..self.story.bags.len()).filter(|b| with_us.get(*b).copied().unwrap_or(false))).collect();
                     if !order.into_iter().any(|b| self.story.bags.get_mut(b).is_some_and(|bag| bag.take(name))) {
                         notes.push(format!("take: the party has no '{name}'"));
                     }
@@ -970,10 +975,7 @@ impl World {
                             travel = Some((exit.to.clone(), String::new(), heroes.clone()));
                         }
                         // They are carried, pushed or walk where the story says.
-                        let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
-                        if let Some(cell) = nearest(wanted, free) {
-                            moved.extend(heroes.into_iter().map(|h| (h, cell)));
-                        }
+                        hero_moves.push((heroes, wanted));
                     } else {
                         notes.push(format!("move: nothing called '{id}' is here"));
                     }
@@ -1169,6 +1171,14 @@ impl World {
                 Effect::Weather { weather } => location.weather = weather.trim().to_lowercase(),
                 Effect::Music { mood } => location.mood = mood.trim().to_lowercase(),
                 Effect::Kill { .. } | Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight { .. } | Effect::Deed { .. } | Effect::Revive { .. } => {}
+            }
+        }
+        if let Some(location) = self.locations.get(&here) {
+            for (heroes, wanted) in hero_moves {
+                let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, &self.tiles) && location.exit_at(cx, cy).is_none();
+                if let Some(cell) = nearest(wanted, free) {
+                    moved.extend(heroes.into_iter().map(|h| (h, cell)));
+                }
             }
         }
         self.moves.extend(moved);
