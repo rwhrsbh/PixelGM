@@ -74,6 +74,7 @@ texts! {
     TestUnreadable: "Мастер ответил неразборчиво:", "The game master's answer could not be read:";
     LoadGame: "Загрузить", "Load";
     NoSaves: "Сохранений пока нет.", "No saves yet.";
+    LoadAbout: "Щелчок — продолжить с этого места. Сверху — самые свежие.", "Click to go on from there. The newest are at the top.";
     AutoSave: "авто", "auto";
     ManualSave: "вручную", "manual";
     Ago: "назад", "ago";
@@ -238,6 +239,7 @@ texts! {
     ActVoidLeft: "Ты ушёл оттуда раньше, чем мастер ответил: задуманное не случилось.", "You left before the master answered: what you meant to do did not happen.";
     ActVoidFight: "Начался бой — задуманное не случилось.", "A fight broke out — what you meant to do did not happen.";
     HeroTitle: "Твой герой", "Your hero";
+    HeroAbout: "Имя, народ и класс; внешность и способности — на вкладках. Готово — «В путь».", "A name, a people and a class; the looks and the numbers are on the tabs. Done: Set out.";
     HeroName: "Имя", "Name";
     HeroStory: "О герое", "About";
     HeroRace: "Народ", "People";

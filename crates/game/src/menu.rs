@@ -31,7 +31,6 @@ pub enum Screen {
 /// What a navigation button does when used.
 #[derive(Component, Clone, Copy, PartialEq)]
 pub enum Nav {
-    Go(Screen),
     /// Back to where this screen was opened from; the main menu unless something else is
     /// recorded in `ReturnTo`.
     Back,
@@ -148,7 +147,6 @@ fn main_menu(mut egui: bevy_egui::EguiContexts, store: Res<Store>, settings: Res
 fn on_activate(used: On<Activate>, buttons: Query<&Nav>, mut return_to: ResMut<ReturnTo>, mut next: ResMut<NextState<Screen>>) {
     let Ok(nav) = buttons.get(used.entity) else { return };
     match nav {
-        Nav::Go(screen) => next.set(*screen),
         Nav::Back => next.set(return_to.0.take().unwrap_or(Screen::Main)),
     }
 }
