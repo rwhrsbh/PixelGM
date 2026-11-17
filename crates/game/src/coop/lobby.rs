@@ -459,7 +459,9 @@ fn screen(
         match way {
             Join::Address(address) => {
                 direct_name(&mut settings, link.steam.as_ref());
-                match super::join(&address, &player_name(&settings), player) {
+                // A new table: its numbers start afresh.
+                table.feed_seen = 0;
+                match super::join(&address, &player_name(&settings), player, 0) {
                     Ok(joined) => *session = joined,
                     Err(e) => {
                         error!("could not join {address}: {e}");
@@ -470,7 +472,8 @@ fn screen(
             Join::Steam(lobby_id) => {
                 if let Some(steam) = &link.steam {
                     settings.player_name = steam.name();
-                    *session = join_steam(steam, lobby_id, &player_name(&settings), player);
+                    table.feed_seen = 0;
+                    *session = join_steam(steam, lobby_id, &player_name(&settings), player, 0);
                 }
             }
         }
