@@ -203,6 +203,27 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     for (n, chapter) in world.story.chapters.iter().enumerate() {
         let _ = writeln!(text, "\nCHAPTER {}: {chapter}", n + 1);
     }
+    // What only grows comes first and what changes every turn last: a provider that keeps a
+    // cache of the prompt takes everything up to the first difference from the request
+    // before, so the longer the part that stays the same, the less each turn costs.
+    let _ = write!(text, "\nSPRITES THAT EXIST:");
+    for sprite_id in world.sprites.keys() {
+        let _ = write!(text, " {sprite_id}");
+    }
+    let _ = write!(text, "\nTILES THAT EXIST:");
+    for tile_id in world.tiles.keys() {
+        let _ = write!(text, " {tile_id}");
+    }
+    let _ = writeln!(text);
+    let lines = world.story.log.get(recent).unwrap_or(&[]);
+    if !lines.is_empty() {
+        let _ = writeln!(text, "\n\nTHE STORY SO FAR:");
+        for line in lines {
+            let who = if line.speaker == Speaker::Master { "GM" } else { "PARTY" };
+            let _ = writeln!(text, "{who}: {}", line.text);
+        }
+    }
+    let _ = writeln!(text, "\nWHAT IS TRUE NOW:");
     let here = world.here();
     if !world.table.sandbox {
         let quest = &world.quest;
@@ -347,14 +368,6 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
     } else {
         let _ = writeln!(text, "No companions travel with the party; there is room for {}.", world.room_for_companions());
     }
-    let _ = write!(text, "\nSPRITES THAT EXIST:");
-    for sprite_id in world.sprites.keys() {
-        let _ = write!(text, " {sprite_id}");
-    }
-    let _ = write!(text, "\nTILES THAT EXIST:");
-    for tile_id in world.tiles.keys() {
-        let _ = write!(text, " {tile_id}");
-    }
     if !world.party.is_empty() {
         let _ = writeln!(text, "\n\nTHE PARTY:");
         // Those who are here: a party that has split up is told about scene by scene.
@@ -375,14 +388,6 @@ fn situation(world: &World, recent: std::ops::RangeFrom<usize>) -> String {
         let things: Vec<String> = bag.inventory.iter().map(|i| i.name.clone()).collect();
         let _ = write!(text, "
 THE PARTY CARRIES: {}", things.join(", "));
-    }
-    let lines = world.story.log.get(recent).unwrap_or(&[]);
-    if !lines.is_empty() {
-        let _ = writeln!(text, "\n\nTHE STORY SO FAR:");
-        for line in lines {
-            let who = if line.speaker == Speaker::Master { "GM" } else { "PARTY" };
-            let _ = writeln!(text, "{who}: {}", line.text);
-        }
     }
     text
 }
@@ -782,5 +787,25 @@ mod tests {
         assert!(text.contains("grass+") && text.contains(" water"));
         assert!(text.contains(" hero") && text.contains("1=#"));
         assert!(text.contains(&world.title));
+    }
+
+    #[test]
+    fn two_turns_one_after_another_begin_alike_up_to_what_is_true_now() {
+        let mut w = test_world();
+        w.story.say(Speaker::Master, "The fire crackles.");
+        let first = turn(&w, "we look around", None);
+        // A turn later: the story has grown at its end, the clock and the party have moved.
+        w.story.say(Speaker::Player, "we look around");
+        w.story.say(Speaker::Master, "Nothing stirs.");
+        w.clock += 25;
+        w.player.x += 16.0;
+        let second = turn(&w, "we walk on", None);
+        let same = first.chars().zip(second.chars()).take_while(|(a, b)| a == b).count();
+        let story_ends = first.find("WHAT IS TRUE NOW").unwrap();
+        // Everything before the story's newest lines is the same: only what changes is after.
+        let first_line = first.find("GM: The fire crackles.").unwrap() + "GM: The fire crackles.".len();
+        assert!(same >= first_line, "the turns part at {same}, before the story at {first_line}");
+        assert!(story_ends > first_line);
+        assert!(first.find("TIME:").unwrap() > story_ends);
     }
 }
