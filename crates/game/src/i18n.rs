@@ -166,6 +166,9 @@ texts! {
     Rejoining: "Связь с хостом потеряна. Подключаюсь…", "Lost the host. Connecting…";
     LedThere: "Мастер ведёт твоего героя — WASD, чтобы остановиться.", "The master leads your hero — WASD to stop.";
     OfferForOther: "Этот вариант для героя:", "This choice is for the hero";
+    PrepareHint: "Заготовь удар на свой ход:", "Prepare a blow for your turn:";
+    DoPrepared: "Сделать:", "Do:";
+    PreparedLost: "Заготовка сброшена: никого в досягаемости.", "The prepared blow is let go: nobody is in reach.";
     PlayAlone: "Играть одному", "Play alone";
     PlayAloneHint: "Продолжить со своей копии мира, без стола", "Go on from your copy of the world, without the table";
     ToMenu: "В меню", "To the menu";

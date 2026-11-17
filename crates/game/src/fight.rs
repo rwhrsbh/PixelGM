@@ -57,6 +57,9 @@ pub struct FightView {
     over: Option<FightSummary>,
     /// The master is judging something the acting hero tried.
     asking: bool,
+    /// A blow chosen while others acted: the weapon, struck at the nearest foe in reach
+    /// when this player's hero comes to act.
+    prepared: Option<usize>,
 }
 
 #[derive(Component)]
@@ -85,9 +88,19 @@ pub enum FightAction {
     Ritual(String, u8),
     /// Back to an earlier save after a defeat.
     Load,
+    /// Chosen in another's turn: this weapon at the nearest foe, when the hero's turn comes.
+    Prepare(Option<usize>),
+    /// The blow prepared, struck now.
+    Prepared,
 }
 
 const EVENT_SECONDS: f32 = 0.5;
+
+/// How long a line of the fight stays before the next: half as long when many are waiting,
+/// so that a long round of foes goes by quickly.
+fn pace(waiting: usize) -> f32 {
+    if waiting > 4 { EVENT_SECONDS / 2.0 } else { EVENT_SECONDS }
+}
 const LOG_LINES: usize = 3;
 
 fn hero_index(id: &str) -> Option<usize> {
@@ -371,7 +384,7 @@ fn drive(time: Res<Time>, phase: Res<Phase>, mut game: ResMut<Game>, mut view: R
             view.lines.push(line);
             let extra = view.lines.len().saturating_sub(LOG_LINES);
             view.lines.drain(..extra);
-            view.until_next = EVENT_SECONDS;
+            view.until_next = pace(view.queue.len());
         }
         redraw.0 = true;
         return;
@@ -682,6 +695,22 @@ fn on_activate(
         FightAction::Dash => FightIntent::Dash,
         FightAction::Disengage => FightIntent::Disengage,
         FightAction::EndTurn => FightIntent::EndTurn,
+        FightAction::Prepare(weapon) => {
+            view.prepared = *weapon;
+            return;
+        }
+        FightAction::Prepared => {
+            let Some(weapon) = view.prepared.take() else { return };
+            let Some(strike) = fight.actor().strikes.get(weapon).cloned() else { return };
+            match targets(fight, &strike).first() {
+                Some(&target) => FightIntent::Attack { target, weapon },
+                // Nobody is in reach now: the blow is let go, and the menu is there to choose again.
+                None => {
+                    view.note(T::PreparedLost.text(*lang).to_string());
+                    return;
+                }
+            }
+        }
         FightAction::Onward | FightAction::MasterDecides | FightAction::Load | FightAction::Stunt | FightAction::SendStunt | FightAction::Ritual(..) => return,
     };
     act(intent, world, &mut view, &session, &mut redraw);
@@ -730,6 +759,12 @@ mod tests {
         let fight = w.fight.as_mut().unwrap();
         fight.turn = fight.order.iter().position(|i| *i == 0).unwrap();
         w
+    }
+
+    #[test]
+    fn a_long_round_of_foes_goes_by_twice_as_fast() {
+        assert_eq!(pace(1), EVENT_SECONDS);
+        assert_eq!(pace(10), EVENT_SECONDS / 2.0);
     }
 
     #[test]
