@@ -319,6 +319,8 @@ pub fn title(ui: &mut Ui, text: impl Into<String>, size: f32) -> Response {
 pub struct Sheet<'a> {
     pub id: &'a str,
     pub title: &'a str,
+    /// One line under the title: what this sheet is for. Empty for none.
+    pub about: &'a str,
     /// The widest and tallest it may be, in units; a smaller screen makes it smaller.
     pub max: Vec2,
     /// Room left from the top of the screen, for a title of the game above the sheet.
@@ -354,14 +356,36 @@ fn sheet_with<R>(ui: &mut Ui, sheet: Sheet, body: impl FnOnce(&mut Ui) -> R, foo
     let wanted: Option<f32> = ui.data(|d| d.get_temp(id));
     let height = if sheet.fixed { sheet.max.y } else { wanted.unwrap_or(sheet.max.y) }.min(sheet.max.y).min(room.y).max(1.0);
     let rect = Rect::from_min_size(Pos2::new(screen.center().x - width / 2.0, screen.top() + SHEET_GAP + sheet.top), vec2(width, height));
+    let (out, needed) = fill(ui, sheet.id, rect, sheet.title, sheet.about, body, footer);
+    if !sheet.fixed && wanted.is_none_or(|w| (w - needed).abs() > 0.5) {
+        ui.data_mut(|d| d.insert_temp(id, needed));
+        ui.ctx().request_discard("a sheet measured its contents");
+    }
+    out
+}
+
+/// A sheet in a place of the caller's choosing: the panel of the story under the map.
+/// Gives what the body gave and how tall the contents would have the sheet be.
+pub fn sheet_at<R>(ui: &mut Ui, id: &str, rect: Rect, title: &str, body: impl FnOnce(&mut Ui) -> R, mut footer: impl FnMut(&mut Ui)) -> (R, f32) {
+    fill(ui, id, rect, title, "", body, Some(&mut footer))
+}
+
+fn fill<R>(ui: &mut Ui, id: &str, rect: Rect, title_text: &str, about: &str, body: impl FnOnce(&mut Ui) -> R, footer: Option<&mut dyn FnMut(&mut Ui)>) -> (R, f32) {
     plate(ui.painter(), rect, Look::Parchment, true);
     let inner = rect.shrink(SHEET_PAD);
-    let mut child = ui.new_child(UiBuilder::new().id_salt(sheet.id).max_rect(inner).layout(Layout::top_down(Align::Min)));
+    let mut child = ui.new_child(UiBuilder::new().id_salt(id).max_rect(inner).layout(Layout::top_down(Align::Min)));
     let mut used = 0.0;
-    if !sheet.title.is_empty() {
-        let r = title(&mut child, sheet.title, super::theme::SMALL_TITLE);
-        used += r.rect.height() + child.spacing().item_spacing.y + 2.0;
+    if !title_text.is_empty() {
+        let r = title(&mut child, title_text, super::theme::SMALL_TITLE);
+        used += r.rect.height() + child.spacing().item_spacing.y;
+    }
+    if !about.is_empty() {
+        let r = hint(&mut child, about);
+        used += r.rect.height() + child.spacing().item_spacing.y;
+    }
+    if used > 0.0 {
         child.add_space(2.0);
+        used += 2.0;
     }
     // The footer is laid out first, at the bottom, so the body knows what room is left.
     let footer_h = match footer {
@@ -382,18 +406,14 @@ fn sheet_with<R>(ui: &mut Ui, sheet: Sheet, body: impl FnOnce(&mut Ui) -> R, foo
         .id_salt("body")
         .max_height(body_room)
         .auto_shrink([false, true])
+        .stick_to_bottom(false)
         .show(&mut child, |ui| {
             let out = body(ui);
             content_h = ui.min_rect().height();
             out
         })
         .inner;
-    let needed = SHEET_PAD * 2.0 + used + content_h + gap + footer_h;
-    if !sheet.fixed && wanted.is_none_or(|w| (w - needed).abs() > 0.5) {
-        ui.data_mut(|d| d.insert_temp(id, needed));
-        ui.ctx().request_discard("a sheet measured its contents");
-    }
-    out
+    (out, SHEET_PAD * 2.0 + used + content_h + gap + footer_h)
 }
 
 /// The whole screen as a Ui to lay a screen out in, under everything else egui draws.

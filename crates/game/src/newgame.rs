@@ -60,7 +60,7 @@ fn form(ui: &mut Ui, making: &mut Making, can_ask: bool, lang: Lang) -> Option<F
     let mut act = None;
     let steps = [t(T::NwStepWorld), t(T::NwStepGame), t(T::NwStepRules)];
     let title = format!("{} · {}/{STEPS} {}", t(T::NewWorldTitle), making.step + 1, steps[making.step.min(STEPS - 1)]);
-    let sheet = Sheet { id: "new_world", title: &title, max: vec2(460.0, 230.0), top: 24.0, fixed: true };
+    let sheet = Sheet { id: "new_world", title: &title, about: "", max: vec2(460.0, 230.0), top: 24.0, fixed: true };
     let last = making.step + 1 == STEPS;
     kit::sheet(
         ui,
@@ -164,7 +164,7 @@ fn form(ui: &mut Ui, making: &mut Making, can_ask: bool, lang: Lang) -> Option<F
 fn waiting(ui: &mut Ui, making: &Making, now: u64, keys_label: T, lang: Lang) -> Option<WaitAct> {
     let t = |text: T| text.text(lang);
     let mut act = None;
-    let sheet = Sheet { id: "creating", title: t(T::NewWorldTitle), max: vec2(320.0, 200.0), top: 60.0, fixed: false };
+    let sheet = Sheet { id: "creating", title: t(T::NewWorldTitle), about: "", max: vec2(320.0, 200.0), top: 60.0, fixed: false };
     kit::sheet(
         ui,
         sheet,
