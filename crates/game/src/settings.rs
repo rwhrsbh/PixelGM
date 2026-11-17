@@ -1,21 +1,23 @@
 //! The settings screen, and the systems that make a changed setting take effect.
 
-use crate::art::Art;
 use crate::gm::Gm;
 use crate::i18n::{Lang, T};
 use crate::master::Master;
-use crate::menu::{Nav, Screen, screen_root, spawn_panel};
+use crate::menu::{ReturnTo, Screen};
 use crate::store::{Initiative, Settings, Store};
-use crate::theme::*;
-use crate::widgets::{Activate, button, scroll_list, value_button};
+use crate::ui::egui::{Ui, vec2};
+use crate::ui::kit::{self, Sheet, button, hint};
 use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use llm::{ThinkingSetting, Tier};
 
 /// One row of the screen: a setting whose value changes by clicking through its choices.
-#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Choice {
     Language,
+    /// The screen the interface is drawn for.
+    Screen,
+    UiSize,
     Window,
     Size,
     Fill,
@@ -34,6 +36,8 @@ impl Choice {
     fn label(self) -> T {
         match self {
             Choice::Language => T::SetLanguage,
+            Choice::Screen => T::SetScreen,
+            Choice::UiSize => T::SetUiSize,
             Choice::Window => T::SetWindow,
             Choice::Size => T::SetSize,
             Choice::Fill => T::SetFill,
@@ -49,17 +53,23 @@ impl Choice {
         }
     }
 
-    fn hint(self) -> Option<T> {
+    fn hint(self) -> T {
         match self {
-            Choice::Thinking => Some(T::ThinkingHint),
-            Choice::FirstToken => Some(T::FirstTokenHint),
-            Choice::Fallback => Some(T::FallbackHint),
-            Choice::Predraw => Some(T::PredrawHint),
-            Choice::Initiative => Some(T::InitiativeHint),
-            Choice::Voice => Some(T::VoiceHint),
-            Choice::Fill => Some(T::FillHint),
-            Choice::OnlineMusic => Some(T::OnlineMusicHint),
-            _ => None,
+            Choice::Language => T::LanguageHint,
+            Choice::Screen => T::ScreenHint,
+            Choice::UiSize => T::UiSizeHint,
+            Choice::Window => T::WindowHint,
+            Choice::Size => T::SizeHint,
+            Choice::Music => T::MusicHint,
+            Choice::Sound => T::SoundHint,
+            Choice::Thinking => T::ThinkingHint,
+            Choice::FirstToken => T::FirstTokenHint,
+            Choice::Fallback => T::FallbackHint,
+            Choice::Predraw => T::PredrawHint,
+            Choice::Initiative => T::InitiativeHint,
+            Choice::Voice => T::VoiceHint,
+            Choice::Fill => T::FillHint,
+            Choice::OnlineMusic => T::OnlineMusicHint,
         }
     }
 
@@ -69,6 +79,8 @@ impl Choice {
             // Seconds, shown by the button's own text instead.
             Choice::FirstToken => return None,
             Choice::Language => T::LanguageName,
+            Choice::Screen => [T::ScreenAuto, T::ScreenFhd, T::Screen2k, T::Screen4k][s.screen.min(3) as usize],
+            Choice::UiSize => [T::UiSmaller, T::UiNormal, T::UiLarger][s.ui_size.min(2) as usize],
             Choice::Window => {
                 if s.fullscreen {
                     T::Fullscreen
@@ -134,6 +146,8 @@ impl Choice {
                     Lang::En => Lang::Ru,
                 }
             }
+            Choice::Screen => s.screen = (s.screen.min(3) + 1) % 4,
+            Choice::UiSize => s.ui_size = (s.ui_size.min(2) + 1) % 3,
             Choice::Window => s.fullscreen = !s.fullscreen,
             Choice::Size => s.window_size = (s.window_size + 1) % (crate::screen::SIZES.len() as u8 + 1),
             Choice::Fill => s.fill = !s.fill,
@@ -193,74 +207,112 @@ fn first_token_text(settings: &Settings) -> String {
     format!("{} {}", settings.first_token.clamp(10, 300), T::Seconds.text(settings.lang))
 }
 
-const CHOICES: [Choice; 13] = [Choice::Language, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw, Choice::Initiative];
+/// The tabs of the screen, and the settings on each.
+const TABS: [(T, &[Choice]); 4] = [
+    (T::TabGame, &[Choice::Language, Choice::Initiative]),
+    (T::TabScreen, &[Choice::Screen, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill]),
+    (T::TabSound, &[Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice]),
+    (T::TabMaster, &[Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw]),
+];
 
-fn spawn_settings(mut commands: Commands, art: Res<Art>, fonts: Res<Fonts>, settings: Res<Settings>) {
-    commands.spawn(screen_root(Screen::Settings)).with_children(|root| {
-        let sheet = Node { margin: UiRect::top(px(8)), width: px(440), flex_direction: FlexDirection::Column, row_gap: px(5), ..default() };
-        spawn_panel(root, &art, sheet, |sheet| {
-            sheet.spawn((Text::default(), T::Settings, fonts.title(1), TextColor(color(INK))));
-            sheet.spawn(Node { column_gap: px(6), ..default() }).with_children(|line| {
-                button(line, &art, &fonts, T::Graphics, true, crate::menu::Nav::Go(Screen::Graphics));
-            });
-            // More settings than fit on the table at once: the list scrolls.
-            sheet.spawn(scroll_list(Node { flex_direction: FlexDirection::Column, row_gap: px(5), ..default() }, 182.0)).with_children(|sheet| {
-            for choice in CHOICES {
-                sheet.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|block| {
-                    block.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|line| {
-                        line.spawn((Text::default(), choice.label(), fonts.body(), TextColor(color(INK))));
-                        line.spawn(Node { width: px(150), flex_direction: FlexDirection::Column, ..default() })
-                            .with_children(|slot| match choice.value(&settings) {
-                                Some(value) => button(slot, &art, &fonts, value, true, choice),
-                                // Seconds: a number the button says itself.
-                                None => value_button(slot, &art, &fonts, first_token_text(&settings), true, choice),
-                            });
-                    });
-                    if let Some(hint) = choice.hint() {
-                        block.spawn((Text::default(), hint, fonts.body(), TextColor(color(FADED))));
-                    }
-                });
-            }
-            });
-            sheet.spawn(Node { margin: UiRect::top(px(4)), ..default() }).with_children(|slot| button(slot, &art, &fonts, T::Back, true, Nav::Back));
-        });
-    });
+/// What the player did on the settings screen besides changing a setting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettingsAct {
+    Back,
+    Graphics,
 }
 
-fn on_activate(used: On<Activate>, buttons: Query<&Choice>, mut settings: ResMut<Settings>, store: Res<Store>) {
-    let Ok(choice) = buttons.get(used.entity) else { return };
-    choice.advance(&mut settings);
-    if let Err(e) = store.save_settings(&settings) {
-        error!("could not save settings: {e}");
-    }
-}
-
-/// Each value button shows its setting's current value: the label is a child of the button.
-fn show_values(settings: Res<Settings>, buttons: Query<(&Choice, &Children)>, mut labels: Query<&mut T>, mut texts: Query<&mut Text>) {
-    if !settings.is_changed() {
-        return;
-    }
-    for (choice, children) in &buttons {
-        for child in children {
-            match choice.value(&settings) {
-                Some(wanted) => {
-                    if let Ok(mut label) = labels.get_mut(*child) {
-                        if *label != wanted {
-                            *label = wanted;
-                        }
-                    }
-                }
-                // A number rather than a word: the text is not translated, only the unit in it.
-                None => {
-                    if let Ok(mut text) = texts.get_mut(*child) {
-                        let wanted = first_token_text(&settings);
-                        if text.0 != wanted {
-                            text.0 = wanted;
-                        }
-                    }
-                }
-            }
+impl Choice {
+    /// What the setting shows for these settings. A language is named in itself.
+    fn shown(self, s: &Settings, lang: Lang) -> String {
+        match self.value(s) {
+            Some(T::LanguageName) => T::LanguageName.text(s.lang).to_string(),
+            Some(value) => value.text(lang).to_string(),
+            None => first_token_text(s),
         }
+    }
+
+    /// Every value of the setting, from the one set now on, each with the settings it gives.
+    fn cycle(self, s: &Settings, lang: Lang) -> Vec<(String, Settings)> {
+        let mut out = vec![(self.shown(s, lang), s.clone())];
+        let mut next = s.clone();
+        for _ in 0..16 {
+            self.advance(&mut next);
+            let shown = self.shown(&next, lang);
+            if shown == out[0].0 {
+                break;
+            }
+            out.push((shown, next.clone()));
+        }
+        out
+    }
+}
+
+/// The settings on tabs: each a name with `◀ value ▶` and, under it, what it does. Gives
+/// whether a setting changed, and whether a button of the footer was pressed.
+pub fn settings_ui(ui: &mut Ui, settings: &mut Settings, tab: &mut usize) -> (bool, Option<SettingsAct>) {
+    let lang = settings.lang;
+    let t = |text: T| text.text(lang);
+    let mut changed = false;
+    let mut act = None;
+    let sheet = Sheet { id: "settings", title: t(T::Settings), about: t(T::SettingsAbout), max: vec2(380.0, 320.0), top: 0.0, fixed: true };
+    kit::sheet(
+        ui,
+        sheet,
+        |ui| {
+            ui.horizontal_wrapped(|row| {
+                for (n, (name, _)) in TABS.iter().enumerate() {
+                    let mut tab_button = button(t(*name));
+                    if n == *tab {
+                        tab_button = tab_button.primary();
+                    }
+                    if row.add(tab_button).clicked() {
+                        *tab = n;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            for choice in TABS[*tab % TABS.len()].1 {
+                let values = choice.cycle(settings, lang);
+                let names: Vec<&str> = values.iter().map(|(v, _)| v.as_str()).collect();
+                let mut index = 0;
+                let row = kit::choice(ui, choice.label().text(lang), &names, &mut index);
+                if row.changed() && index != 0 {
+                    *settings = values[index].1.clone();
+                    changed = true;
+                }
+                hint(ui, choice.hint().text(lang));
+                ui.add_space(3.0);
+            }
+        },
+        |footer| {
+            if footer.add(button(t(T::Back)).key("Esc")).clicked() {
+                act = Some(SettingsAct::Back);
+            }
+            if footer.add(button(t(T::Graphics))).clicked() {
+                act = Some(SettingsAct::Graphics);
+            }
+        },
+    );
+    (changed, act)
+}
+
+/// The settings screen, drawn with egui; a change is saved at once.
+fn settings_screen(mut egui: bevy_egui::EguiContexts, mut settings: ResMut<Settings>, store: Res<Store>, mut tab: Local<usize>, mut return_to: ResMut<ReturnTo>, mut next: ResMut<NextState<Screen>>) {
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let Some(mut ui) = kit::screen_ui(ctx, "settings") else { return };
+    let mut edited = settings.clone();
+    let (changed, act) = settings_ui(&mut ui, &mut edited, &mut tab);
+    if changed {
+        *settings = edited;
+        if let Err(e) = store.save_settings(&settings) {
+            error!("could not save settings: {e}");
+        }
+    }
+    match act {
+        Some(SettingsAct::Back) => next.set(return_to.0.take().unwrap_or(Screen::Main)),
+        Some(SettingsAct::Graphics) => next.set(Screen::Graphics),
+        None => {}
     }
 }
 
@@ -341,10 +393,9 @@ pub struct SettingsPlugin;
 
 impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Screen::Settings), spawn_settings)
-            .add_systems(PreUpdate, unstick_keys)
-            .add_systems(Update, (fullscreen_shortcut, apply_patience, apply_language, apply_window_mode, show_values).chain())
-            .add_observer(on_activate);
+        app.add_systems(PreUpdate, unstick_keys)
+            .add_systems(Update, (fullscreen_shortcut, apply_patience, apply_language, apply_window_mode).chain())
+            .add_systems(bevy_egui::EguiPrimaryContextPass, settings_screen.in_set(crate::ui::UiSet::Screens).run_if(in_state(Screen::Settings)));
     }
 }
 
@@ -352,9 +403,14 @@ impl Plugin for SettingsPlugin {
 mod tests {
     use super::*;
 
+    /// Every setting on the screen, from all the tabs.
+    fn all() -> Vec<Choice> {
+        TABS.iter().flat_map(|(_, choices)| choices.iter().copied()).collect()
+    }
+
     #[test]
     fn every_choice_cycles_back_to_where_it_started() {
-        for choice in CHOICES {
+        for choice in all() {
             let start = Settings::default();
             let mut s = start.clone();
             let mut steps = 0;
@@ -372,11 +428,11 @@ mod tests {
 
     #[test]
     fn advancing_a_choice_changes_only_what_it_shows() {
-        for choice in CHOICES {
+        for choice in all() {
             let mut s = Settings::default();
             let before = s.clone();
             choice.advance(&mut s);
-            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.first_token != s.first_token, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade, before.window_size != s.window_size, before.fill != s.fill, before.online_music != s.online_music];
+            let changed = [before.lang != s.lang, before.fullscreen != s.fullscreen, before.thinking != s.thinking, before.first_token != s.first_token, before.lowest_tier != s.lowest_tier, before.predraw != s.predraw, before.initiative != s.initiative, before.music != s.music, before.sound != s.sound, before.voice != s.voice, before.grade != s.grade, before.window_size != s.window_size, before.fill != s.fill, before.online_music != s.online_music, before.screen != s.screen, before.ui_size != s.ui_size];
             assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{choice:?}");
         }
     }
@@ -392,5 +448,37 @@ mod tests {
         assert_eq!(next_first_token(15), 20);
         assert_eq!(next_first_token(300), 10);
         assert_eq!(next_first_token(7), 10);
+    }
+
+    #[test]
+    fn every_setting_is_on_a_tab_and_says_what_it_does() {
+        let shown = all();
+        for choice in [Choice::Language, Choice::Screen, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw, Choice::Initiative] {
+            assert!(shown.contains(&choice), "{choice:?} is on no tab");
+            assert!(!choice.hint().text(Lang::Ru).is_empty(), "{choice:?}");
+        }
+    }
+
+    #[test]
+    fn a_tab_and_a_click_on_a_value_change_that_setting_with_the_first_click() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        let state = std::cell::RefCell::new((Settings { lang: Lang::En, ..Settings::default() }, 0usize, false));
+        let mut harness = Harness::builder().with_size(vec2(480.0, 400.0)).build_ui(|ui| {
+            crate::ui::theme::install(ui.ctx());
+            if crate::ui::kit::ready(ui.ctx()) {
+                let (settings, tab, changed) = &mut *state.borrow_mut();
+                *changed |= settings_ui(ui, settings, tab).0;
+            }
+        });
+        harness.run();
+        harness.get_by_label("Sound").click();
+        harness.run();
+        assert_eq!(state.borrow().1, 2);
+        let before = state.borrow().0.music;
+        harness.get_by_label_contains("Music: ").click();
+        harness.run();
+        let after = state.borrow().0.music;
+        assert!(state.borrow().2 && after != before, "{before} -> {after}");
     }
 }
