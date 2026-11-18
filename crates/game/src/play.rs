@@ -761,6 +761,8 @@ fn scene_key(world: &World) -> u64 {
     here.map.hash(&mut hasher);
     here.legend.hash(&mut hasher);
     here.light.hash(&mut hasher);
+    // A change of the sky is seen at once, not when something else in the place changes.
+    here.weather.hash(&mut hasher);
     world.companions.len().hash(&mut hasher);
     world.party.iter().filter(|h| h.dead || h.hp <= 0).count().hash(&mut hasher);
     here.marks.hash(&mut hasher);
@@ -1046,9 +1048,42 @@ struct Bubble {
     /// How long the speaker has not been seen: a place drawn again takes a frame to bring
     /// them back, a speaker gone for good takes the bubble with them.
     lost: f32,
+    /// The words as said, and how much of them is heard now.
+    text: String,
+    heard: f32,
 }
 
+/// The words of a bubble, changed as the hearer comes nearer or goes further.
+#[derive(Component)]
+struct BubbleWords;
+
 const BUBBLE_SECONDS: f32 = 6.5;
+/// Within so many cells a line is heard whole; it blurs further off, and beyond the last it
+/// is not heard at all and its bubble is not drawn.
+const HEARD_WHOLE: f32 = 4.0;
+const HEARD_AT_ALL: f32 = 12.0;
+
+/// How much of a line is heard from so many cells away: 1 whole, 0 nothing.
+fn heard_from(cells: f32) -> f32 {
+    (1.0 - (cells - HEARD_WHOLE) / (HEARD_AT_ALL - HEARD_WHOLE)).clamp(0.0, 1.0)
+}
+
+/// A line as heard: the less of it reaches the ear, the more of its letters are lost to
+/// murmur. Spaces stay, so the shape of the words is still there; the same letters are lost
+/// each time, so the line does not flicker.
+fn as_heard(text: &str, heard: f32) -> String {
+    if heard >= 1.0 {
+        return text.to_string();
+    }
+    const MURMUR: [char; 4] = ['~', '.', '-', '*'];
+    text.chars()
+        .enumerate()
+        .map(|(n, ch)| {
+            let roll = ((n as u32).wrapping_mul(2654435761) >> 7) % 100;
+            if ch.is_whitespace() || (roll as f32) < heard * 100.0 { ch } else { MURMUR[n % MURMUR.len()] }
+        })
+        .collect()
+}
 
 /// In a live world the people of a place talk: a handful of lines is asked for once per
 /// place, of the cheap models, and said one by one. They also move about a little.
@@ -1137,13 +1172,19 @@ fn bubbles(
     frame: Res<crate::view::View>,
     actors: Query<(&Actor, &Transform), Without<Bubble>>,
     allies: Query<(&Ally, &Transform), Without<Bubble>>,
-    mut shown: Query<(Entity, &mut Bubble, &mut Transform)>,
+    mut shown: Query<(Entity, &mut Bubble, &mut Transform, &mut Visibility)>,
+    mut words: Query<(&ChildOf, &mut Text2d), With<BubbleWords>>,
+    settings: Res<Settings>,
 ) {
+    // Where the hearer stands; the master, with no hero, hears everything.
+    let master = game.world.gm.as_deref() == Some(player_name(&settings).as_str());
+    let hearer = on_screen(game.world.player.x, game.world.player.y);
+    let cell = (TILE as i32 * crate::scene::PX) as f32;
     let head = |who: &str| actors.iter().find(|(a, _)| a.id == who).map(|(_, t)| t.translation).or_else(|| allies.iter().find(|(a, _)| a.id == who).map(|(_, t)| t.translation));
     for (who, text) in std::mem::take(&mut table.bubbles) {
         let Some(at) = head(&who) else { continue };
         // One bubble a speaker.
-        for (entity, bubble, _) in &shown {
+        for (entity, bubble, _, _) in &shown {
             if bubble.who == who {
                 commands.entity(entity).try_despawn();
             }
@@ -1157,16 +1198,16 @@ fn bubbles(
         let rows = if letters <= per_row { 1.0 } else { (letters / (per_row - 3.0)).ceil() };
         let size = Vec2::new(width, rows * 20.0 + 10.0);
         commands
-            .spawn((Bubble { who, age: 0.0, size, lost: 0.0 }, Sprite { color: color(PARCHMENT), custom_size: Some(size), ..default() }, Transform::from_translation(Vec3::new(at.x, at.y + 46.0 + size.y / 2.0, 1.88))))
+            .spawn((Bubble { who, age: 0.0, size, lost: 0.0, text: text.clone(), heard: 1.0 }, Sprite { color: color(PARCHMENT), custom_size: Some(size), ..default() }, Transform::from_translation(Vec3::new(at.x, at.y + 46.0 + size.y / 2.0, 1.88))))
             .with_children(|cloud| {
                 // An edge of ink, and a tail towards the speaker.
                 cloud.spawn((Sprite { color: color(INK), custom_size: Some(size + Vec2::splat(2.0)), ..default() }, Transform::from_xyz(0.0, 0.0, -0.01)));
                 cloud.spawn((Sprite { color: color(PARCHMENT), custom_size: Some(Vec2::new(6.0, 6.0)), ..default() }, Transform::from_xyz(0.0, -size.y / 2.0 - 2.0, 0.0005)));
-                cloud.spawn((Text2d::new(text), fonts.body(), TextColor(color(INK)), TextLayout::justify(Justify::Center), bevy::text::TextBounds::new_horizontal((width - 16.0) / 2.0), Transform::from_xyz(0.0, 0.0, 0.001).with_scale(Vec3::splat(2.0))));
+                cloud.spawn((BubbleWords, Text2d::new(text), fonts.body(), TextColor(color(INK)), TextLayout::justify(Justify::Center), bevy::text::TextBounds::new_horizontal((width - 16.0) / 2.0), Transform::from_xyz(0.0, 0.0, 0.001).with_scale(Vec3::splat(2.0))));
             });
     }
     let clicked = mouse.just_pressed(MouseButton::Left).then(|| crate::view::map_under_cursor(&window, &frame)).flatten().map(|p| Vec2::new(p.x - CANVAS.x as f32 / 2.0, CANVAS.y as f32 / 2.0 - p.y));
-    for (entity, mut bubble, mut transform) in &mut shown {
+    for (entity, mut bubble, mut transform, mut visibility) in &mut shown {
         bubble.age += time.delta_secs();
         if bubble.age > BUBBLE_SECONDS {
             commands.entity(entity).try_despawn();
@@ -1188,6 +1229,21 @@ fn bubbles(
             let wanted = Vec3::new(at.x.round(), (at.y + 46.0 + bubble.size.y / 2.0).round(), 1.88);
             if transform.translation != wanted {
                 transform.translation = wanted;
+            }
+            // Heard whole nearby, blurred further off, not at all far away.
+            let heard = if master { 1.0 } else { (heard_from((at.truncate() - hearer).length() / cell) * 10.0).round() / 10.0 };
+            let seen = if heard > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+            if *visibility != seen {
+                *visibility = seen;
+            }
+            if heard != bubble.heard {
+                bubble.heard = heard;
+                let line = as_heard(&bubble.text, heard);
+                for (parent, mut text) in &mut words {
+                    if parent.parent() == entity {
+                        text.0 = line.clone();
+                    }
+                }
             }
         }
         // A click on the words turns to whoever said them.
@@ -1367,7 +1423,10 @@ fn lighting(time: Res<Time>, mut game: ResMut<Game>, settings: Res<Settings>, ca
     if let Some(mut image) = images.get_mut(&cache.dark) {
         let seen = exploring.then(|| world.here().seen.as_slice());
         // Fog hides in grey what darkness hides in black.
-        let hour = if foggy && hour.dark < 0.8 { crate::scene::Hour { dark: if settings.gfx.night { hour.dark } else { 0.0 }, tint: [150, 152, 162] } } else { hour };
+        // By day the grey of fog hides what is unseen; at night the night's own colour does,
+        // and the dark between the patches of fog stays the night's, not the fog's grey.
+        let dark = if settings.gfx.night { hour.dark } else { 0.0 };
+        let hour = if foggy && dark < 0.5 { crate::scene::Hour { dark, tint: [150, 152, 162] } } else { crate::scene::Hour { dark, ..hour } };
         *image = crate::scene::darkness_seen(world.here().size(), hour, &lights, beat, seen, foggy.then(|| time.elapsed_secs())).into_image();
     }
 }
@@ -4380,6 +4439,17 @@ impl Plugin for PlayPlugin {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_line_is_heard_whole_near_blurred_further_and_not_at_all_far_off() {
+        assert_eq!(heard_from(2.0), 1.0);
+        assert_eq!(heard_from(20.0), 0.0);
+        let half = as_heard("Hear ye, news from the north", 0.5);
+        assert_ne!(half, "Hear ye, news from the north");
+        assert_eq!(half.chars().filter(|c| *c == ' ').count(), 5, "the shape of the words stays");
+        assert_eq!(as_heard("Hear ye", 1.0), "Hear ye");
+        assert!(as_heard("Hear ye", 0.0).chars().all(|c| c == ' ' || "~.-*".contains(c)));
+    }
+
     use super::*;
 
     #[test]
