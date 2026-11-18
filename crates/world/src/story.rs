@@ -309,6 +309,9 @@ pub enum Effect {
     Heal {
         #[serde(deserialize_with = "lenient_text")]
         amount: String,
+        /// The hero healed, by name; the one who needs it most when empty.
+        #[serde(default)]
+        id: String,
     },
     /// Experience for something achieved in the story.
     Xp {
@@ -1145,8 +1148,16 @@ impl World {
                     }
                     continue;
                 }
-                Effect::Heal { amount } => {
-                    self.heal_party(amount, &mut Rng::from_clock());
+                Effect::Heal { amount, id } => {
+                    match heroes_named(&resolve(id)).first().copied().filter(|_| !id.trim().is_empty()) {
+                        Some(hero) => {
+                            let healed = rules::Dice::parse(amount, 0).map_or(0, |d| d.roll(&mut Rng::from_clock())).clamp(0, self.story_cap());
+                            self.party[hero].heal(healed);
+                        }
+                        None => {
+                            self.heal_party(amount, &mut Rng::from_clock());
+                        }
+                    }
                     continue;
                 }
                 Effect::Xp { amount } => {

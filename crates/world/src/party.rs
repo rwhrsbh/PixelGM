@@ -174,7 +174,7 @@ impl World {
     }
 
     /// The most harm or healing one effect outside a fight may do.
-    fn story_cap(&self) -> i32 {
+    pub(crate) fn story_cap(&self) -> i32 {
         if self.limited() { 10 + 10 * self.party_level() as i32 } else { 500 }
     }
 

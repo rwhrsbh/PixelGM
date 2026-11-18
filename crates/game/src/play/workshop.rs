@@ -526,7 +526,11 @@ fn window<R>(ctx: &egui::Context, panels: &mut Vec<Rect>, id: &str, title: &str,
             });
             if !folded {
                 ui.separator();
-                inner = Some(add(ui));
+                // Whatever the window holds scrolls when the screen is too low for it.
+                let room = (ui.ctx().content_rect().height() - ui.min_rect().top() - 24.0).max(120.0);
+                egui::ScrollArea::vertical().id_salt(("window_scroll", id)).max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+                    inner = Some(add(ui));
+                });
             }
         })?;
     panels.push(shown.response.rect);
@@ -1436,7 +1440,19 @@ fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<Gm
     let l = |r: &'static str, e: &'static str| if ru { r } else { e };
     let mut items: Vec<(&'static str, Press)> = Vec::new();
     let title;
-    if let Some(c) = creature {
+    if let Some(hero) = focus.id.as_ref().and_then(|id| id.strip_prefix("hero:")).map(str::to_string) {
+        title = hero.clone();
+        items.push((l("Телепорт", "Teleport"), Press::Carry));
+        items.push((l("Урон", "Damage"), Press::Form("damage", vec![("id", hero.clone()), ("amount", "1d6".into())])));
+        items.push((l("Лечение", "Heal"), Press::Form("heal", vec![("id", hero.clone()), ("amount", "1d8".into())])));
+        items.push((l("Выдать вещь", "Give a thing"), Press::Form("give", vec![("to", hero.clone())])));
+        items.push((l("Золото", "Gold"), Press::Form("gold", vec![("to", hero.clone()), ("amount", "10".into())])));
+        items.push((l("Опыт", "Experience"), Press::Form("xp", vec![("amount", "50".into())])));
+        items.push((l("Движение", "Motion"), Press::Form("animate", vec![("id", hero.clone()), ("who", String::new())])));
+        items.push((l("Шепнуть", "Whisper"), Press::Form("say", vec![("id", hero.clone()), ("who", hero.clone())])));
+        items.push((l("Подвиг", "Deed"), Press::Now(serde_json::json!({ "op": "deed", "hero": hero.clone() }))));
+        items.push((l("Воскресить", "Revive"), Press::Now(serde_json::json!({ "op": "revive", "hero": hero }))));
+    } else if let Some(c) = creature {
         title = c.name.clone();
         let id = c.id.clone();
         let stats = c.stats.clone();
@@ -1976,7 +1992,9 @@ pub(super) fn workshop_map(
         match ws.carry.take() {
             Some(id) => send(apply(vec![serde_json::json!({ "op": "move", "id": id, "x": cell.0, "y": cell.1 })]), &session, &settings, &mut table),
             None => {
-                ws.focus = Some(Focus { cell, id: thing_at(cell), at: pointer.unwrap_or_default() });
+                // A hero standing there comes first: the master moves, hurts and rewards heroes too.
+                let hero = (0..game.world.party.len()).find(|h| game.world.hero_place(*h) == game.world.current && game.world.hero_cell(*h) == (cell.0 as i32, cell.1 as i32)).map(|h| format!("hero:{}", game.world.party[h].name));
+                ws.focus = Some(Focus { cell, id: hero.or_else(|| thing_at(cell)), at: pointer.unwrap_or_default() });
                 ws.menu_page = None;
             }
         }

@@ -59,7 +59,7 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "exit", "x": 0, "y": 0, "to": "place_id", "label": "…"} — a way out appears
   {"op": "fact", "text": "…"} — something that must be remembered for the rest of the campaign
   {"op": "check", "ability": "str|dex|con|int|wis|cha", "skill": "stealth", "dc": 15, "success": {"narration": "…", "effects": []}, "failure": {"narration": "…", "effects": []}} — the outcome is uncertain: the game rolls the die and takes one branch. Write both. Skills: acrobatics, animal-handling, arcana, athletics, deception, history, insight, intimidation, investigation, medicine, nature, perception, performance, persuasion, religion, sleight-of-hand, stealth, survival. Difficulty: 5 trivial, 10 easy, 15 moderate, 20 hard, 25 very hard.
-  {"op": "damage", "amount": "2d6"} / {"op": "heal", "amount": "1d8"} — to the party, outside a fight
+  {"op": "damage", "amount": "2d6"} / {"op": "heal", "amount": "1d8", "id": "hero name or empty"} — to the party, outside a fight
   {"op": "damage", "id": "creature id", "amount": "1d8"} — a creature here is wounded outside a fight: it goes into the next fight that much weaker, and dies if it has no more to lose
   {"op": "kill", "id": "creature id"} — a creature here dies or is struck down without a fight; it lies there as a body that can be searched
   {"op": "xp", "amount": 50} — for something achieved; rarely, and modestly
