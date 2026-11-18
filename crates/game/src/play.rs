@@ -1361,6 +1361,47 @@ fn bag_work(
     }
 }
 
+/// The world's own clock on the host: what waits put off comes due, scripts set off by the
+/// hour, a variable or an event go, and creatures say their lines. Lines go up in bubbles
+/// here and at every guest's table.
+fn scripts(time: Res<Time>, mut game: ResMut<Game>, session: Res<Session>, mut table: ResMut<Table>, mut redraw: ResMut<Redraw>, store: Res<Store>, mut second: Local<f32>) {
+    if session.is_client() {
+        return;
+    }
+    // Lines said by effects go up at once, whatever the clock.
+    if !game.world.bubbles.is_empty() {
+        let place = game.world.current.clone();
+        for (who, text) in std::mem::take(&mut game.world.bubbles) {
+            session.broadcast(&Down::Bubble { place: place.clone(), who: who.clone(), text: text.clone() });
+            table.bubbles.push((who, text));
+        }
+    }
+    *second += time.delta_secs();
+    if *second < 1.0 {
+        return;
+    }
+    *second -= 1.0;
+    let world = &game.world;
+    let busy = !world.later.is_empty() || !world.scripts.is_empty() || !world.happened.is_empty() || world.here().creatures.iter().any(|c| !c.lines.is_empty());
+    if !busy {
+        return;
+    }
+    let waited = world.later.len();
+    let notes = game.world.tick_second();
+    let place = game.world.current.clone();
+    for (who, text) in std::mem::take(&mut game.world.bubbles) {
+        session.broadcast(&Down::Bubble { place: place.clone(), who: who.clone(), text: text.clone() });
+        table.bubbles.push((who, text));
+    }
+    for note in &notes {
+        info!("script: {note}");
+    }
+    if waited != game.world.later.len() || !notes.is_empty() {
+        redraw.0 = true;
+        autosave(&store, &game);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>, session: Res<Session>, mut table: ResMut<Table>, mut leave: ResMut<Leave>, mut redraw: ResMut<Redraw>) {
     // Orders from a test script, whatever the screen shows.
@@ -4206,7 +4247,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<workshop::Workshop>()
             .add_systems(bevy_egui::EguiPrimaryContextPass, workshop::workshop_ui.in_set(crate::ui::UiSet::Screens).after(sheets::overlay).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, workshop::workshop_map.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
-            .add_systems(Update, (place_allies, live_world, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (place_allies, live_world, scripts, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, run_clock.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, keep_facing.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .init_resource::<Dolls>()

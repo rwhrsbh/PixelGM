@@ -38,10 +38,19 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "shake", "seconds": 1.5} — the whole screen shakes: an earthquake, an explosion, a roar, a collapse, a giant's step, a heavy blow
   {"op": "travel", "to": "place_id", "name": "for a new place", "description": "what a new place looks like", "who": ["hero name"]} — heroes go to another place; "who" lists those who go, everyone here when left out
   {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
+  {"op": "say", "id": "creature id", "text": "…"} — someone says a line aloud, in a bubble over them
+  {"op": "lines", "id": "creature id", "lines": ["…", "…"], "every": 20, "order": "in_turn|random"} — what someone keeps saying by themselves every so many seconds (a crier, a guard, a parrot); "lines": [] makes them quiet
+  {"op": "wait", "seconds": 180} — everything after it in the list happens later: seconds of play (a clock minute passes each second), or "minutes"/"hours" of the clock; a fuse, a slow flood, a second blast
+  {"op": "set", "var": "lever_down", "value": 1} / {"op": "add", "var": "blasts", "value": 1} — the world remembers a flag or a count
+  {"op": "if", "var": "blasts", "at_least": 3, "then": [], "else": []} — one way or the other by a variable ("is" for an exact value)
+  {"op": "random", "choices": [[…], […]]} — one of the lists, at random
+  {"op": "repeat", "times": 3, "effects": [{"op": "shake", "seconds": 1}, {"op": "wait", "seconds": 10}]} — again and again; with a wait inside, a clock that ticks
+  {"op": "define", "id": "collapse", "on": "enter|death|hour|var", "place": "place id", "of": "creature id", "at": 18, "var": "…", "effects": []} — a script the world keeps: run it with {"op": "script", "id": "collapse"} from an action or a plate, or let it go off by itself when the party walks into "place", when "of" dies, at the hour "at", or when "var" reaches "at"
+  {"op": "script", "id": "collapse"} — a script runs now
   {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
   {"op": "move", "id": "…", "x": 0, "y": 0}
   {"op": "tile", "x": 0, "y": 0, "tile": "tile_id", "to": [0, 0]} — the ground changes, anywhere on the map: one cell, or with "to" every cell from (x, y) to that far corner — a line or a block (a door opens, a bridge is laid across water, a wall falls, a pit opens, a room floods). Whether the cell can then be walked on is the tile's own: a walkable tile over water makes a crossing, a solid one closes a way. Use a tile from TILES THAT EXIST or one you draw in this answer's "tiles"
-  {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral"} — a thing spawned may carry "actions" as in a place you draw (a lever's pull, a lock that "needs" its key); a creature that might fight also takes "monster" or "stats"; a prop that holds things (a chest, a crate, a purse) takes "contents": [things as in "give"], and "lock": 15 with "key": "key name" when it is locked — the game handles opening, picking and forcing it
+  {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral", "size": 1} — a thing spawned may carry "actions" as in a place you draw (a lever's pull, a lock that "needs" its key); a creature that might fight also takes "monster" or "stats"; a prop that holds things (a chest, a crate, a purse) takes "contents": [things as in "give"], and "lock": 15 with "key": "key name" when it is locked — the game handles opening, picking and forcing it
   {"op": "secret", "x": 0, "y": 0, "dc": 14, "kind": "hidden|trap|plate", "note": "a loose stone in the wall", "effects": []} — something hidden: when a hero with a sharp enough eye comes near it is found and its effects happen (a hidden door: a "tile" to a door; a cache: "give"); a trap goes off with its effects ("damage") when stepped on unnoticed
   {"op": "exit", "x": 0, "y": 0, "to": "place_id", "label": "…"} — a way out appears
   {"op": "fact", "text": "…"} — something that must be remembered for the rest of the campaign
@@ -126,7 +135,7 @@ const LOCATION_SHAPE: &str = r##"{
   "new_tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
   "sprites": [{"id": "…", "rows": ["16 or 32 characters", "… as many rows"]}],
   "props": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "blocking": true, "sprite": "…", "actions": [{"label": "what the players choose", "outcome": "what happens", "effects": []}]}],
-  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "faction": "", "monster": "srd-index or omit", "count": 0, "shop": [], "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
+  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "faction": "", "monster": "srd-index or omit", "count": 0, "size": 1, "lines": [], "shop": [], "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
   "exits": [{"x": 0, "y": 0, "to": "neighbor_id", "label": "what the way out looks like"}],
   "neighbors": [{"id": "neighbor_id", "name": "…", "description": "one sentence: what is there"}]
 }"##;

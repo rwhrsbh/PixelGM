@@ -65,6 +65,9 @@ pub struct PropDraft {
     #[serde(deserialize_with = "lenient_int")]
     pub lock: i64,
     pub key: String,
+    /// Cells across and down, 1 to 3.
+    #[serde(deserialize_with = "lenient_int")]
+    pub size: i64,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -102,6 +105,11 @@ pub struct CreatureDraft {
     pub shop: Vec<crate::story::ThingDraft>,
     /// The faction it belongs to.
     pub faction: String,
+    /// Cells across and down, 1 to 3: a boss takes more than one.
+    #[serde(deserialize_with = "lenient_int")]
+    pub size: i64,
+    /// What it says by itself now and then.
+    pub lines: Vec<String>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -537,7 +545,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             notes.push(format!("prop '{}' names sprite '{}', which was not drawn", p.id, p.sprite));
             sprite = MARKER_SPRITE.to_string();
         }
-        props.push(Prop { id: unique(slug(&p.id), &format!("prop_{n}"), &mut taken), name: p.name.trim().to_string(), description: p.description.trim().to_string(), x, y, blocking: p.blocking, sprite, actions: read_actions(&p.actions, &mut notes), body: None, chest: (!p.contents.is_empty() || p.lock > 0 || !p.key.trim().is_empty()).then(|| crate::model::Chest { items: p.contents.iter().filter_map(crate::story::ThingDraft::item).collect(), lock: p.lock.clamp(0, 30) as i32, key: p.key.trim().to_string(), open: false }) });
+        props.push(Prop { id: unique(slug(&p.id), &format!("prop_{n}"), &mut taken), name: p.name.trim().to_string(), description: p.description.trim().to_string(), x, y, blocking: p.blocking, sprite, actions: read_actions(&p.actions, &mut notes), body: None, chest: (!p.contents.is_empty() || p.lock > 0 || !p.key.trim().is_empty()).then(|| crate::model::Chest { items: p.contents.iter().filter_map(crate::story::ThingDraft::item).collect(), lock: p.lock.clamp(0, 30) as i32, key: p.key.trim().to_string(), open: false }), size: p.size.clamp(1, 3) as u8 });
     }
 
     let mut creatures: Vec<Creature> = Vec::new();
@@ -553,7 +561,7 @@ pub fn build_location(draft: &LocationDraft, assets: &mut Assets, forced_id: Opt
             "hostile" => Attitude::Hostile,
             _ => Attitude::Neutral,
         };
-        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone(), count: c.count.clamp(0, 8) as u8, mustered: false, stock: stock_of(&c.shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(&c.faction), hurt: 0 });
+        creatures.push(Creature { id: unique(slug(&c.id), &format!("creature_{n}"), &mut taken), name: c.name.trim().to_string(), description: c.description.trim().to_string(), x, y, sprite, attitude, actions: read_actions(&c.actions, &mut notes), monster: Some(c.monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: c.stats.clone(), count: c.count.clamp(0, 8) as u8, mustered: false, stock: stock_of(&c.shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, lines: c.lines.clone(), every: 20, random_lines: false, said: 0, size: c.size.clamp(1, 3) as u8, faction: slug(&c.faction), hurt: 0 });
     }
 
     let id = forced_id.map(str::to_string).unwrap_or_else(|| {
@@ -783,6 +791,12 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         present: Vec::new(),
         gm: None,
         ai_drafts: false,
+        vars: Default::default(),
+        scripts: Default::default(),
+        later: Vec::new(),
+        played: 0,
+        bubbles: Vec::new(),
+        happened: Vec::new(),
         places: Default::default(),
         host_place: None,
         host_at: None,
@@ -866,6 +880,7 @@ impl World {
         let (x, y) = self.arrival_cell(to, &self.current.clone());
         self.current = to.to_string();
         self.player = Player::in_cell(x, y);
+        self.happened.push(("enter".to_string(), to.to_string()));
     }
 }
 

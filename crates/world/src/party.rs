@@ -843,6 +843,7 @@ impl World {
                         (dead.x, dead.y) = (c.x.max(0) as usize, c.y.max(0) as usize);
                         let russian = self.language.to_lowercase().starts_with("ru") || self.language.contains("усск");
                         location.props.push(body_of(dead, russian));
+                        self.happened.push(("death".to_string(), c.id.clone()));
                     }
                 } else if let Some(creature) = location.creatures.iter_mut().find(|creature| creature.id == c.id) {
                     (creature.x, creature.y) = (c.x.max(0) as usize, c.y.max(0) as usize);
@@ -889,7 +890,7 @@ impl World {
 /// — or raised.
 pub(crate) fn body_of(dead: Creature, russian: bool) -> crate::model::Prop {
     let name = if russian { format!("Тело: {}", dead.name) } else { format!("Body of {}", dead.name) };
-    crate::model::Prop { id: format!("{}_body", dead.id), name, description: dead.description.clone(), x: dead.x, y: dead.y, blocking: false, sprite: dead.sprite.clone(), actions: Vec::new(), body: Some(Box::new(dead)), chest: None }
+    crate::model::Prop { id: format!("{}_body", dead.id), name, description: dead.description.clone(), x: dead.x, y: dead.y, blocking: false, sprite: dead.sprite.clone(), actions: Vec::new(), size: dead.size, body: Some(Box::new(dead)), chest: None }
 }
 
 impl World {
@@ -901,6 +902,7 @@ impl World {
         let Some(location) = self.locations.get_mut(&here) else { return false };
         let Some(at) = location.creatures.iter().position(|c| c.id == id) else { return false };
         let dead = location.creatures.remove(at);
+        self.happened.push(("death".to_string(), id.to_string()));
         let (name, place) = (dead.name.clone(), location.name.clone());
         location.props.push(body_of(dead, russian));
         self.story.remember(&format!("{name} died in {place}."));

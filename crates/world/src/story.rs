@@ -204,6 +204,9 @@ pub enum Effect {
         lock: i64,
         #[serde(default)]
         key: String,
+        /// Cells across and down, 1 to 3: a boss, a cart, a great tree.
+        #[serde(default = "one", deserialize_with = "lenient_int")]
+        size: i64,
     },
     /// Something hidden here: found by a sharp eye nearby, or a trap found underfoot.
     Secret {
@@ -325,6 +328,135 @@ pub enum Effect {
         #[serde(default)]
         hero: String,
     },
+    /// Someone here says a line, in a bubble over them.
+    Say {
+        #[serde(default)]
+        id: String,
+        text: String,
+    },
+    /// What a creature or a thing says by itself, over and over: every so many seconds, in
+    /// turn or at random. An empty list makes it quiet.
+    Lines {
+        id: String,
+        #[serde(default)]
+        lines: Vec<String>,
+        #[serde(default = "every_default", deserialize_with = "lenient_int")]
+        every: i64,
+        /// "random", or anything else for one after another.
+        #[serde(default)]
+        order: String,
+    },
+    /// Everything after this in the list happens later: so many seconds of play (a minute
+    /// of the clock passes each second) or minutes or hours of the clock.
+    Wait {
+        #[serde(default, deserialize_with = "lenient_int")]
+        seconds: i64,
+        #[serde(default, deserialize_with = "lenient_int")]
+        minutes: i64,
+        #[serde(default, deserialize_with = "lenient_int")]
+        hours: i64,
+    },
+    /// A variable of the world takes a value: a flag, a count.
+    Set {
+        var: String,
+        #[serde(default, deserialize_with = "lenient_int")]
+        value: i64,
+    },
+    /// A variable of the world grows (or shrinks) by so much.
+    Add {
+        var: String,
+        #[serde(default = "one", deserialize_with = "lenient_int")]
+        value: i64,
+    },
+    /// One way or the other by a variable: it is `is` exactly, or at least `at_least`.
+    If {
+        var: String,
+        #[serde(default, deserialize_with = "lenient_opt")]
+        is: Option<i64>,
+        #[serde(default, deserialize_with = "lenient_opt")]
+        at_least: Option<i64>,
+        #[serde(default)]
+        then: Vec<Effect>,
+        #[serde(default, rename = "else")]
+        otherwise: Vec<Effect>,
+    },
+    /// One of the lists, at random.
+    Random { choices: Vec<Vec<Effect>> },
+    /// The list so many times over; with a wait inside, a clock that ticks.
+    Repeat {
+        #[serde(default = "one", deserialize_with = "lenient_int")]
+        times: i64,
+        effects: Vec<Effect>,
+    },
+    /// A script of the world, by its id, runs here.
+    Script { id: String },
+    /// A script is written (or written again): what it does, and what sets it off by itself —
+    /// "enter" (walking into `place`), "death" (`of` dies), "hour" (`at` o'clock), "var"
+    /// (`var` reaches `at`), or nothing for a script run only by "script".
+    Define {
+        id: String,
+        #[serde(default)]
+        on: String,
+        #[serde(default)]
+        place: String,
+        #[serde(default)]
+        of: String,
+        #[serde(default)]
+        var: String,
+        #[serde(default, deserialize_with = "lenient_int")]
+        at: i64,
+        #[serde(default)]
+        effects: Vec<Effect>,
+    },
+}
+
+fn every_default() -> i64 {
+    20
+}
+
+fn one() -> i64 {
+    1
+}
+
+pub(crate) fn lenient_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Number(n) => n.as_f64().map(|f| f.round() as i64),
+        Value::String(s) => s.trim().parse::<f64>().ok().map(|f| f.round() as i64),
+        _ => None,
+    })
+}
+
+impl Effect {
+    /// Whether the effect steers the others rather than changing the world itself.
+    fn steers(&self) -> bool {
+        matches!(self, Effect::Wait { .. } | Effect::Set { .. } | Effect::Add { .. } | Effect::If { .. } | Effect::Random { .. } | Effect::Repeat { .. } | Effect::Script { .. } | Effect::Define { .. })
+    }
+}
+
+/// A script of the world: a list of effects with a name, and what sets it off.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct Script {
+    pub on: String,
+    pub place: String,
+    pub of: String,
+    pub var: String,
+    pub at: i64,
+    pub effects: Vec<Effect>,
+    /// An hour or a var script that has gone off, so that it goes off once till it is due
+    /// again.
+    pub fired: bool,
+}
+
+/// What a wait put off: it happens once its second of play has come.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct Later {
+    /// The second of play it is due at.
+    pub due: u64,
+    pub place: String,
+    pub me: Option<String>,
+    pub effects: Vec<Effect>,
 }
 
 /// Something the players can do with a thing without asking the game master: the outcome
@@ -805,6 +937,12 @@ impl World {
     /// action is being carried out, for the id `self`. What could not be done is noted and
     /// skipped: an effect naming something that is not there must not stop the rest.
     pub fn apply(&mut self, effects: &[Effect], me: Option<&str>) -> Vec<String> {
+        if effects.iter().any(Effect::steers) {
+            let mut notes = Vec::new();
+            let now = self.unfold(effects, me, 0, &mut notes);
+            notes.extend(self.apply(&now, me));
+            return notes;
+        }
         let mut notes = Vec::new();
         let here = self.current.clone();
         BOUNDS.with(|b| b.set(self.here().size()));
@@ -1077,7 +1215,7 @@ impl World {
                     notes.extend(read_notes);
                     location.secrets.push(crate::model::Secret { x: sx, y: sy, dc: (*dc).clamp(5, 30) as i32, kind: kind.trim().to_lowercase(), note: note.trim().to_string(), effects, found: false });
                 }
-                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, count, shop, faction, actions, contents, lock, key } => {
+                Effect::Spawn { kind, id, name, description, x, y, sprite, blocking, attitude, monster, stats, count, shop, faction, actions, contents, lock, key, size } => {
                     let prepared = read_actions(actions, &mut notes);
                     let mut id = slug(id);
                     if id.is_empty() {
@@ -1099,11 +1237,11 @@ impl World {
                     if kind.trim().eq_ignore_ascii_case("creature") {
                         let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
                         if let Some((cx, cy)) = nearest(wanted, free) {
-                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: prepared, monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, faction: slug(faction), hurt: 0 });
+                            location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: prepared, monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, lines: Vec::new(), every: 0, random_lines: false, said: 0, size: (*size).clamp(1, 3) as u8, faction: slug(faction), hurt: 0 });
                         }
                     } else {
                         let chest = (!contents.is_empty() || *lock > 0 || !key.trim().is_empty()).then(|| crate::model::Chest { items: contents.iter().filter_map(ThingDraft::item).collect(), lock: (*lock).clamp(0, 30) as i32, key: key.trim().to_string(), open: false });
-                        location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: prepared, body: None, chest });
+                        location.props.push(Prop { id, name, description: description.trim().to_string(), x: wanted.0, y: wanted.1, blocking: *blocking, sprite, actions: prepared, body: None, chest, size: (*size).clamp(1, 3) as u8 });
                     }
                 }
                 Effect::Exit { x, y, to, label } => {
@@ -1239,7 +1377,26 @@ impl World {
                 }
                 Effect::Weather { weather } => location.weather = weather.trim().to_lowercase(),
                 Effect::Music { mood } => location.mood = mood.trim().to_lowercase(),
+                Effect::Say { id, text } => {
+                    let who = if id.trim().is_empty() { "party".to_string() } else { resolve(id) };
+                    if !text.trim().is_empty() {
+                        self.bubbles.push((who, text.trim().to_string()));
+                    }
+                }
+                Effect::Lines { id, lines, every, order } => {
+                    let id = resolve(id);
+                    match location.creatures.iter_mut().find(|c| c.id == id) {
+                        Some(creature) => {
+                            creature.lines = lines.iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                            creature.every = (*every).clamp(3, 3600);
+                            creature.random_lines = order.trim() == "random";
+                            creature.said = 0;
+                        }
+                        None => notes.push(format!("lines: no creature called '{id}' is here")),
+                    }
+                }
                 Effect::Kill { .. } | Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight { .. } | Effect::Deed { .. } | Effect::Revive { .. } => {}
+                Effect::Wait { .. } | Effect::Set { .. } | Effect::Add { .. } | Effect::If { .. } | Effect::Random { .. } | Effect::Repeat { .. } | Effect::Script { .. } | Effect::Define { .. } => {}
             }
         }
         if let Some(location) = self.locations.get(&here) {
@@ -1632,4 +1789,156 @@ mod tests {
         }
         assert!(!story.needs_chapter(10));
     }
+}
+
+impl World {
+    /// The effects with their steering done: variables set, ways chosen, scripts put in, the
+    /// rest after a wait put off. What is left only changes the world, and is applied now.
+    fn unfold(&mut self, effects: &[Effect], me: Option<&str>, depth: usize, notes: &mut Vec<String>) -> Vec<Effect> {
+        let mut now = Vec::new();
+        // A script that runs itself would never end.
+        if depth > 16 {
+            notes.push("script: too deep, stopped".to_string());
+            return now;
+        }
+        for (n, effect) in effects.iter().enumerate() {
+            match effect {
+                Effect::Wait { seconds, minutes, hours } => {
+                    let after = (seconds + minutes + hours * 60).max(1) as u64;
+                    let rest = effects[n + 1..].to_vec();
+                    if !rest.is_empty() {
+                        self.later.push(Later { due: self.played + after, place: self.current.clone(), me: me.map(str::to_string), effects: rest });
+                    }
+                    break;
+                }
+                // Everything after a check waits for its die, steering and all.
+                Effect::Check { .. } => {
+                    now.extend(effects[n..].iter().cloned());
+                    break;
+                }
+                Effect::Set { var, value } => {
+                    self.vars.insert(var.trim().to_string(), *value);
+                }
+                Effect::Add { var, value } => {
+                    *self.vars.entry(var.trim().to_string()).or_insert(0) += value;
+                }
+                Effect::If { var, is, at_least, then, otherwise } => {
+                    let value = self.vars.get(var.trim()).copied().unwrap_or(0);
+                    let yes = match (is, at_least) {
+                        (Some(is), _) => value == *is,
+                        (None, Some(least)) => value >= *least,
+                        (None, None) => value != 0,
+                    };
+                    now.extend(self.unfold(if yes { then } else { otherwise }, me, depth + 1, notes));
+                }
+                Effect::Random { choices } => {
+                    if !choices.is_empty() {
+                        let pick = (self.played as usize + self.clock as usize * 7 + now.len() * 13 + rand_salt()) % choices.len();
+                        now.extend(self.unfold(&choices[pick].clone(), me, depth + 1, notes));
+                    }
+                }
+                Effect::Repeat { times, effects: inner } => {
+                    let times = (*times).clamp(0, 50) as usize;
+                    let unrolled: Vec<Effect> = std::iter::repeat_n(inner.clone(), times).flatten().collect();
+                    // A wait inside puts off the rest of the repeats too.
+                    let mut rest = unrolled;
+                    rest.extend(effects[n + 1..].iter().cloned());
+                    now.extend(self.unfold(&rest, me, depth + 1, notes));
+                    break;
+                }
+                Effect::Script { id } => match self.scripts.get(id.trim()).map(|s| s.effects.clone()) {
+                    Some(inner) => now.extend(self.unfold(&inner, me, depth + 1, notes)),
+                    None => notes.push(format!("script: there is no script '{id}'")),
+                },
+                Effect::Define { id, on, place, of, var, at, effects: inner } => {
+                    let script = Script { on: on.trim().to_lowercase(), place: place.clone(), of: of.clone(), var: var.clone(), at: *at, effects: inner.clone(), fired: false };
+                    self.scripts.insert(id.trim().to_string(), script);
+                }
+                other => now.push(other.clone()),
+            }
+        }
+        now
+    }
+
+    /// One second of play went by: what was put off and has come due happens, in its own
+    /// place, and scripts set off by the hour or a variable go. Returns what the game should
+    /// know, as notes.
+    pub fn tick_second(&mut self) -> Vec<String> {
+        self.played += 1;
+        let mut notes = Vec::new();
+        for (on, what) in std::mem::take(&mut self.happened) {
+            notes.extend(self.trigger(&on, &what));
+        }
+        let due: Vec<Later> = {
+            let (due, keep): (Vec<Later>, Vec<Later>) = std::mem::take(&mut self.later).into_iter().partition(|l| l.due <= self.played);
+            self.later = keep;
+            due
+        };
+        for later in due {
+            notes.extend(self.apply_in(&later.place, &later.effects, later.me.as_deref()));
+        }
+        // Scripts set off by the clock or by a variable, once each time they come due.
+        let hour = (self.clock / 60 % 24) as i64;
+        let ready: Vec<(String, bool)> = self
+            .scripts
+            .iter()
+            .filter_map(|(id, s)| match s.on.as_str() {
+                "hour" => Some((id.clone(), hour == s.at)),
+                "var" => Some((id.clone(), self.vars.get(s.var.trim()).copied().unwrap_or(0) >= s.at)),
+                _ => None,
+            })
+            .collect();
+        for (id, now) in ready {
+            let Some(script) = self.scripts.get_mut(&id) else { continue };
+            if now && !script.fired {
+                script.fired = true;
+                let effects = script.effects.clone();
+                notes.extend(self.apply(&effects, None));
+            } else if !now {
+                script.fired = false;
+            }
+        }
+        // Lines said by themselves, each in its turn.
+        let played = self.played;
+        let here = self.current.clone();
+        if let Some(place) = self.locations.get_mut(&here) {
+            for creature in place.creatures.iter_mut().filter(|c| !c.lines.is_empty()) {
+                let every = creature.every.max(3) as u64;
+                if played.is_multiple_of(every) {
+                    let n = if creature.random_lines { (played as usize / every as usize * 7 + creature.id.len()) % creature.lines.len() } else { creature.said % creature.lines.len() };
+                    creature.said = n + 1;
+                    self.bubbles.push((creature.id.clone(), creature.lines[n].clone()));
+                }
+            }
+        }
+        notes
+    }
+
+    /// Effects as they happen in a place, which may not be the one being looked at.
+    pub fn apply_in(&mut self, place: &str, effects: &[Effect], me: Option<&str>) -> Vec<String> {
+        if place == self.current || !self.locations.contains_key(place) {
+            return self.apply(effects, me);
+        }
+        let home = std::mem::replace(&mut self.current, place.to_string());
+        let notes = self.apply(effects, me);
+        self.current = home;
+        notes
+    }
+
+    /// The scripts that go off when something happens: someone walks into a place, or a
+    /// creature dies.
+    pub fn trigger(&mut self, on: &str, what: &str) -> Vec<String> {
+        let effects: Vec<Effect> = self
+            .scripts
+            .values()
+            .filter(|s| s.on == on && (if on == "enter" { s.place == what } else { slug(&s.of) == slug(what) || slug(what).starts_with(&format!("{}_", slug(&s.of))) }))
+            .flat_map(|s| s.effects.clone())
+            .collect();
+        if effects.is_empty() { Vec::new() } else { self.apply(&effects, None) }
+    }
+}
+
+/// A little salt for a choice at random, from the time of day.
+fn rand_salt() -> usize {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos() as usize / 1000)
 }

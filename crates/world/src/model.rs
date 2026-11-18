@@ -105,6 +105,9 @@ pub struct Prop {
     /// When this holds things: a chest, a crate, a corpse's purse.
     #[serde(default)]
     pub chest: Option<Chest>,
+    /// How many cells across and down it takes.
+    #[serde(default = "one_cell")]
+    pub size: u8,
 }
 
 /// What a container holds, and how it is shut.
@@ -191,6 +194,24 @@ pub struct Creature {
     pub haggle: i8,
     #[serde(default)]
     pub haggled: bool,
+    /// What it says by itself, every `every` seconds, in turn or at random.
+    #[serde(default)]
+    pub lines: Vec<String>,
+    #[serde(default)]
+    pub every: i64,
+    #[serde(default)]
+    pub random_lines: bool,
+    /// The next line in turn.
+    #[serde(default)]
+    pub said: usize,
+    /// How many cells across and down it takes, from its own cell to the right and down: a
+    /// boss may take three.
+    #[serde(default = "one_cell")]
+    pub size: u8,
+}
+
+fn one_cell() -> u8 {
+    1
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -404,6 +425,24 @@ pub struct World {
     /// when the master wants.
     #[serde(default)]
     pub ai_drafts: bool,
+    /// The variables scripts keep: flags and counts, by name.
+    #[serde(default)]
+    pub vars: std::collections::BTreeMap<String, i64>,
+    /// Scripts by id: lists of effects with what sets them off.
+    #[serde(default)]
+    pub scripts: std::collections::BTreeMap<String, crate::story::Script>,
+    /// What waits put off, to happen at its second of play.
+    #[serde(default)]
+    pub later: Vec<crate::story::Later>,
+    /// Seconds of play since the world began, as the host counts them.
+    #[serde(default)]
+    pub played: u64,
+    /// Lines to be shown in bubbles, by who says them: taken by the game each frame.
+    #[serde(skip)]
+    pub bubbles: Vec<(String, String)>,
+    /// What happened that scripts may be set off by: ("enter", place), ("death", id).
+    #[serde(skip)]
+    pub happened: Vec<(String, String)>,
     /// Where each guest is, by player name, when the party has split up. The host is
     /// always in `current`; a guest not listed is with the host.
     #[serde(default)]

@@ -194,6 +194,11 @@ impl World {
             shop_day: 0,
             haggle: 0,
             haggled: false,
+            lines: Vec::new(),
+            every: 0,
+            random_lines: false,
+            said: 0,
+            size: 1,
             faction: String::new(),
             hurt: 0,
         };

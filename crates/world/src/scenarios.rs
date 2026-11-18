@@ -563,3 +563,89 @@ fn the_master_has_the_place_drawn_again_as_wanted_and_it_takes_the_old_ones_plac
     let (x, y) = w.locations["lake"].spawn;
     assert!(!w.locations["lake"].blocked(x as i32, y as i32, &w.tiles), "everyone stands on ground that can be walked");
 }
+
+/// Effects as the master writes them, read the way the game reads them.
+fn steps(raw: serde_json::Value) -> Vec<crate::story::Effect> {
+    crate::story::read_effects(raw.as_array().unwrap(), &mut Vec::new())
+}
+
+/// "A lever: a blast, three minutes of quiet, another blast": the second blast waits for its
+/// second of play, and happens in the place where the lever is even when the party is away.
+#[test]
+fn a_lever_blasts_waits_three_minutes_and_blasts_again() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    let blast = |x: i64| serde_json::json!({ "op": "tile", "x": x, "y": 0, "tile": "rock" });
+    w.apply(&steps(serde_json::json!([blast(1), { "op": "wait", "seconds": 180 }, blast(2)])), None);
+    let tile = |w: &World, x: usize| w.locations["lake"].tile_id(x, 0).map(str::to_string);
+    assert_eq!(tile(&w, 1).as_deref(), Some("rock"));
+    assert_eq!(tile(&w, 2).as_deref(), Some("grass"), "the second blast waits");
+    for _ in 0..179 {
+        w.tick_second();
+    }
+    assert_eq!(tile(&w, 2).as_deref(), Some("grass"));
+    // The party walked off meanwhile: it still goes off by the lake.
+    let home = w.locations.keys().find(|k| *k != "lake").cloned().unwrap();
+    w.travel(&home);
+    w.tick_second();
+    assert_eq!(tile(&w, 2).as_deref(), Some("rock"));
+    assert!(w.later.is_empty());
+}
+
+/// Variables, ways by them, repeats and scripts that are named and run by name.
+#[test]
+fn scripts_count_choose_repeat_and_run_by_name() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([
+        { "op": "define", "id": "boom", "effects": [{ "op": "add", "var": "blasts" }] },
+        { "op": "repeat", "times": 3, "effects": [{ "op": "script", "id": "boom" }] },
+        { "op": "if", "var": "blasts", "at_least": 3, "then": [{ "op": "set", "var": "door", "value": 1 }], "else": [{ "op": "set", "var": "door", "value": 0 }] }
+    ])), None);
+    assert_eq!(w.vars["blasts"], 3);
+    assert_eq!(w.vars["door"], 1);
+    // A script that runs itself stops, it does not hang the game.
+    let notes = w.apply(&steps(serde_json::json!([{ "op": "define", "id": "loop", "effects": [{ "op": "script", "id": "loop" }] }, { "op": "script", "id": "loop" }])), None);
+    assert!(notes.iter().any(|n| n.contains("too deep")));
+}
+
+/// A script set off by walking into a place, by an hour, by a variable.
+#[test]
+fn scripts_go_off_by_themselves() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([
+        { "op": "define", "id": "welcome", "on": "enter", "place": "lake", "effects": [{ "op": "add", "var": "visits" }] },
+        { "op": "define", "id": "alarm", "on": "var", "var": "noise", "at": 3, "effects": [{ "op": "set", "var": "guards", "value": 1 }] }
+    ])), None);
+    w.trigger("enter", "lake");
+    assert_eq!(w.vars["visits"], 1);
+    w.vars.insert("noise".into(), 3);
+    w.tick_second();
+    w.tick_second();
+    assert_eq!(w.vars["guards"], 1);
+    w.vars.insert("guards".into(), 0);
+    w.tick_second();
+    assert_eq!(w.vars["guards"], 0, "it goes off once till it is due again");
+}
+
+/// A guard says its lines by itself, in turn, every so many seconds.
+#[test]
+fn a_creature_says_its_lines_in_turn() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([{ "op": "spawn", "kind": "creature", "id": "guard", "name": "Guard", "x": 4, "y": 1, "attitude": "neutral" }, { "op": "lines", "id": "guard", "lines": ["Halt!", "Who goes there?"], "every": 5 }])), None);
+    let mut said = Vec::new();
+    for _ in 0..10 {
+        w.tick_second();
+        said.extend(w.bubbles.drain(..).map(|(_, text)| text));
+    }
+    assert_eq!(said, vec!["Halt!".to_string(), "Who goes there?".to_string()]);
+    w.apply(&steps(serde_json::json!([{ "op": "say", "id": "guard", "text": "Move along." }])), None);
+    assert_eq!(w.bubbles.last().map(|b| b.1.as_str()), Some("Move along."));
+}
+
+/// A boss three cells across is spawned that big.
+#[test]
+fn a_boss_takes_three_cells() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([{ "op": "spawn", "kind": "creature", "id": "ogre", "name": "Ogre", "x": 24, "y": 10, "monster": "ogre", "attitude": "hostile", "count": 1, "size": 3 }])), None);
+    let ogre = w.locations["lake"].creatures.iter().find(|c| c.id == "ogre").unwrap();
+    assert_eq!(ogre.size, 3);
+}
