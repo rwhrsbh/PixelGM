@@ -7,6 +7,37 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const LETTERS: usize = 12;
 
+/// Letters of a table's short code.
+pub const SHORT: usize = 5;
+
+/// A table's short code, five letters a player reads out in a breath: `K7Q4M`. It names the
+/// table, not where it is: the table is found by it on the networks this machine is on and
+/// through Steam.
+pub fn short() -> String {
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()) ^ ((std::process::id() as u128) << 70);
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in seed.to_le_bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (0..SHORT).map(|n| ALPHABET[((hash >> (n * 5)) & 31) as usize] as char).collect()
+}
+
+/// A short code as the player typed it, read the forgiving way (case, O for 0, I and L for
+/// 1, dashes and spaces): `None` when it is not five letters of the alphabet.
+pub fn read_short(text: &str) -> Option<String> {
+    let kept: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .map(|c| match c.to_ascii_uppercase() {
+            'O' => '0',
+            'I' | 'L' => '1',
+            other => other,
+        })
+        .collect();
+    (kept.chars().count() == SHORT && kept.bytes().all(|b| ALPHABET.contains(&b))).then_some(kept)
+}
+
 /// What is wrong with a code as typed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CodeError {
@@ -110,6 +141,16 @@ mod tests {
         assert_eq!(decode(&typo), Err(CodeError::Sum));
         assert_eq!(decode("K7Q4-MD2X"), Err(CodeError::Shape));
         assert_eq!(decode("K7Q4-MD2X-9HT!"), Err(CodeError::Shape));
+    }
+
+    #[test]
+    fn a_short_code_is_five_letters_read_however_typed() {
+        let code = short();
+        assert_eq!(code.len(), SHORT);
+        assert_eq!(read_short(&code.to_lowercase().replace('0', "o").replace('1', "l")), Some(code.clone()));
+        assert_eq!(read_short("K7Q4"), None);
+        assert_eq!(read_short("192.168.1.5"), None);
+        assert_eq!(read_short("k7q-4m"), Some("K7Q4M".to_string()));
     }
 
     #[test]

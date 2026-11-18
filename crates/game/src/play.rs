@@ -24,6 +24,9 @@ use world::{CreatureCard, LocationDraft, Speaker, TILE, Turn, TurnDraft, Whisper
 
 mod hud;
 mod sheets;
+mod effects_ui;
+mod rules_book;
+mod workshop;
 
 /// The game being played.
 #[derive(Resource)]
@@ -196,6 +199,10 @@ fn languages(settings: Res<Settings>, session: Res<Session>, mut game: ResMut<Ga
     let mine = crate::master::language_name(settings.lang);
     if table.reads != mine {
         table.reads = mine.to_string();
+    }
+    let me = player_name(&settings);
+    if table.me != me {
+        table.me = me;
     }
     if session.is_client() {
         return;
@@ -445,6 +452,9 @@ struct Veil;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tool {
     ToModel,
+    /// The place drawn again by the model, as the field says.
+    Redraw,
+    /// The workshop opened or closed.
     Narrate,
     Whisper,
     NextTarget,
@@ -484,6 +494,8 @@ struct Panel {
     presses: u32,
     /// The tile the brush lays with each click on the map, while it is on.
     brush: Option<String>,
+    /// The master's screen is one of the editor's rooms, not the running of the game.
+    pub workshop: bool,
 }
 
 /// With the brush on, the master paints the map: each cell clicked, or dragged over with the
@@ -624,7 +636,29 @@ pub fn begin(commands: &mut Commands, next: &mut NextState<Screen>, world: World
     next.set(screen);
 }
 
+/// The world of the workshop opened from the main menu: made to try things in, never saved.
+pub const REHEARSAL: &str = "__workshop";
+
+/// The workshop from the main menu: the master's editor over a world of its own, with no
+/// game to run, to make tiles, creatures, things and scripts ahead of time. What is made
+/// goes into the library as always; the world itself is thrown away.
+pub fn rehearse(commands: &mut Commands, next: &mut NextState<Screen>, settings: &Settings) {
+    let draft: world::WorldDraft = serde_json::from_str(&world::fake::world("workshop")).expect("the demonstration world is valid");
+    let language = if settings.lang == Lang::Ru { "Russian" } else { "English" };
+    let Ok((mut world, _)) = world::build_world(&draft, "workshop", language) else { return };
+    world.title = T::WsTitleRehearsal.text(settings.lang).to_string();
+    world.gm = Some(player_name(settings));
+    use_rules_of(&world);
+    commands.insert_resource(Phase::Master);
+    commands.insert_resource(Game { world, world_id: REHEARSAL.to_string() });
+    commands.insert_resource(Background::default());
+    next.set(Screen::Play);
+}
+
 fn autosave(store: &Store, game: &Game) {
+    if game.world_id == REHEARSAL {
+        return;
+    }
     if let Err(e) = store.save_game(&game.world_id, &game.world, false) {
         error!("could not save the game: {e}");
     }
@@ -858,8 +892,14 @@ fn draw(
     let mut picture = |id: &str| world.sprites.get(id).or_else(|| world.sprites.get(MARKER_SPRITE)).map(|s| images.add(crate::scene::sprite(s, &world.palette).into_image()));
     // Everything stands on the bottom edge of its cell, centred.
     let foot = |x: usize, y: usize| ((x as f32 + 0.5) * TILE as f32, (y as f32 + 1.0) * TILE as f32);
+    // Something large stands on the bottom edge of its block, centred, drawn that big.
+    let big = |size: u8| (size > 1).then(|| Vec2::splat((TILE as i32 * crate::scene::PX) as f32 * size as f32));
+    let foot_of = |x: usize, y: usize, size: u8| {
+        let s = size.max(1) as f32;
+        ((x as f32 + s / 2.0) * TILE as f32, (y as f32 + s) * TILE as f32)
+    };
     for prop in &here.props {
-        let (x, y) = foot(prop.x, prop.y);
+        let (x, y) = foot_of(prop.x, prop.y, prop.size);
         if let Some(image) = picture(&prop.sprite) {
             // What burns is drawn brighter than white, so that it glows; a body lies on its side, grey.
             let (glow, turned) = if prop.body.is_some() {
@@ -870,7 +910,12 @@ fn draw(
                 (Color::WHITE, Quat::IDENTITY)
             };
             let at = on_screen(x, y).extend(if prop.body.is_some() { 0.9 } else { depth(y) });
-            commands.spawn((InLocation, Sprite { color: glow, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(at).with_rotation(turned)));
+            // A thing can speak and move too (a talking skull, a rattling chest): it is an
+            // actor like a creature, only one that does not bob. A body stays as it lies.
+            let mut thing = commands.spawn((InLocation, Sprite { color: glow, custom_size: big(prop.size), ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(at).with_rotation(turned)));
+            if prop.body.is_none() {
+                thing.insert(Actor { id: prop.id.clone(), home: at, tint: glow, bob: None });
+            }
         }
     }
     for (n, creature) in here.creatures.iter().enumerate() {
@@ -880,11 +925,11 @@ fn draw(
             continue;
         }
         let (cx, cy) = fighter.map_or((creature.x, creature.y), |c| (c.x.max(0) as usize, c.y.max(0) as usize));
-        let (x, y) = foot(cx, cy);
+        let (x, y) = foot_of(cx, cy, creature.size);
         if let Some(image) = picture(&creature.sprite) {
             let home = on_screen(x, y).extend(depth(y));
             commands
-                .spawn((InLocation, Actor { id: creature.id.clone(), home, tint: Color::WHITE, bob: Some(n as f32 * 0.37) }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::from_translation(home)))
+                .spawn((InLocation, Actor { id: creature.id.clone(), home, tint: Color::WHITE, bob: Some(n as f32 * 0.37) }, Sprite { custom_size: big(creature.size), ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(home)))
                 .with_children(|me| shadow_under(me, &cache.shadow));
         }
     }
@@ -973,6 +1018,9 @@ struct Bubble {
     who: String,
     age: f32,
     size: Vec2,
+    /// How long the speaker has not been seen: a place drawn again takes a frame to bring
+    /// them back, a speaker gone for good takes the bubble with them.
+    lost: f32,
 }
 
 const BUBBLE_SECONDS: f32 = 6.5;
@@ -1026,7 +1074,7 @@ fn live_world(
         let world = &game.world;
         let here = world.here();
         let (px, py) = world.player.cell();
-        let idle: Vec<usize> = here.creatures.iter().enumerate().filter(|(_, c)| c.attitude != world::Attitude::Hostile && c.stock.is_empty() && ((c.x as i32 - px).abs() > 1 || (c.y as i32 - py).abs() > 1)).map(|(n, _)| n).collect();
+        let idle: Vec<usize> = here.creatures.iter().enumerate().filter(|(_, c)| c.attitude != world::Attitude::Hostile && c.stock.is_empty() && c.size <= 1 && ((c.x as i32 - px).abs() > 1 || (c.y as i32 - py).abs() > 1)).map(|(n, _)| n).collect();
         if !idle.is_empty() {
             let n = idle[(rng.die(idle.len() as u32) - 1) as usize];
             let (cx, cy) = (here.creatures[n].x as i32, here.creatures[n].y as i32);
@@ -1084,7 +1132,7 @@ fn bubbles(
         let rows = if letters <= per_row { 1.0 } else { (letters / (per_row - 3.0)).ceil() };
         let size = Vec2::new(width, rows * 20.0 + 10.0);
         commands
-            .spawn((InLocation, Bubble { who, age: 0.0, size }, Sprite { color: color(PARCHMENT), custom_size: Some(size), ..default() }, Transform::from_translation(Vec3::new(at.x, at.y + 46.0 + size.y / 2.0, 1.88))))
+            .spawn((Bubble { who, age: 0.0, size, lost: 0.0 }, Sprite { color: color(PARCHMENT), custom_size: Some(size), ..default() }, Transform::from_translation(Vec3::new(at.x, at.y + 46.0 + size.y / 2.0, 1.88))))
             .with_children(|cloud| {
                 // An edge of ink, and a tail towards the speaker.
                 cloud.spawn((Sprite { color: color(INK), custom_size: Some(size + Vec2::splat(2.0)), ..default() }, Transform::from_xyz(0.0, 0.0, -0.01)));
@@ -1098,6 +1146,18 @@ fn bubbles(
         if bubble.age > BUBBLE_SECONDS {
             commands.entity(entity).try_despawn();
             continue;
+        }
+        // The bubble is not part of the place: a place drawn again (as a guest's is whenever the
+        // world changes) keeps it over its speaker; only a speaker gone takes it down.
+        match head(&bubble.who) {
+            Some(_) => bubble.lost = 0.0,
+            None => {
+                bubble.lost += time.delta_secs();
+                if bubble.lost > 0.5 {
+                    commands.entity(entity).try_despawn();
+                    continue;
+                }
+            }
         }
         if let Some(at) = head(&bubble.who) {
             let wanted = Vec3::new(at.x.round(), (at.y + 46.0 + bubble.size.y / 2.0).round(), 1.88);
@@ -1349,6 +1409,58 @@ fn bag_work(
     }
 }
 
+/// Lines said in the world go up in bubbles for those meant to hear them: everyone when no
+/// hero is named; the host sees them too when it has no hero of its own named (a master).
+fn say_aloud(world: &World, bubbles: Vec<(String, String, Vec<String>)>, session: &Session, settings: &Settings, table: &mut Table) {
+    let place = world.current.clone();
+    let hears = |player: &str, who: &[String]| who.is_empty() || hero_of(world, player).is_none_or(|hero| who.iter().any(|w| w.eq_ignore_ascii_case(hero)));
+    for (id, text, who) in bubbles {
+        for guest in session.players() {
+            if hears(&guest, &who) {
+                session.send_to(&guest, &Down::Bubble { place: place.clone(), who: id.clone(), text: text.clone() });
+            }
+        }
+        if hears(&player_name(settings), &who) {
+            table.bubbles.push((id, text));
+        }
+    }
+}
+
+/// The world's own clock on the host: what waits put off comes due, scripts set off by the
+/// hour, a variable or an event go, and creatures say their lines. Lines go up in bubbles
+/// here and at every guest's table.
+fn scripts(time: Res<Time>, mut game: ResMut<Game>, session: Res<Session>, mut table: ResMut<Table>, mut redraw: ResMut<Redraw>, store: Res<Store>, settings: Res<Settings>, mut second: Local<f32>) {
+    if session.is_client() {
+        return;
+    }
+    // Lines said by effects go up at once, whatever the clock.
+    if !game.world.bubbles.is_empty() {
+        let bubbles = std::mem::take(&mut game.world.bubbles);
+        say_aloud(&game.world, bubbles, &session, &settings, &mut table);
+    }
+    *second += time.delta_secs();
+    if *second < 1.0 {
+        return;
+    }
+    *second -= 1.0;
+    let world = &game.world;
+    let busy = !world.later.is_empty() || !world.scripts.is_empty() || !world.happened.is_empty() || world.here().creatures.iter().any(|c| !c.lines.is_empty());
+    if !busy {
+        return;
+    }
+    let waited = world.later.len();
+    let notes = game.world.tick_second();
+    let bubbles = std::mem::take(&mut game.world.bubbles);
+    say_aloud(&game.world, bubbles, &session, &settings, &mut table);
+    for note in &notes {
+        info!("script: {note}");
+    }
+    if waited != game.world.later.len() || !notes.is_empty() {
+        redraw.0 = true;
+        autosave(&store, &game);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, mut game: ResMut<Game>, mut phase: ResMut<Phase>, mut pose: ResMut<HeroPose>, mut warp: ResMut<Warp>, session: Res<Session>, mut table: ResMut<Table>, mut leave: ResMut<Leave>, mut redraw: ResMut<Redraw>) {
     // Orders from a test script, whatever the screen shows.
@@ -1369,6 +1481,12 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
                 hero.dead = true;
             }),
             "deed" => world.secrets_due.push(0),
+            // `want=words`: the host's own hero does that, as if typed: the master is asked.
+            "want" => {
+                let said = order.split_once('=').map_or("", |(_, words)| words).to_string();
+                let player = world.owners.first().cloned().filter(|o| !o.is_empty()).unwrap_or_else(|| "Guest".to_string());
+                table.wants.lock().unwrap().push(crate::coop::Want { player, said, near: None, follows: false, passed: false });
+            }
             // `fx=[…]`: effects as the master would write them, carried out at once. A `|`
             // stands for a comma, which the script keeps for itself.
             "fx" => {
@@ -1601,8 +1719,11 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
             return;
         }
         // A thing to hand comes first, then a way out close by, then the party's own words.
-        match (game.world.thing_near(THING_REACH), game.world.exit_near(EXIT_HINT_REACH)) {
-            (Some(thing), _) => *phase = Phase::Looking { thing: thing.to_string() },
+        // Ground that has something to do with it (a tree to cut, water to swim) comes after
+        // the things, before the ways out.
+        let ground = game.world.tile_near().map(|(x, y)| format!("tile@{x},{y}"));
+        match (game.world.thing_near(THING_REACH).map(str::to_string).or(ground), game.world.exit_near(EXIT_HINT_REACH)) {
+            (Some(thing), _) => *phase = Phase::Looking { thing },
             (None, Some(exit)) => leave.0 = Some(exit.to.clone()),
             (None, None) => *phase = Phase::Writing { near: None },
         }
@@ -1661,6 +1782,7 @@ pub fn show(turn: Turn, phase: &mut Phase, table: &mut Table) {
                 reading.language.clear();
             }
             reading.narration = format!("{}\n\n{}", reading.narration.trim_end(), turn.narration.trim());
+            reading.acts.extend(turn.acts.iter().cloned());
             if !turn.options.is_empty() {
                 reading.options = turn.options;
             }
@@ -1961,13 +2083,25 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     let where_ = game.world.place_name(&place).to_string();
     // Whose deed it answers: they read it at once, the others there find it added folded.
     // What answers nobody (an event, an arrival) concerns everyone there.
+    // What it answers is shown above it, to everyone who reads it.
+    turn.acts = std::mem::take(&mut table.answering);
     let authors: Vec<String> = game.world.actors.iter().filter_map(|&hero| game.world.owners.get(hero).cloned()).collect();
-    let theirs = |player: &str| !authors.is_empty() && !authors.iter().any(|a| a == player);
+    let hero_of_player = |player: &str| hero_of(&game.world, player).map(str::to_string);
+    // A player with a part of their own is concerned, whoever acted: it opens for them.
+    let own_part = |hero: &Option<String>| hero.as_deref().is_some_and(|h| turn.parts.iter().any(|p| p.to.iter().any(|t| t.trim().eq_ignore_ascii_case(h.trim()))));
+    let theirs = |player: &str, hero: &Option<String>| !authors.is_empty() && !authors.iter().any(|a| a == player) && !own_part(hero);
+    // Who is offered something here: what is done next waits for each of them.
+    let mut expected: Vec<String> = Vec::new();
     for player in session.players() {
         if game.world.place_of(&player) == place {
-            // In the reader's language, when the master wrote it in that one too.
-            let mut seen = turn.read_in(&session.language_of(&player).unwrap_or_default());
-            seen.theirs = theirs(&player);
+            // Each is sent the view that is theirs: their own part and their own choices, in
+            // their language when the master wrote it in that one too.
+            let hero = hero_of_player(&player);
+            let mut seen = turn.view_for(hero.as_deref()).read_in(&session.language_of(&player).unwrap_or_default());
+            if !seen.options.is_empty() {
+                expected.push(player.clone());
+            }
+            seen.theirs = theirs(&player, &hero);
             session.tell(&player, Down::Told(seen));
         } else if !gist.is_empty() {
             session.tell(&player, Down::News { place: where_.clone(), text: gist.clone() });
@@ -1979,10 +2113,23 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     }
     // The outcome of a chest opened or a die rolled offers nothing, and takes nothing
     // away: the choices of the telling before it stand.
-    if !turn.options.is_empty() {
-        table.options.insert(place, turn.options.clone());
+    let every = turn.every_option();
+    if !every.is_empty() {
+        table.options.insert(place.clone(), every);
     }
-    Phase::Reading { turn: turn.read_in(&table.reads) }
+    // The host's own view: alone, everything; at a table, the host's hero's part.
+    let me = table.me.clone();
+    let hero = if matches!(session, Session::Solo) { None } else { hero_of_player(&me) };
+    let mut own = turn.view_for(if matches!(session, Session::Solo) { None } else { Some(hero.as_deref().unwrap_or("")) }).read_in(&table.reads);
+    own.theirs = !matches!(session, Session::Solo) && theirs(&me, &hero);
+    if !own.options.is_empty() && !table.elsewhere && hero.is_some() {
+        expected.push(me.clone());
+    }
+    // Waiting is for a table: one player alone is never kept waiting for themselves.
+    if expected.len() >= 2 {
+        table.queues.expect(&place, &expected);
+    }
+    Phase::Reading { turn: own }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2083,6 +2230,29 @@ fn receive(
                 game.world.focus_fight(&home);
                 redraw.0 = true;
             }
+            Answer::Art { tile, id, walkable, rows } => {
+                let lang = settings.lang;
+                let note = match rows {
+                    Ok(rows) => {
+                        let name = id.replace('_', " ");
+                        let saved = if tile { game.world.add_drawn_tile(&id, &name, walkable, &rows) } else { game.world.add_drawn_sprite(&id, &rows) };
+                        if saved {
+                            let slug = world::build::slug(&id);
+                            share_art(&store, &session, if tile { world::library::Art::of_tile(&game.world, &slug) } else { world::library::Art::of_sprite(&game.world, &slug) });
+                        }
+                        redraw.0 = true;
+                        autosave(&store, &game);
+                        if saved { format!("{} {id}", T::ArtSaved.text(lang)) } else { T::ArtUnreadable.text(lang).to_string() }
+                    }
+                    Err(trouble) => trouble_text(&trouble, gm.dispatcher.now(), lang),
+                };
+                match seated(&game.world).map(str::to_string) {
+                    Some(master) if master != player_name(&settings) => {
+                        session.send_to(&master, &Down::Card(Err(note)));
+                    }
+                    _ => table.master_note = note,
+                }
+            }
             Answer::Things(drawn) => {
                 background.things_asked = false;
                 match drawn {
@@ -2108,6 +2278,32 @@ fn receive(
                 {
                     redraw.0 = true;
                     autosave(&store, &game);
+                }
+            }
+            Answer::Location { id, from, ahead, draft } if table.redrawing.as_deref() == Some(id.as_str()) => {
+                table.redrawing = None;
+                // The master's place drawn again: it takes the old one's place, and everyone
+                // in it stands at its start, on ground that can be walked.
+                match draft.and_then(|d| game.world.add_location(&d, &id, None).map_err(Trouble::Unreadable)) {
+                    Ok(_) => {
+                        let _ = (ahead, from);
+                        let (x, y) = game.world.locations[&id].spawn;
+                        if game.world.current == id {
+                            game.world.player = world::Player::in_cell(x, y);
+                        }
+                        for player in session.players().into_iter().filter(|p| game.world.place_of(p) == id) {
+                            session.send_to(&player, &Down::MoveTo { x, y });
+                        }
+                        redraw.0 = true;
+                        autosave(&store, &game);
+                    }
+                    Err(trouble) => {
+                        let why = trouble_text(&trouble, gm.dispatcher.now(), settings.lang);
+                        table.master_note = why.clone();
+                        if let Some(master) = seated(&game.world) {
+                            session.send_to(master, &Down::Card(Err(why)));
+                        }
+                    }
                 }
             }
             Answer::Location { id, from, ahead, draft } => {
@@ -2228,6 +2424,7 @@ fn receive(
                         desk.game.world.acting = desk.game.world.owners.iter().position(|o| *o == lead).or_else(|| my_hero(&desk.game.world, &lead, solo));
                         // "The party" in the answer is those it answers, not the table.
                         desk.game.world.actors = if solo { Vec::new() } else { here.iter().filter_map(|a| desk.game.world.owners.iter().position(|o| *o == a.player)).collect() };
+                        desk.table.answering = here.iter().map(|a| shown_act(&desk.game.world, a, solo)).collect();
                         finish(&mut desk, &said, &draft);
                         desk.game.world.actors.clear();
                         leave_scene(desk.game, desk.table, home);
@@ -2260,6 +2457,9 @@ fn receive(
                         let acting_player = scene.clone().unwrap_or_else(|| player_name(&settings));
                         desk.game.world.acting = desk.game.world.owners.iter().position(|o| *o == acting_player).or_else(|| my_hero(&desk.game.world, &acting_player, matches!(*desk.session, Session::Solo)));
                         let home = scene.as_deref().map(|player| enter_scene(desk.game, desk.table, player));
+                        let solo = matches!(*desk.session, Session::Solo);
+                        let hero = hero_of(&desk.game.world, &acting_player).map(str::to_string);
+                        desk.table.answering = vec![match hero { Some(hero) if !solo => format!("{hero}: {said}"), _ => said.clone() }];
                         finish(&mut desk, &said, &draft);
                         leave_scene(desk.game, desk.table, home);
                     }
@@ -2314,8 +2514,31 @@ fn receive(
                     _ => background.chapter_rest = if background.urgent { 20.0 } else { BACKGROUND_REST },
                 }
             }
+            Answer::Script { for_player, effects } => {
+                let effects = effects.map_err(|trouble| trouble_text(&trouble, gm.dispatcher.now(), settings.lang));
+                if for_player == player_name(&settings) {
+                    table.script = Some(effects);
+                } else {
+                    session.send_to(&for_player, &Down::Script(effects));
+                }
+            }
+            Answer::Ruling { for_player, answer } => {
+                let answer = answer.map_err(|trouble| trouble_text(&trouble, gm.dispatcher.now(), settings.lang));
+                if for_player == player_name(&settings) {
+                    table.ruling = Some(answer);
+                } else {
+                    session.send_to(&for_player, &Down::Ruling(answer));
+                }
+            }
             Answer::Card { for_player, card } => {
                 let card = card.map(|card| *card).map_err(|trouble| trouble_text(&trouble, gm.dispatcher.now(), settings.lang));
+                // A creature made for the master goes into everyone's library at the table.
+                if let Ok(made) = &card {
+                    if for_player != player_name(&settings) {
+                        let _ = store.save_card(made);
+                    }
+                    session.broadcast(&Down::LibraryCard(made.clone()));
+                }
                 if for_player == player_name(&settings) {
                     table.keep_card(&store, card, settings.lang);
                 } else {
@@ -2573,6 +2796,10 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
         Phase::Paused => Sheet::Paused { seat: extra.seat, lost: extra.lost },
         Phase::Judging => extra.judging.clone().map_or(Sheet::None, Sheet::Judging),
         Phase::Master => Sheet::Master(extra.panel.clone()),
+        Phase::Looking { thing } if world::story::tile_cell(thing).is_some() => match world::story::tile_cell(thing).and_then(|cell| world.ground_actions(cell)) {
+            Some((name, actions)) => Sheet::Looking { name: name.to_string(), description: String::new(), actions: actions.iter().map(|a| a.label.clone()).collect(), chest: None, shop: false },
+            None => Sheet::None,
+        },
         Phase::Looking { thing } => {
             let here = world.here();
             let found = here
@@ -2632,7 +2859,7 @@ fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store,
     }
     // It is never refused: it waits its turn in the master's queues.
     let _ = (game, gm, store, master);
-    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: said.clone(), near: near.clone(), follows: false });
+    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: said.clone(), near: near.clone(), follows: false, passed: false });
     Phase::Asking { said, near }
 }
 
@@ -2645,7 +2872,7 @@ fn follow(label: &str, outcome: &str, game: &Game, settings: &Settings, session:
             session.tell(&player, Down::Told(told.clone()));
         }
     }
-    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: label.to_string(), near: None, follows: true });
+    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: label.to_string(), near: None, follows: true, passed: false });
     Phase::Asking { said: label.to_string(), near: None }
 }
 
@@ -2656,7 +2883,22 @@ fn clock_ms() -> u64 {
 }
 
 /// How a thing done is put to the master: by whom, and whether it goes on from a choice.
+/// A deed as the players read it above the telling that answers it: the hero and the
+/// words, or only the words when one plays alone.
+fn shown_act(world: &World, act: &table::Act, solo: bool) -> String {
+    if act.passed {
+        return format!("{}: —", hero_of(world, &act.player).unwrap_or(&act.player));
+    }
+    match hero_of(world, &act.player) {
+        Some(hero) if !solo => format!("{hero}: {}", act.said),
+        _ => act.said.clone(),
+    }
+}
+
 fn act_line(world: &World, act: &table::Act, named: bool) -> String {
+    if act.passed {
+        return format!("{}: (lets it be and does nothing for now)", hero_of(world, &act.player).unwrap_or(&act.player));
+    }
     let said = if act.follows { format!("{} {}", act.said, world::prompt::GO_ON) } else { act.said.clone() };
     if named { format!("{}: {said}", hero_of(world, &act.player).unwrap_or(&act.player)) } else { said }
 }
@@ -2702,6 +2944,25 @@ fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: Res
     if session.is_client() {
         return;
     }
+    // Who each player's deed waits for: the host sees it, each guest is told when it changes.
+    let waits = |place: &str, player: &str| -> Vec<String> {
+        if table.queues.pending_of(player).is_some() { table.queues.expecting(place).into_iter().filter(|p| p != player).collect() } else { Vec::new() }
+    };
+    let me_now = player_name(&settings);
+    let mine = waits(&game.world.current, &me_now);
+    let told: Vec<(String, Vec<String>)> = session.players().into_iter().map(|g| {
+        let w = waits(game.world.place_of(&g), &g);
+        (g, w)
+    }).collect();
+    for (guest, theirs) in told {
+        if table.told_waiting.get(&guest) != Some(&theirs) {
+            session.send_to(&guest, &Down::WaitingFor(theirs.clone()));
+            table.told_waiting.insert(guest, theirs);
+        }
+    }
+    if table.waiting_for != mine {
+        table.waiting_for = mine;
+    }
     let wants = std::mem::take(&mut *table.wants.lock().unwrap());
     if wants.is_empty() && table.queues.idle() {
         return;
@@ -2713,6 +2974,10 @@ fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: Res
     let mut outs = Vec::new();
     for want in wants {
         let place = if want.player == me || solo { game.world.current.clone() } else { game.world.place_of(&want.player).to_string() };
+        if want.passed {
+            outs.extend(table.queues.pass(&place, &want.player, now));
+            continue;
+        }
         let there = usize::from(game.world.current == place) + guests.iter().filter(|g| game.world.place_of(g) == place).count();
         outs.extend(table.queues.submit(&place, &want.player, &want.said, want.near, want.follows, there <= 1, now).1);
     }
@@ -2730,9 +2995,15 @@ fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: Res
                 // The master sees the place through the eyes of the one who acts there.
                 let own = solo || acts.iter().any(|a| a.player == me);
                 let lead = if own { None } else { acts.first().map(|a| a.player.clone()) };
-                let home = lead.as_deref().map(|player| enter_scene(&mut game, &mut table, player));
-                master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None, id: id.0 });
-                leave_scene(&mut game, &mut table, home);
+                if seated(&game.world).is_some() && !game.world.ai_drafts {
+                    // A master of flesh answers first: the deed goes to them with an empty
+                    // draft to write, as if the model had answered nothing.
+                    master.give(Answer::Turn { id: id.0, said: said.clone(), near, draft: Ok(Box::new(TurnDraft::default())) });
+                } else {
+                    let home = lead.as_deref().map(|player| enter_scene(&mut game, &mut table, player));
+                    master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None, id: id.0 });
+                    leave_scene(&mut game, &mut table, home);
+                }
                 // Everyone sees what each has set about, a line a hero: the words as they
                 // were said, not as the master is asked them.
                 if session.is_host() {
@@ -2806,6 +3077,14 @@ fn on_activate(
     }
     // A guest does not change the world: it asks the host, and reads the answer with
     // everyone else when it comes.
+    // A telling with choices closed without one: the others there are not kept waiting.
+    if matches!(*action, PlayAction::Close) && matches!(&*phase, Phase::Reading { turn } if !turn.options.is_empty()) {
+        if session.is_client() {
+            session.intend(Intent::Pass);
+        } else {
+            table.wants.lock().unwrap().push(Want { player: player_name(&settings), said: String::new(), near: None, follows: false, passed: true });
+        }
+    }
     if session.is_client() {
         let asked = match (*action, phase.clone()) {
             (PlayAction::Do(index), Phase::Looking { thing }) => Some(Intent::Do { thing, index }),
@@ -3158,6 +3437,10 @@ fn quest_lines(world: &World, lang: Lang) -> Vec<String> {
 /// a new task is also called out in the corner feed.
 /// What a prepared action of a thing here is called.
 fn action_label(world: &World, thing: &str, index: usize) -> Option<String> {
+    if let Some(cell) = world::story::tile_cell(thing) {
+        let (name, actions) = world.ground_actions(cell)?;
+        return actions.get(index).map(|a| format!("{} ({name})", a.label));
+    }
     let here = world.here();
     let (name, actions) = here.props.iter().find(|p| p.id == thing).map(|p| (&p.name, &p.actions)).or_else(|| here.creatures.iter().find(|c| c.id == thing).map(|c| (&c.name, &c.actions)))?;
     actions.get(index).map(|a| format!("{} ({name})", a.label))
@@ -3227,7 +3510,7 @@ fn guests(
                     Some(option) => {
                         let outcome = game.world.choose(&option);
                         // And what follows it is asked of the master: always, in its turn.
-                        table.wants.lock().unwrap().push(Want { player: player.clone(), said: option.label.clone(), near: None, follows: true });
+                        table.wants.lock().unwrap().push(Want { player: player.clone(), said: option.label.clone(), near: None, follows: true, passed: false });
                         Some(outcome_of(outcome))
                     }
                     // Told in words: a press that does nothing looks like a game that hangs.
@@ -3253,7 +3536,7 @@ fn guests(
             Intent::Say { text, near } => {
                 // Never refused: it waits its turn in the queue of the place it was done in.
                 if !text.trim().is_empty() {
-                    table.wants.lock().unwrap().push(Want { player: player.clone(), said: text.trim().to_string(), near, follows: false });
+                    table.wants.lock().unwrap().push(Want { player: player.clone(), said: text.trim().to_string(), near, follows: false, passed: false });
                 }
                 None
             }
@@ -3434,6 +3717,10 @@ fn guests(
                 let hero = game.world.owners.iter().position(|o| *o == player).unwrap_or(0);
                 game.world.open_chest(hero, &prop, how, &mut Rng::from_clock()).map(|result| outcome_of(chest_words(&result, settings.lang)))
             }
+            Intent::Pass => {
+                table.wants.lock().unwrap().push(Want { player: player.clone(), said: String::new(), near: None, follows: false, passed: true });
+                None
+            }
             Intent::Turn { index, name } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {
                     let bag = game.world.story.bags.get(hero).map(|b| b.inventory.as_slice()).unwrap_or_default();
@@ -3588,11 +3875,9 @@ fn finish(desk: &mut Desk, said: &str, draft: &TurnDraft) {
     }
     let waiting = matches!(*desk.phase, Phase::Asking { .. } | Phase::Judging);
     // Whether it answers another player's deed and not the host's own.
-    let me = player_name(desk.settings);
-    let world = &desk.game.world;
-    let theirs = !world.actors.is_empty() && !world.actors.iter().any(|&hero| world.owners.get(hero).is_some_and(|o| *o == me));
-    match carry_out(desk, said, draft).map(|turn| Turn { theirs, ..turn }) {
-        Some(turn) if waiting && !theirs => {
+    // Whether it is another player's, told says: their deed, and no part for the host.
+    match carry_out(desk, said, draft) {
+        Some(turn) if waiting && !turn.theirs => {
             desk.table.fold_next = Some(false);
             *desk.phase = Phase::Reading { turn };
         }
@@ -3675,6 +3960,24 @@ fn release(desk: &mut Desk, master: &str) {
     }
 }
 
+/// What the master made goes into the library of everyone at the table, the host's too.
+fn share_art(store: &Store, session: &Session, art: Option<world::library::Art>) {
+    let Some(art) = art else { return };
+    if let Err(e) = store.save_art(&art) {
+        warn!("could not keep {} in the library: {e}", art.id);
+    }
+    session.broadcast(&Down::LibraryArt(art));
+}
+
+/// A word for the player in the master's seat: on the host's screen, or sent to them.
+fn tell_master(desk: &mut Desk, master: &str, note: String) {
+    if master == player_name(desk.settings) {
+        desk.table.master_note = note;
+    } else {
+        desk.session.send_to(master, &Down::Card(Err(note)));
+    }
+}
+
 /// What the player in the master's seat asked for, done on the host. Anyone may take an
 /// empty seat; everything else is only the master's to do.
 fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
@@ -3693,6 +3996,13 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             release(desk, player);
         }
         GmAct::Verdict { accept, narration } => conclude(desk, player, accept, &narration),
+        GmAct::Answer(draft) => {
+            if let Some(held) = desk.table.drafts.front_mut() {
+                held.draft = *draft;
+            }
+            conclude(desk, player, true, "");
+        }
+        GmAct::AiDrafts(on) => desk.game.world.ai_drafts = on,
         GmAct::Direct(text) => {
             let text = text.trim().to_string();
             if text.is_empty() {
@@ -3728,11 +4038,84 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             desk.table.busy = Some(said);
         }
         GmAct::Apply(draft) => finish(desk, "", &draft),
+        GmAct::ImportArt(art) => {
+            let lang = desk.settings.lang;
+            let note = if desk.game.world.import_art(&art) { format!("{} {}", T::ArtSaved.text(lang), art.id) } else { T::ArtUnreadable.text(lang).to_string() };
+            tell_master(desk, player, note);
+            desk.redraw.0 = true;
+        }
+        GmAct::SaveEntity(entity) => {
+            let lang = desk.settings.lang;
+            let note = if desk.game.world.import_art(&entity.art) {
+                if let Err(e) = desk.store.save_entity(&entity) {
+                    warn!("could not keep {} in the library: {e}", entity.id);
+                }
+                desk.session.broadcast(&Down::LibraryEntity(entity.clone()));
+                format!("{} {}", T::ArtSaved.text(lang), entity.name)
+            } else {
+                T::ArtUnreadable.text(lang).to_string()
+            };
+            tell_master(desk, player, note);
+        }
+        GmAct::Place { entity, x, y } => {
+            // On the master's own place, wherever the host is.
+            let home = enter_scene(desk.game, desk.table, player);
+            let notes = desk.game.world.place_entity(&entity, x, y);
+            leave_scene(desk.game, desk.table, Some(home));
+            if !notes.is_empty() {
+                tell_master(desk, player, notes.join("; "));
+            }
+            autosave(desk.store, desk.game);
+            desk.redraw.0 = true;
+        }
+        GmAct::SetWalkable { tile, walkable } => {
+            if desk.game.world.set_walkable(&tile, walkable) {
+                share_art(desk.store, desk.session, world::library::Art::of_tile(&desk.game.world, &tile));
+                desk.redraw.0 = true;
+            }
+        }
+        GmAct::SaveArt { tile, id, name, walkable, rows } => {
+            let world = &mut desk.game.world;
+            let saved = if tile { world.add_drawn_tile(&id, &name, walkable, &rows) } else { world.add_drawn_sprite(&id, &rows) };
+            if saved {
+                let slug = world::build::slug(&id);
+                let art = if tile { world::library::Art::of_tile(world, &slug) } else { world::library::Art::of_sprite(world, &slug) };
+                share_art(desk.store, desk.session, art);
+            }
+            let lang = desk.settings.lang;
+            let note = if saved { format!("{} {id}", T::ArtSaved.text(lang)) } else { T::ArtUnreadable.text(lang).to_string() };
+            tell_master(desk, player, note);
+            desk.redraw.0 = true;
+        }
+        GmAct::DrawArt { tile, id, description, walkable } => {
+            let lang = desk.settings.lang;
+            tell_master(desk, player, format!("{} {id}…", T::ArtDrawing.text(lang)));
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Art { world: Box::new(desk.game.world.clone()), tile, id, description, walkable });
+        }
+        GmAct::Redraw(wish) => {
+            // The place the master stands in, as walked into from one of its ways out; its
+            // stub keeps its name and description for the model, its exits where they lead.
+            let world = &desk.game.world;
+            let id = world.place_of(player).to_string();
+            let Some(place) = world.locations.get(&id) else { return };
+            let from = place.exits.iter().map(|e| e.to.clone()).find(|to| world.locations.contains_key(to)).or_else(|| place.exits.first().map(|e| e.to.clone())).unwrap_or_else(|| id.clone());
+            let mut seen = world.clone();
+            seen.stubs.insert(id.clone(), world::Stub { name: place.name.clone(), description: place.description.clone() });
+            seen.redraw_wish = wish;
+            desk.table.redrawing = Some(id.clone());
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Location { world: Box::new(seen), id, from, ahead: false });
+        }
         GmAct::Whisper { to, text } => whisper(desk, &[Whisper { to, text }]),
         GmAct::Say { who, text } => {
             let place = desk.game.world.current.clone();
             desk.session.broadcast(&Down::Bubble { place, who: who.clone(), text: text.clone() });
             desk.table.bubbles.push((who, text));
+        }
+        GmAct::AskScript { about, wish } => {
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Script { world: Box::new(desk.game.world.clone()), about, wish, for_player: player.to_string() });
+        }
+        GmAct::AskRules { book, question } => {
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Ruling { world: Box::new(desk.game.world.clone()), book, question, for_player: player.to_string() });
         }
         GmAct::Invent(request) => {
             desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Invent { world: Box::new(desk.game.world.clone()), request, for_player: player.to_string() });
@@ -3749,7 +4132,7 @@ fn tool_act(tool: Tool, typed: &str, world: &World, panel: &mut Panel, table: &m
     let (x, y) = world.player.cell();
     let (x, y) = (x.max(0) as usize, y.max(0) as usize);
     let apply = |effects: serde_json::Value| GmAct::Apply(Box::new(TurnDraft { effects: effects.as_array().cloned().unwrap_or_default(), ..TurnDraft::default() }));
-    let needs_text = matches!(tool, Tool::ToModel | Tool::Narrate | Tool::Whisper | Tool::Creature | Tool::Tile | Tool::Damage | Tool::Heal | Tool::Give | Tool::Invent | Tool::Gold | Tool::Hours | Tool::Sky | Tool::Say) || (tool == Tool::Brush && panel.brush.is_none());
+    let needs_text = matches!(tool, Tool::ToModel | Tool::Redraw | Tool::Narrate | Tool::Whisper | Tool::Creature | Tool::Tile | Tool::Damage | Tool::Heal | Tool::Give | Tool::Invent | Tool::Gold | Tool::Hours | Tool::Sky | Tool::Say) || (tool == Tool::Brush && panel.brush.is_none());
     if needs_text && typed.is_empty() {
         table.master_note = T::NeedText.text(lang).to_string();
         return None;
@@ -3757,6 +4140,7 @@ fn tool_act(tool: Tool, typed: &str, world: &World, panel: &mut Panel, table: &m
     table.master_note.clear();
     let act = match tool {
         Tool::ToModel => GmAct::Direct(typed.to_string()),
+        Tool::Redraw => GmAct::Redraw(typed.to_string()),
         Tool::Narrate => GmAct::Apply(Box::new(TurnDraft { narration: typed.to_string(), ..TurnDraft::default() })),
         Tool::Whisper => {
             let others = others_at_table(world, me);
@@ -3942,7 +4326,12 @@ impl Plugin for PlayPlugin {
             .init_resource::<ShownPlace>()
             .add_systems(Update, ambush_ask.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, brush_paint.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
-            .add_systems(Update, (place_allies, live_world, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .init_resource::<workshop::Workshop>()
+            .init_resource::<workshop::PickedColour>()
+            .add_systems(Update, workshop::pick_anywhere.run_if(in_state(Screen::Play)))
+            .add_systems(bevy_egui::EguiPrimaryContextPass, workshop::workshop_ui.in_set(crate::ui::UiSet::Screens).after(sheets::overlay).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, workshop::workshop_map.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, (place_allies, live_world, scripts, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, run_clock.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, keep_facing.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .init_resource::<Dolls>()

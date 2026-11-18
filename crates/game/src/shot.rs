@@ -138,6 +138,14 @@ pub fn parse_script(script: &str) -> Vec<Step> {
                     ]);
                 }
             }
+            // The left button held down and let go later, for dragging: `press:x,y`, `move:…`,
+            // `release:x,y`.
+            "press" | "release" => {
+                if let Some(at) = point(arg) {
+                    let state = if verb == "press" { ButtonState::Pressed } else { ButtonState::Released };
+                    steps.extend([Step::Move(at), Step::Frames(CLICK_FRAMES), Step::Mouse(state), Step::Frames(CLICK_FRAMES)]);
+                }
+            }
             // A click where the cursor already is, without moving it there first.
             "snap" => steps.extend([Step::Snap(point(arg)), Step::Frames(CLICK_FRAMES)]),
             "tap" => steps.extend([Step::Mouse(ButtonState::Pressed), Step::Frames(CLICK_FRAMES), Step::Mouse(ButtonState::Released), Step::Frames(CLICK_FRAMES)]),

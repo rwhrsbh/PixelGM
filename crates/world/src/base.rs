@@ -270,7 +270,7 @@ pub fn base_tiles() -> BTreeMap<String, TileDef> {
         ("bush", "a thick bush", false, bush()),
         ("rock", "a boulder", false, rock()),
     ];
-    tiles.into_iter().map(|(id, name, walkable, grid)| (id.to_string(), TileDef { name: name.to_string(), walkable, sprite: grid.sprite() })).collect()
+    tiles.into_iter().map(|(id, name, walkable, grid)| (id.to_string(), TileDef { name: name.to_string(), walkable, sprite: grid.sprite(), actions: Vec::new() })).collect()
 }
 
 pub fn base_sprites() -> BTreeMap<String, Sprite> {

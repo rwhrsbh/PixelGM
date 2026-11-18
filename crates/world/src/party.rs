@@ -174,7 +174,7 @@ impl World {
     }
 
     /// The most harm or healing one effect outside a fight may do.
-    fn story_cap(&self) -> i32 {
+    pub(crate) fn story_cap(&self) -> i32 {
         if self.limited() { 10 + 10 * self.party_level() as i32 } else { 500 }
     }
 
@@ -341,7 +341,9 @@ impl World {
     pub fn combatant_for(&self, creature: &Creature) -> Combatant {
         let at = (creature.x as i32, creature.y as i32);
         if let Some(monster) = creature.monster.as_deref().and_then(|m| srd().monsters.get(m)) {
-            return Combatant::monster(monster, &creature.id, &creature.name, at);
+            let mut fighter = Combatant::monster(monster, &creature.id, &creature.name, at);
+            fighter.size = creature.size.max(1);
+            return fighter;
         }
         let level = self.party_level() as i32;
         let fallback = Stats { ac: 12, hp: 6 + 5 * level, speed: 30, attacks: vec![StatAttack { name: "Attack".into(), bonus: 3 + level / 2, damage: format!("1d6+{}", 1 + level / 2), range: 5 }], xp: 50 * level as u32 };
@@ -372,9 +374,11 @@ impl World {
             multiattack: Vec::new(),
             challenge: 0.0,
             xp: stats.xp.min(50_000),
-            size: 1,
+            size: creature.size.max(1) as u32,
         };
-        Combatant::monster(&monster, &creature.id, &creature.name, at)
+        let mut fighter = Combatant::monster(&monster, &creature.id, &creature.name, at);
+        fighter.size = creature.size.max(1);
+        fighter
     }
 
     /// Rolls the check that is waiting. The party member with the best bonus makes the
@@ -464,7 +468,8 @@ impl World {
         let (ux, uy) = (x as usize, y as usize);
         let solid = here.tile_id(ux, uy).and_then(|id| self.tiles.get(id)).is_none_or(|t| !t.walkable);
         let fighting = |id: &str| self.fight.as_ref().is_some_and(|f| f.index_of(id).is_some());
-        solid || here.props.iter().any(|p| p.blocking && (p.x, p.y) == (ux, uy)) || here.creatures.iter().any(|c| (c.x, c.y) == (ux, uy) && !fighting(&c.id))
+        let covers = |cx: usize, cy: usize, size: u8| rules::combat::block_distance((cx as i32, cy as i32), size, (x, y)) == 0;
+        solid || here.props.iter().any(|p| p.blocking && covers(p.x, p.y, p.size)) || here.creatures.iter().any(|c| covers(c.x, c.y, c.size) && !fighting(&c.id))
     }
 
     /// The place a companion is in: where the hero of its player is.
@@ -843,6 +848,7 @@ impl World {
                         (dead.x, dead.y) = (c.x.max(0) as usize, c.y.max(0) as usize);
                         let russian = self.language.to_lowercase().starts_with("ru") || self.language.contains("усск");
                         location.props.push(body_of(dead, russian));
+                        self.happened.push(("death".to_string(), c.id.clone()));
                     }
                 } else if let Some(creature) = location.creatures.iter_mut().find(|creature| creature.id == c.id) {
                     (creature.x, creature.y) = (c.x.max(0) as usize, c.y.max(0) as usize);
@@ -889,7 +895,7 @@ impl World {
 /// — or raised.
 pub(crate) fn body_of(dead: Creature, russian: bool) -> crate::model::Prop {
     let name = if russian { format!("Тело: {}", dead.name) } else { format!("Body of {}", dead.name) };
-    crate::model::Prop { id: format!("{}_body", dead.id), name, description: dead.description.clone(), x: dead.x, y: dead.y, blocking: false, sprite: dead.sprite.clone(), actions: Vec::new(), body: Some(Box::new(dead)), chest: None }
+    crate::model::Prop { id: format!("{}_body", dead.id), name, description: dead.description.clone(), x: dead.x, y: dead.y, blocking: false, sprite: dead.sprite.clone(), actions: Vec::new(), size: dead.size, body: Some(Box::new(dead)), chest: None }
 }
 
 impl World {
@@ -901,6 +907,7 @@ impl World {
         let Some(location) = self.locations.get_mut(&here) else { return false };
         let Some(at) = location.creatures.iter().position(|c| c.id == id) else { return false };
         let dead = location.creatures.remove(at);
+        self.happened.push(("death".to_string(), id.to_string()));
         let (name, place) = (dead.name.clone(), location.name.clone());
         location.props.push(body_of(dead, russian));
         self.story.remember(&format!("{name} died in {place}."));

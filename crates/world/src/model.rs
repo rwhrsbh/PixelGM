@@ -84,6 +84,10 @@ pub struct TileDef {
     pub name: String,
     pub walkable: bool,
     pub sprite: Sprite,
+    /// What can be done with every cell of this ground — cut a tree, swim the water, climb
+    /// the rock — as the master wrote it: "self" for the cell's x and y is the cell acted on.
+    #[serde(default)]
+    pub actions: Vec<crate::story::ActionDraft>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -105,6 +109,9 @@ pub struct Prop {
     /// When this holds things: a chest, a crate, a corpse's purse.
     #[serde(default)]
     pub chest: Option<Chest>,
+    /// How many cells across and down it takes.
+    #[serde(default = "one_cell")]
+    pub size: u8,
 }
 
 /// What a container holds, and how it is shut.
@@ -191,6 +198,24 @@ pub struct Creature {
     pub haggle: i8,
     #[serde(default)]
     pub haggled: bool,
+    /// What it says by itself, every `every` seconds, in turn or at random.
+    #[serde(default)]
+    pub lines: Vec<String>,
+    #[serde(default)]
+    pub every: i64,
+    #[serde(default)]
+    pub random_lines: bool,
+    /// The next line in turn.
+    #[serde(default)]
+    pub said: usize,
+    /// How many cells across and down it takes, from its own cell to the right and down: a
+    /// boss may take three.
+    #[serde(default = "one_cell")]
+    pub size: u8,
+}
+
+fn one_cell() -> u8 {
+    1
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -282,6 +307,9 @@ pub struct Cue {
     /// A creature or prop id, a hero's name, or "party".
     pub id: String,
     pub motion: String,
+    /// The heroes who feel it, by name; everyone in the place when empty.
+    #[serde(default)]
+    pub who: Vec<String>,
 }
 
 impl Location {
@@ -304,7 +332,15 @@ impl Location {
         }
         let (x, y) = (x as usize, y as usize);
         let solid = self.tile_id(x, y).and_then(|id| tiles.get(id)).is_none_or(|t| !t.walkable);
-        solid || self.props.iter().any(|p| p.blocking && p.x == x && p.y == y) || self.creatures.iter().any(|c| c.x == x && c.y == y)
+        // Something large covers its own cell and those to the right and below it.
+        let covers = |cx: usize, cy: usize, size: u8| (cx..cx + size.max(1) as usize).contains(&x) && (cy..cy + size.max(1) as usize).contains(&y);
+        solid || self.props.iter().any(|p| p.blocking && covers(p.x, p.y, p.size)) || self.creatures.iter().any(|c| covers(c.x, c.y, c.size))
+    }
+
+    /// The creature or thing that covers a cell, by id: creatures first.
+    pub fn thing_covering(&self, x: usize, y: usize) -> Option<&str> {
+        let covers = |cx: usize, cy: usize, size: u8| (cx..cx + size.max(1) as usize).contains(&x) && (cy..cy + size.max(1) as usize).contains(&y);
+        self.creatures.iter().find(|c| covers(c.x, c.y, c.size)).map(|c| c.id.as_str()).or_else(|| self.props.iter().find(|p| covers(p.x, p.y, p.size)).map(|p| p.id.as_str()))
     }
 
     pub fn exit_at(&self, x: usize, y: usize) -> Option<&Exit> {
@@ -399,6 +435,29 @@ pub struct World {
     /// The player in the game master's seat. Nobody means the model runs the game alone.
     #[serde(default)]
     pub gm: Option<String>,
+    /// With a player in the master's seat: the model writes a draft of every answer for them
+    /// to read first. Off, the deeds come to the master straight and the model is asked only
+    /// when the master wants.
+    #[serde(default)]
+    pub ai_drafts: bool,
+    /// The variables scripts keep: flags and counts, by name.
+    #[serde(default)]
+    pub vars: std::collections::BTreeMap<String, i64>,
+    /// Scripts by id: lists of effects with what sets them off.
+    #[serde(default)]
+    pub scripts: std::collections::BTreeMap<String, crate::story::Script>,
+    /// What waits put off, to happen at its second of play.
+    #[serde(default)]
+    pub later: Vec<crate::story::Later>,
+    /// Seconds of play since the world began, as the host counts them.
+    #[serde(default)]
+    pub played: u64,
+    /// Lines to be shown in bubbles, by who says them: taken by the game each frame.
+    #[serde(skip)]
+    pub bubbles: Vec<(String, String, Vec<String>)>,
+    /// What happened that scripts may be set off by: ("enter", place), ("death", id).
+    #[serde(skip)]
+    pub happened: Vec<(String, String)>,
     /// Where each guest is, by player name, when the party has split up. The host is
     /// always in `current`; a guest not listed is with the host.
     #[serde(default)]
@@ -428,6 +487,9 @@ pub struct World {
     /// master writes the story in them too.
     #[serde(skip)]
     pub table_languages: Vec<String>,
+    /// What the human master wants of the place being drawn again, in their words.
+    #[serde(skip)]
+    pub redraw_wish: String,
     /// The main quest and the side tasks.
     #[serde(default)]
     pub quest: Quest,

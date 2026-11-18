@@ -22,7 +22,13 @@ struct Lobby {
     choosing: bool,
     /// This guest said it is ready.
     ready: bool,
+    /// A table's short code being looked for: on the networks, and through Steam, for a
+    /// few seconds.
+    finding: Option<(String, Option<net::steam::LobbyState>, f32)>,
 }
+
+/// How long a short code is looked for before the player is told there is no such table.
+const FIND_FOR: f32 = 8.0;
 
 /// A table that can be joined, wherever it was found.
 struct Found {
@@ -55,8 +61,9 @@ fn enter(mut commands: Commands, mut settings: ResMut<Settings>, store: Res<Stor
             Err(e) => info!("Steam is not available: {e}"),
         }
     }
+    // Playing through Steam, the player goes by their Steam name unless they typed another.
     if let Some(steam) = &link.steam
-        && settings.player_name.trim().is_empty()
+        && (settings.player_name.trim().is_empty() || settings.player_name.trim() == super::computer_name())
     {
         settings.player_name = steam.name();
     } else if settings.player_name.trim().is_empty() {
@@ -69,7 +76,7 @@ fn enter(mut commands: Commands, mut settings: ResMut<Settings>, store: Res<Stor
     if matches!(*session, Session::Solo) && table.rejoin.is_none() {
         open_table(&mut session, &mut table, &settings, &link);
     }
-    commands.insert_resource(Lobby { name: player_name(&settings), typed: String::new(), talk: String::new(), listening: net::beacon::Listening::start().ok(), inviting: false, choosing: false, ready: false });
+    commands.insert_resource(Lobby { name: player_name(&settings), typed: String::new(), talk: String::new(), listening: net::beacon::Listening::start().ok(), inviting: false, choosing: false, ready: false, finding: None });
 }
 
 fn open_table(session: &mut Session, table: &mut Table, settings: &Settings, link: &SteamLink) {
@@ -146,7 +153,7 @@ fn found(lobby: &Lobby, link: &SteamLink, lang: Lang) -> Vec<Found> {
 
 /// A seat at the table: a plate with the player's initial, the name, the hero, whether
 /// ready, and for the host a button to take a guest off the table.
-fn seat(ui: &mut Ui, seat: Option<&Seat>, me: &str, host: bool, lang: Lang) -> (bool, bool) {
+fn seat(ui: &mut Ui, seat: Option<&Seat>, me: &str, host: bool, lang: Lang, avatar: Option<egui::TextureId>) -> (bool, bool) {
     let t = |text: T| text.text(lang);
     let (mut kick, mut invite) = (false, false);
     let width = ui.available_width();
@@ -160,14 +167,22 @@ fn seat(ui: &mut Ui, seat: Option<&Seat>, me: &str, host: bool, lang: Lang) -> (
         Some(seat) => {
             painter.rect_filled(face, 0.0, c(WOOD_DEEP));
             painter.rect_stroke(face, 0.0, Stroke::new(1.0, c(if seat.ready { MOSS } else { WOOD_LIGHT })), egui::StrokeKind::Inside);
-            let initial: String = seat.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
-            painter.text(face.center(), egui::Align2::CENTER_CENTER, initial, egui::FontId::proportional(14.0), c(PARCHMENT));
+            // The player's Steam picture, or the first letter of the name.
+            match avatar {
+                Some(picture) => {
+                    painter.image(picture, face.shrink(1.0), Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                }
+                None => {
+                    let initial: String = seat.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+                    painter.text(face.center(), egui::Align2::CENTER_CENTER, initial, egui::FontId::proportional(14.0), c(PARCHMENT));
+                }
+            }
             let ink = if mine { INK } else { PARCHMENT };
             inner.vertical(|col| {
                 col.spacing_mut().item_spacing.y = 1.0;
                 let crown = if seat.host { "★ " } else { "" };
                 col.label(RichText::new(format!("{crown}{}", seat.name)).color(c(ink)));
-                let hero = if seat.hero.is_empty() { t(T::LobbyNoHero).to_string() } else { seat.hero.clone() };
+                let hero = if seat.master { t(T::LobbyMaster).to_string() } else if seat.hero.is_empty() { t(T::LobbyNoHero).to_string() } else { seat.hero.clone() };
                 col.label(RichText::new(hero).color(c(if mine { WAX_DARK } else { TALLOW })));
             });
             inner.with_layout(Layout::right_to_left(Align::Center), |row| {
@@ -197,11 +212,27 @@ fn screen(
     mut egui: bevy_egui::EguiContexts,
     (mut session, mut settings, mut table, store, game): (ResMut<Session>, ResMut<Settings>, ResMut<Table>, Res<Store>, Option<Res<Game>>),
     (mut link, mut lobby): (ResMut<SteamLink>, ResMut<Lobby>),
-    (mut next, mut return_to): (ResMut<NextState<Screen>>, ResMut<ReturnTo>),
+    (mut next, mut return_to, time): (ResMut<NextState<Screen>>, ResMut<ReturnTo>, Res<Time>),
+    (mut images, mut avatars): (ResMut<Assets<Image>>, Local<std::collections::HashMap<u64, egui::TextureId>>),
 ) {
     let lang = settings.lang;
     let t = |text: T| text.text(lang);
     let me = player_name(&settings);
+    // Steam pictures of those at the table, fetched once each from this machine's Steam.
+    if let Some(steam) = &link.steam {
+        for id in table.roster.seats.iter().map(|s| s.steam).filter(|id| *id != 0 && !avatars.contains_key(id)).collect::<Vec<_>>() {
+            if let Some(rgba) = steam.avatar(id) {
+                let image = Image::new(
+                    bevy::render::render_resource::Extent3d { width: 32, height: 32, depth_or_array_layers: 1 },
+                    bevy::render::render_resource::TextureDimension::D2,
+                    rgba,
+                    bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                    bevy::asset::RenderAssetUsages::default(),
+                );
+                avatars.insert(id, egui.add_image(bevy_egui::EguiTextureHandle::Strong(images.add(image))));
+            }
+        }
+    }
     let hosting = session.is_host();
     let guest = session.is_client();
     let roster = table.roster.clone();
@@ -217,6 +248,8 @@ fn screen(
     let mut back = false;
     let mut begin = false;
     let mut ready_pressed = false;
+    let mut finding: Option<String> = None;
+    let mut role_pressed: Option<bool> = None;
     let mut reopen = false;
     let title = match roster.seats.first() {
         Some(host) => format!("{} {}", t(T::TableOf), host.name),
@@ -248,7 +281,8 @@ fn screen(
             });
             kit::title(&mut left, format!("{} {}/{}", t(T::Party), roster.seats.len().max(1), SEATS), crate::ui::theme::SMALL_TITLE);
             for n in 0..SEATS {
-                let (k, i) = seat(&mut left, roster.seats.get(n), &me, hosting, lang);
+                let picture = roster.seats.get(n).and_then(|s| avatars.get(&s.steam).copied());
+                let (k, i) = seat(&mut left, roster.seats.get(n), &me, hosting, lang, picture);
                 if k {
                     kick = roster.seats.get(n).map(|s| s.name.clone());
                 }
@@ -307,11 +341,16 @@ fn screen(
                 }
             });
             right.horizontal(|row| {
-                let field = row.add(egui::TextEdit::singleline(&mut lobby.typed).desired_width(170.0).char_limit(60).hint_text("K7Q4-MD2X-9HTA"));
+                let field = row.add(egui::TextEdit::singleline(&mut lobby.typed).desired_width(170.0).char_limit(60).hint_text("K7Q4M"));
                 let ready = !lobby.typed.trim().is_empty() && !guest;
                 let entered = field.lost_focus() && row.input(|i| i.key_pressed(Key::Enter)) && ready;
                 if row.add(button(t(T::LobbyJoin)).enabled(ready, t(T::AddressFirst))).clicked() || entered {
-                    join = Some(Join::Address(lobby.typed.trim().to_string()));
+                    // Five letters are a table's code: it is looked for. Anything else is an
+                    // address (or the long code of an older version).
+                    match net::code::read_short(&lobby.typed) {
+                        Some(code) => finding = Some(code),
+                        None => join = Some(Join::Address(lobby.typed.trim().to_string())),
+                    }
                 }
             });
             hint(&mut right, t(T::CodeHint));
@@ -319,22 +358,6 @@ fn screen(
                 hint(&mut right, t(T::SteamUnavailable));
             }
 
-            // The table's talk.
-            kit::title(&mut right, t(T::TalkTitle), crate::ui::theme::SMALL_TITLE);
-            egui::ScrollArea::vertical().id_salt("talk").max_height(90.0).stick_to_bottom(true).show(&mut right, |ui| {
-                if table.chat.is_empty() {
-                    hint(ui, t(T::TalkEmpty));
-                }
-                for line in &table.chat {
-                    ui.add(egui::Label::new(RichText::new(format!("{}: {}", line.from, line.text)).color(c(INK))).wrap());
-                }
-            });
-            right.horizontal(|row| {
-                let field = row.add_enabled(hosting || guest, egui::TextEdit::singleline(&mut lobby.talk).desired_width(220.0).char_limit(300));
-                if field.lost_focus() && row.input(|i| i.key_pressed(Key::Enter)) && !lobby.talk.trim().is_empty() {
-                    say = true;
-                }
-            });
             if let Some(status) = table.status.filter(|_| hosting || guest) {
                 kit::warning(&mut right, status.text(lang));
             }
@@ -347,6 +370,16 @@ fn screen(
             }
             if guest && footer.add(button(t(T::LeaveTable))).clicked() {
                 leave = true;
+            }
+            // Anyone at a shared table may run the game instead of playing a hero, while the
+            // master's seat is free.
+            let mine_master = roster.seats.iter().any(|s| s.master && s.name == me);
+            let taken = roster.seats.iter().any(|s| s.master && s.name != me);
+            if (guest || hosting) && roster.seats.len() > 1 || mine_master {
+                let label = if mine_master { t(T::PlayAHero) } else { t(T::BeMaster) };
+                if footer.add(button(label).enabled(!taken, t(T::MasterTaken))).on_hover_text(t(T::BeMasterHint)).clicked() {
+                    role_pressed = Some(!mine_master);
+                }
             }
             if guest {
                 let label = if lobby.ready { t(T::NotReadyAction) } else { t(T::ReadyAction) };
@@ -366,26 +399,58 @@ fn screen(
         },
     );
 
+    // The table's talk, in the bottom right corner as in every game: what was said above,
+    // the line to write in below.
+    let corner = ctx.content_rect();
+    egui::Area::new(egui::Id::new("lobby_talk")).order(egui::Order::Middle).anchor(egui::Align2::RIGHT_BOTTOM, vec2(-(corner.width() * 0.5 - 340.0).max(8.0) - 22.0, -40.0)).show(ctx, |ui| {
+        egui::Frame::new().fill(c(PARCHMENT_SHADE)).stroke(Stroke::new(1.0, c(BRASS_DARK))).inner_margin(6.0).show(ui, |ui| {
+            ui.set_width(300.0);
+            ui.label(RichText::new(t(T::TalkTitle)).color(c(INK)).strong());
+            egui::ScrollArea::vertical().id_salt("talk").max_height(110.0).min_scrolled_height(110.0).stick_to_bottom(true).show(ui, |ui| {
+                ui.set_width(288.0);
+                if table.chat.is_empty() {
+                    hint(ui, t(T::TalkEmpty));
+                }
+                for line in &table.chat {
+                    ui.add(egui::Label::new(RichText::new(format!("{}: {}", line.from, line.text)).color(c(INK))).wrap());
+                }
+            });
+            let field = ui.add_enabled(hosting || guest, egui::TextEdit::singleline(&mut lobby.talk).desired_width(288.0).char_limit(300).hint_text(t(T::TalkHint)));
+            if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !lobby.talk.trim().is_empty() {
+                say = true;
+            }
+        });
+    });
+
     // The host with no game yet chooses where the table begins.
     if lobby.choosing {
         let mut close = false;
-        egui::Window::new(t(T::Begin)).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
-            hint(ui, t(T::BeginHint));
-            ui.horizontal(|row| {
-                if row.add(button(t(T::NewGame)).primary()).clicked() {
-                    return_to.push(Screen::Lobby);
-                    next.set(Screen::NewGame);
-                    close = true;
-                }
-                if row.add(button(t(T::LoadGame))).clicked() {
-                    return_to.push(Screen::Lobby);
-                    next.set(Screen::Load);
-                    close = true;
-                }
-                if row.add(button(t(T::Cancel)).key("Esc")).clicked() {
-                    close = true;
-                }
-            });
+        // A sheet of the game's own over the lobby, as every other choice is made.
+        egui::Area::new(egui::Id::new("begin")).order(egui::Order::Foreground).fixed_pos(ctx.content_rect().min).show(ctx, |ui| {
+            ui.set_min_size(ctx.content_rect().size());
+            let paper = kit::Sheet { id: "begin", title: t(T::Begin), about: "", max: vec2(330.0, 140.0), top: 150.0, fixed: false };
+            kit::sheet(
+                ui,
+                paper,
+                |ui| {
+                    ui.add(egui::Label::new(RichText::new(t(T::BeginHint)).color(c(INK))).wrap());
+                },
+                |footer| {
+                    if footer.add(button(t(T::Cancel)).key("Esc")).clicked() || footer.input(|i| i.key_pressed(Key::Escape)) {
+                        close = true;
+                    }
+                    if footer.add(button(t(T::LoadGame))).clicked() {
+                        return_to.push(Screen::Lobby);
+                        next.set(Screen::Load);
+                        close = true;
+                    }
+                    if kit::right(footer, |r| r.add(button(t(T::NewGame)).primary())).clicked() {
+                        return_to.push(Screen::Lobby);
+                        next.set(Screen::NewGame);
+                        close = true;
+                    }
+                },
+            );
         });
         if close {
             lobby.choosing = false;
@@ -445,12 +510,39 @@ fn screen(
         let text = std::mem::take(&mut lobby.talk);
         session.chat(&mut table, &me, text.trim());
     }
+    if let Some(master) = role_pressed {
+        session.want_master(&me, master);
+    }
     if ready_pressed {
         lobby.ready = !lobby.ready;
         session.send(Up::Ready(lobby.ready));
     }
     if reopen {
         open_table(&mut session, &mut table, &settings, &link);
+    }
+    // A code typed: looked for on the networks this machine is on and through Steam.
+    if let Some(code) = finding {
+        let through_steam = link.steam.as_ref().map(|steam| steam.find_lobby(&code));
+        lobby.finding = Some((code, through_steam, 0.0));
+        table.status = Some(T::LobbyFinding);
+    }
+    let mut join = join;
+    if let Some((code, through_steam, age)) = lobby.finding.as_mut() {
+        *age += time.delta_secs();
+        let here = lobby.listening.as_ref().and_then(|l| l.tables().into_iter().find(|t| t.info.code == *code)).map(|t| t.address.to_string());
+        let far = through_steam.as_ref().and_then(|s| s.lock().unwrap().clone()).and_then(|r| r.ok());
+        match (here, far) {
+            (Some(address), _) => join = Some(Join::Address(address)),
+            (None, Some(lobby_id)) => join = Some(Join::Steam(lobby_id)),
+            (None, None) if *age > FIND_FOR => {
+                table.status = Some(T::LobbyCodeNotFound);
+                lobby.finding = None;
+            }
+            _ => {}
+        }
+        if join.is_some() {
+            lobby.finding = None;
+        }
     }
     if let Some(way) = join {
         table.status = None;

@@ -28,7 +28,15 @@ pub struct Fields {
     /// The telling being written out, and how many of its letters are shown.
     telling: String,
     letters: f32,
+    /// What the telling being read answers, and the tellings read before it, newest last:
+    /// they can be looked back over above it.
+    acts: Vec<String>,
+    past: Vec<(Vec<String>, String)>,
+    show_past: bool,
 }
+
+/// How many tellings read before can be looked back over.
+const PAST_KEPT: usize = 12;
 
 /// The strip of keys at the bottom of the screen and the column of the party, in units.
 const HUD: f32 = HUD_HEIGHT * crate::screen::UI_PIXEL;
@@ -75,6 +83,14 @@ pub fn overlay(
         };
     }
     let sheet = translated(sheet_for(&phase, &game.world, gm.dispatcher.now(), lang, &extra), foreign(&game.world, lang), translator.bypass_change_detection());
+    // In the editor's rooms the master's panel gives way to the editor's windows.
+    if matches!(sheet, Sheet::Master(_)) {
+        return;
+    }
+    // The master answers the players in a window of the editor's.
+    if matches!(sheet, Sheet::Judging(_)) {
+        return;
+    }
     // A field opened afresh takes the keyboard.
     let entered = was.replace(std::mem::discriminant(&*phase)) != Some(std::mem::discriminant(&*phase));
     let Ok(ctx) = egui.ctx_mut() else { return };
@@ -155,7 +171,15 @@ pub fn overlay(
                 // A telling that went on from the one being read keeps what was written out.
                 if !turn.narration.starts_with(fields.telling.as_str()) || fields.telling.is_empty() {
                     fields.letters = 0.0;
+                    // A new telling: the one before goes to what can be looked back over.
+                    if !fields.telling.trim().is_empty() {
+                        let before = (std::mem::take(&mut fields.acts), fields.telling.clone());
+                        fields.past.push(before);
+                        let extra = fields.past.len().saturating_sub(PAST_KEPT);
+                        fields.past.drain(..extra);
+                    }
                 }
+                fields.acts = turn.acts.clone();
                 // Another player's telling has been waiting folded: it is read whole at once.
                 if turn.theirs {
                     fields.letters = f32::MAX;
@@ -171,6 +195,29 @@ pub fn overlay(
                 story_rect,
                 "",
                 |ui| {
+                    // The tellings before, to look back over, newest at the bottom.
+                    if !fields.past.is_empty() {
+                        let label = format!("{} {} ({})", if fields.show_past { "▼" } else { "▲" }, t(T::Earlier), fields.past.len());
+                        if ui.add(egui::Label::new(egui::RichText::new(label).color(c(crate::theme::FADED))).sense(Sense::click())).clicked() {
+                            fields.show_past = !fields.show_past;
+                        }
+                        if fields.show_past {
+                            egui::ScrollArea::vertical().id_salt("story_past").max_height(110.0).stick_to_bottom(true).show(ui, |ui| {
+                                for (acts, said) in &fields.past {
+                                    for act in acts {
+                                        ui.add(egui::Label::new(egui::RichText::new(format!("▸ {act}")).italics().color(c(crate::theme::FADED))).wrap());
+                                    }
+                                    ui.add(egui::Label::new(egui::RichText::new(said.as_str()).color(c(crate::theme::FADED))).wrap());
+                                    ui.add_space(4.0);
+                                }
+                            });
+                            ui.separator();
+                        }
+                    }
+                    // What it answers: who did what.
+                    for act in &fields.acts {
+                        ui.add(egui::Label::new(egui::RichText::new(format!("▸ {act}")).italics().color(c(crate::theme::FADED))).wrap());
+                    }
                     // Clicked, it shows the rest at once; its ink is set, or egui would give it a button's.
                     if ui.add(egui::Label::new(egui::RichText::new(shown).color(c(crate::theme::INK))).wrap().sense(Sense::click())).clicked() {
                         all_shown = true;
@@ -233,7 +280,12 @@ pub fn overlay(
                 ui.label(quoted);
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(9.0).color(c(crate::theme::BRASS_DARK)));
-                    ui.label(t(T::TestRunning));
+                    // Others offered something here choose first; then the master is asked.
+                    if table.waiting_for.is_empty() {
+                        ui.label(t(T::TestRunning));
+                    } else {
+                        ui.label(format!("{} {}", t(T::WaitingChoice), table.waiting_for.join(", ")));
+                    }
                 });
                 hint(ui, t(T::AskingAbout));
             }, |_| {});
@@ -386,6 +438,7 @@ pub fn overlay(
                     ui.horizontal_wrapped(|ui| {
                         tool(ui, t(T::ToModel).into(), Tool::ToModel, &mut pressed.borrow_mut());
                         tool(ui, t(T::Narrate).into(), Tool::Narrate, &mut pressed.borrow_mut());
+                        tool(ui, t(T::RedrawHere).into(), Tool::Redraw, &mut pressed.borrow_mut());
                         let target = if view.target.is_empty() { "—" } else { view.target.as_str() };
                         tool(ui, format!("{} {target}", t(T::WhisperTo)), Tool::Whisper, &mut pressed.borrow_mut());
                         tool(ui, t(T::NextPlayer).into(), Tool::NextTarget, &mut pressed.borrow_mut());

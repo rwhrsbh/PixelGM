@@ -311,7 +311,8 @@ impl<T: Transport> Dispatcher<T> {
                     Pick::Nothing => return Err(silent.map_or(GenError::Exhausted { retry_at: now + 60_000 }, GenError::Network)),
                 }
             };
-            let body = request.body(mode.config(request.thinking)).to_string();
+            // The levels the catalog says the model takes: the nearest to the setting.
+            let body = request.body(mode.config_for(request.thinking, &crate::effort::efforts("google", &model.id))).to_string();
             let url = format!("{}/{}/models/{}:generateContent", self.base, model.api.path(), model.id);
             let response = match self.transport.post_stream(&url, &secret, &body) {
                 Ok(response) => response,

@@ -35,18 +35,35 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "dismiss", "id": "companion id"} — a companion leaves and stays here
   {"op": "time", "hours": 2} — time passes: a long talk, a search, a wait, a march (the clock also runs by itself, a minute a second)
   {"op": "gold", "amount": 25, "to": "hero name"} — coins: a hero is paid, finds or is given them; a negative amount is what they pay or lose
-  {"op": "shake", "seconds": 1.5} — the whole screen shakes: an earthquake, an explosion, a roar, a collapse, a giant's step, a heavy blow
+  {"op": "shake", "seconds": 1.5, "who": ["hero name"], "x": 0, "y": 0, "radius": 4} — the screen shakes for those who feel it: an earthquake, an explosion, a roar, a collapse, a giant's step, a heavy blow; "who" names the heroes, or a cell and a "radius" in cells limits it to those that near; with neither, everyone in this place
   {"op": "travel", "to": "place_id", "name": "for a new place", "description": "what a new place looks like", "who": ["hero name"]} — heroes go to another place; "who" lists those who go, everyone here when left out
-  {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
+  {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body
+  {"op": "edit", "id": "…", "name": "…", "size": 2, "ac": 15, "hp": 40, "speed": 30, "xp": 200, "monster": "srd index", "blocking": true, "sprite": "…"} — a creature or thing here changes: only what is given (a beast grows, a guard is badly hurt for good, a door stops blocking)
+  {"op": "action", "id": "…", "label": "what the players choose", "outcome": "what happens", "effects": [], "needs": "a thing's name", "remove": false} — something new can be done with a creature or thing here (a lever appears to pull, a statue to question); "remove": true takes it away
+  {"op": "stash", "id": "chest, crate, body or merchant id", "name": "…", …as in "give"} — a thing goes into a container here (found when it is opened) or onto a merchant's shelf
+  {"op": "tile_action", "tile": "tile id", "label": "what the players choose", "outcome": "what happens", "effects": [], "needs": "", "remove": false} — something can be done with EVERY cell of that ground in this world (cut any tree, swim any water, climb any rock): offered whenever a hero stands by such a cell; in its effects "x": "self", "y": "self" is the very cell acted on
+  {"op": "rest", "kind": "short|long"} — the party rests: a short rest spends hit dice, a long one is a night's sleep that heals everything
+  {"op": "peace"} — the fight here stops without a winner: a parley, a surrender, a truce; those who fought are no longer hostile
+  {"op": "drop", "x": 0, "y": 0, "name": "…", …as in "give"} — a thing is left lying on a cell, to be picked up
+  {"op": "say", "id": "creature id", "text": "…"} — someone says a line aloud, in a bubble over them
+  Every sight — "shake", "animate", "say" — takes "who": ["hero name", …] for only those heroes to see or feel it, or "x", "y" and "radius" (cells) for only those that near; with neither, everyone in this place. A whisper in a crowd, a tremor felt only in the cellar, a wink to one hero.
+  {"op": "lines", "id": "creature id", "lines": ["…", "…"], "every": 20, "order": "in_turn|random"} — what someone keeps saying by themselves every so many seconds (a crier, a guard, a parrot); "lines": [] makes them quiet
+  {"op": "wait", "seconds": 180} — everything after it in the list happens later: seconds of play (a clock minute passes each second), or "minutes"/"hours" of the clock; a fuse, a slow flood, a second blast
+  {"op": "set", "var": "lever_down", "value": 1} / {"op": "add", "var": "blasts", "value": 1} — the world remembers a flag or a count
+  {"op": "if", "var": "blasts", "at_least": 3, "then": [], "else": []} — one way or the other by a variable ("is" for an exact value)
+  {"op": "random", "choices": [[…], […]]} — one of the lists, at random
+  {"op": "repeat", "times": 3, "effects": [{"op": "shake", "seconds": 1}, {"op": "wait", "seconds": 10}]} — again and again; with a wait inside, a clock that ticks
+  {"op": "define", "id": "collapse", "on": "enter|death|hour|var", "place": "place id", "of": "creature id", "at": 18, "var": "…", "effects": []} — a script the world keeps: run it with {"op": "script", "id": "collapse"} from an action or a plate, or let it go off by itself when the party walks into "place", when "of" dies, at the hour "at", or when "var" reaches "at"
+  {"op": "script", "id": "collapse"} — a script runs now
   {"op": "attitude", "id": "…", "attitude": "friendly|neutral|hostile"}
   {"op": "move", "id": "…", "x": 0, "y": 0}
   {"op": "tile", "x": 0, "y": 0, "tile": "tile_id", "to": [0, 0]} — the ground changes, anywhere on the map: one cell, or with "to" every cell from (x, y) to that far corner — a line or a block (a door opens, a bridge is laid across water, a wall falls, a pit opens, a room floods). Whether the cell can then be walked on is the tile's own: a walkable tile over water makes a crossing, a solid one closes a way. Use a tile from TILES THAT EXIST or one you draw in this answer's "tiles"
-  {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral"} — a thing spawned may carry "actions" as in a place you draw (a lever's pull, a lock that "needs" its key); a creature that might fight also takes "monster" or "stats"; a prop that holds things (a chest, a crate, a purse) takes "contents": [things as in "give"], and "lock": 15 with "key": "key name" when it is locked — the game handles opening, picking and forcing it
+  {"op": "spawn", "kind": "prop|creature", "id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "blocking": false, "attitude": "neutral", "size": 1} — a thing spawned may carry "actions" as in a place you draw (a lever's pull, a lock that "needs" its key); a creature that might fight also takes "monster" or "stats"; a prop that holds things (a chest, a crate, a purse) takes "contents": [things as in "give"], and "lock": 15 with "key": "key name" when it is locked — the game handles opening, picking and forcing it
   {"op": "secret", "x": 0, "y": 0, "dc": 14, "kind": "hidden|trap|plate", "note": "a loose stone in the wall", "effects": []} — something hidden: when a hero with a sharp enough eye comes near it is found and its effects happen (a hidden door: a "tile" to a door; a cache: "give"); a trap goes off with its effects ("damage") when stepped on unnoticed
   {"op": "exit", "x": 0, "y": 0, "to": "place_id", "label": "…"} — a way out appears
   {"op": "fact", "text": "…"} — something that must be remembered for the rest of the campaign
   {"op": "check", "ability": "str|dex|con|int|wis|cha", "skill": "stealth", "dc": 15, "success": {"narration": "…", "effects": []}, "failure": {"narration": "…", "effects": []}} — the outcome is uncertain: the game rolls the die and takes one branch. Write both. Skills: acrobatics, animal-handling, arcana, athletics, deception, history, insight, intimidation, investigation, medicine, nature, perception, performance, persuasion, religion, sleight-of-hand, stealth, survival. Difficulty: 5 trivial, 10 easy, 15 moderate, 20 hard, 25 very hard.
-  {"op": "damage", "amount": "2d6"} / {"op": "heal", "amount": "1d8"} — to the party, outside a fight
+  {"op": "damage", "amount": "2d6"} / {"op": "heal", "amount": "1d8", "id": "hero name or empty"} — to the party, outside a fight
   {"op": "damage", "id": "creature id", "amount": "1d8"} — a creature here is wounded outside a fight: it goes into the next fight that much weaker, and dies if it has no more to lose
   {"op": "kill", "id": "creature id"} — a creature here dies or is struck down without a fight; it lies there as a body that can be searched
   {"op": "xp", "amount": 50} — for something achieved; rarely, and modestly
@@ -126,7 +143,7 @@ const LOCATION_SHAPE: &str = r##"{
   "new_tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
   "sprites": [{"id": "…", "rows": ["16 or 32 characters", "… as many rows"]}],
   "props": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "blocking": true, "sprite": "…", "actions": [{"label": "what the players choose", "outcome": "what happens", "effects": []}]}],
-  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "faction": "", "monster": "srd-index or omit", "count": 0, "shop": [], "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
+  "creatures": [{"id": "…", "name": "…", "description": "…", "x": 0, "y": 0, "sprite": "…", "attitude": "neutral", "faction": "", "monster": "srd-index or omit", "count": 0, "size": 1, "lines": [], "shop": [], "actions": [{"label": "…", "outcome": "…", "effects": []}]}],
   "exits": [{"x": 0, "y": 0, "to": "neighbor_id", "label": "what the way out looks like"}],
   "neighbors": [{"id": "neighbor_id", "name": "…", "description": "one sentence: what is there"}]
 }"##;
@@ -456,8 +473,10 @@ const TURN_SHAPE: &str = r##"{
   "sprites": [{"id": "…", "rows": ["…"]}],
   "palette": {"g": "#rrggbb"},
   "tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
-  "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": [], "near": "", "for": ""}]
+  "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": [], "near": "", "for": ""}],
+  "parts": [{"to": ["a hero's name"], "narration": "…", "options": []}]
 }
+"narration" and "options" are for whoever acted. When another hero in this place must see or decide something of their own — a thing handed to them, a choice offered to them, what only they notice — give them a "part": "to" names them (or ["all"] for everyone here), "narration" is written for them alone — what the others just did and how it looks and sounds from where they stand, then what it means for them — so that they understand it without the rest, and "options" are their own choices. When several heroes acted together, give each of them a part. Each player is shown only their own part and their own choices; leave "parts" empty when nobody else is concerned.
 An option that needs the party beside someone or something (talk to them, take it, open it) gives that thing's id — or another hero's name — as "near": the game lets the party choose it only once they have walked up to it, and keeps it on the thing to be found there. Every other option must be something the party can do from where it stands now."##;
 
 /// With several players at the table one of them can be told something alone.
@@ -552,6 +571,24 @@ pub fn draw_things(world: &World, things: &[crate::bag::Undrawn]) -> String {
     )
 }
 
+/// One picture the human master asks for: a tile of ground or a sprite of a creature or a
+/// thing, drawn in the world's palette and its look.
+pub fn draw_art(world: &World, tile: bool, id: &str, description: &str) -> String {
+    let palette: String = world.palette.colors.iter().enumerate().map(|(i, [r, g, b])| format!(" {}=#{r:02x}{g:02x}{b:02x}", char_of(i as u8 + 1))).collect();
+    let look = place_context(world, "", &world.current);
+    let what = if tile {
+        "a TILE of ground, 16 by 16, seen from above, filling every pixel (no transparency), seamless so it can lie beside itself"
+    } else {
+        "a SPRITE, 16 by 16, '0' transparent, outlined in colour 1, facing the viewer, feet on the bottom row"
+    };
+    format!(
+        "World: {}. {}\nPALETTE (0 is transparent):{palette}\n{look}\nThe game master wants {what}: \"{id}\" — {}.\nDraw it alike the pictures above, recognisable at a glance.\n\nAnswer with this JSON object:\n{{\"rows\": [\"16 characters\", \"… 16 rows\"]}}",
+        world.title,
+        world.summary,
+        description.trim()
+    )
+}
+
 /// What the master is told it is when it only draws things: short, so a drawing does not
 /// carry the rules of the whole game.
 pub const DRAWER: &str = "You draw pixel-art icons for a tabletop role-playing game. A picture is a list of rows; a row is a string; each character is one pixel holding a palette index: 0 is transparent, then 1-9, then a-v. You answer with ONE JSON object and nothing else.";
@@ -561,6 +598,50 @@ pub fn translate(texts: &[String], language: &str) -> String {
     let list = serde_json::to_string(texts).unwrap_or_default();
     format!(
         "Translate these pieces of a tabletop role-playing game into {language}: tellings by the game master, names of places, things and creatures, things the players may choose to do. Keep the tone and the person (\"you\" stays \"you\"), keep names recognisable, keep numbers, dice (2d6) and line breaks as they are. Translate every piece; a piece already in {language} comes back unchanged.\n\n{list}\n\nAnswer with this JSON object, the translations in the same order and of the same number:\n{{\"texts\": [\"…\"]}}"
+    )
+}
+
+/// A human game master asks how the rules settle something that happened at the table.
+/// `book` is the rules of this table as the master reads them; the master's own guide —
+/// how the model would run the game — goes with it, so that the answer follows this game
+/// and not some other.
+pub fn ruling(world: &World, book: &str, question: &str, language: &str) -> String {
+    format!(
+        "A human game master runs this game and asks you, as an adviser who knows its rules by heart, how to settle something by the rules. Answer in {language}: first the ruling in one or two sentences (what to roll, against what, what happens on success and on failure), then why, naming the rule. When the rules leave it to the master, say so and suggest a fair way. Be short and concrete: the master is at the table and players are waiting.
+
+THE RULES OF THIS TABLE:
+{book}
+
+HOW THE GAME MASTER RUNS THIS GAME (the game's own rules for the master):
+{guide}
+
+THE PARTY: {party}
+
+WHAT HAPPENED, IN THE MASTER'S WORDS:
+{question}
+
+Answer with this JSON object: {{\"answer\": \"…\"}}",
+        guide = play_prompt(world),
+        party = world.party.iter().map(|h| format!("{} (level {} {} {}, {}/{} HP, AC {})", h.name, h.level, h.race, h.class, h.hp, h.max_hp, h.ac())).collect::<Vec<_>>().join("; "),
+        question = question.trim(),
+    )
+}
+
+/// A human game master describes in words what should happen, and the model writes it as
+/// effects: a script, a trap, a mechanism, a chain of events with pauses.
+pub fn script(world: &World, about: &str, wish: &str) -> String {
+    format!(
+        "A human game master is building this game and asks you to write what they describe as EFFECTS — the very list you would write in an answer — so that the game can do it by itself. Use only effects listed in your rules. Use \"wait\" for pauses, \"set\"/\"add\"/\"if\" to remember and to choose, \"random\" for chance, \"repeat\" for loops, \"check\" when a hero must roll. Ids must be ones of this place or spawned in the same list; \"self\" is the thing it belongs to.
+
+WHAT IT BELONGS TO: {about}
+THE PLACE: {place}
+WHAT THE MASTER WANTS:
+{wish}
+
+Answer with this JSON object: {{\"effects\": [ … ]}}",
+        about = about.trim(),
+        place = situation(world, world.story.log.len().saturating_sub(4)..),
+        wish = wish.trim(),
     )
 }
 
@@ -856,6 +937,11 @@ pub fn new_location_sized(world: &World, id: &str, from: &str, large: bool) -> S
         let _ = writeln!(text, "- {place_id} (not drawn yet): {} — {}", stub.name, stub.description);
     }
     let _ = write!(text, "{}", place_context(world, id, from));
+    // The human master draws this place again, as they want it.
+    if !world.redraw_wish.trim().is_empty() {
+        let ways: Vec<String> = world.locations.get(id).map(|l| l.exits.iter().map(|e| format!("{} ({})", e.to, world.place_name(&e.to))).collect()).unwrap_or_default();
+        let _ = write!(text, "\nTHE GAME MASTER HAS THIS PLACE DRAWN AGAIN, AS THEY WANT IT: {}\nKeep the same id and its ways out leading where they lead now: {}.\n", world.redraw_wish.trim(), if ways.is_empty() { "none".to_string() } else { ways.join(", ") });
+    }
     let (name, description) = world.stubs.get(id).map(|s| (s.name.as_str(), s.description.as_str())).unwrap_or((id, ""));
     let _ = write!(
         text,

@@ -11,6 +11,10 @@ pub enum ThinkingSetting {
     #[default]
     Medium,
     High,
+    /// Above "high", where a model has it.
+    XHigh,
+    /// As much as the model can: its highest level where it has one above "high".
+    Max,
 }
 
 /// The dialects seen in the wild, in the order they are tried. Each model starts at `Level`
@@ -39,6 +43,27 @@ impl ThinkingMode {
         }
     }
 
+    /// The level a setting asks for, as providers name it.
+    pub fn level_name(setting: ThinkingSetting) -> &'static str {
+        match setting {
+            ThinkingSetting::Off => "none",
+            ThinkingSetting::Low => "low",
+            ThinkingSetting::Medium => "medium",
+            ThinkingSetting::High => "high",
+            ThinkingSetting::XHigh => "xhigh",
+            ThinkingSetting::Max => "max",
+        }
+    }
+
+    /// The `thinkingConfig` object for a request, with the levels the model takes as its
+    /// catalog lists them: the nearest of them to the setting.
+    pub fn config_for(self, setting: ThinkingSetting, takes: &[String]) -> Option<Value> {
+        match self {
+            ThinkingMode::Level | ThinkingMode::CoarseLevel if !takes.is_empty() => Some(json!({ "thinkingLevel": crate::effort::level_among(takes, Self::level_name(setting)) })),
+            _ => self.config(setting),
+        }
+    }
+
     /// The `thinkingConfig` object for a request, if this dialect sends one.
     pub fn config(self, setting: ThinkingSetting) -> Option<Value> {
         use ThinkingSetting::*;
@@ -48,7 +73,7 @@ impl ThinkingMode {
                     Off => "minimal",
                     Low => "low",
                     Medium => "medium",
-                    High => "high",
+                    High | XHigh | Max => "high",
                 };
                 Some(json!({ "thinkingLevel": level }))
             }
@@ -62,7 +87,7 @@ impl ThinkingMode {
                     Off => 0,
                     Low => 1024,
                     Medium => 4096,
-                    High => -1,
+                    High | XHigh | Max => -1,
                 };
                 Some(json!({ "thinkingBudget": budget }))
             }

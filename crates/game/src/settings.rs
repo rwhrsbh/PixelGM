@@ -99,6 +99,8 @@ impl Choice {
                 ThinkingSetting::Low => T::ThinkingLow,
                 ThinkingSetting::Medium => T::ThinkingMedium,
                 ThinkingSetting::High => T::ThinkingHigh,
+                ThinkingSetting::XHigh => T::ThinkingXHigh,
+                ThinkingSetting::Max => T::ThinkingMax,
             },
             Choice::Fallback => match s.lowest_tier {
                 Tier::Flash => T::FallbackFlash,
@@ -163,7 +165,9 @@ impl Choice {
                     ThinkingSetting::Off => ThinkingSetting::Low,
                     ThinkingSetting::Low => ThinkingSetting::Medium,
                     ThinkingSetting::Medium => ThinkingSetting::High,
-                    ThinkingSetting::High => ThinkingSetting::Off,
+                    ThinkingSetting::High => ThinkingSetting::XHigh,
+                    ThinkingSetting::XHigh => ThinkingSetting::Max,
+                    ThinkingSetting::Max => ThinkingSetting::Off,
                 }
             }
             Choice::Fallback => {

@@ -31,6 +31,9 @@ pub struct TableInfo {
     pub world: String,
     /// Whether the game has begun.
     pub playing: bool,
+    /// The table's short code: a player who typed it is let in here.
+    #[serde(default)]
+    pub code: String,
 }
 
 /// A network this machine is on: its own address there and where a broadcast goes.
@@ -188,7 +191,7 @@ mod tests {
     #[test]
     fn a_table_said_is_heard() {
         let Ok(listening) = Listening::start() else { return };
-        let info = TableInfo { protocol: 10, name: "Test table".into(), port: 47_899, taken: 1, seats: 5, world: String::new(), playing: false };
+        let info = TableInfo { protocol: 10, name: "Test table".into(), port: 47_899, taken: 1, seats: 5, world: String::new(), playing: false, code: "K7Q4M".into() };
         let _beacon = Beacon::start(info.clone());
         let deadline = Instant::now() + Duration::from_secs(4);
         while Instant::now() < deadline {

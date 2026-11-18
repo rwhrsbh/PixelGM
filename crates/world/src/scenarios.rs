@@ -443,13 +443,15 @@ fn chapters_that_pile_up_are_written_up_into_one() {
     let mut w = three_at_the_lake();
     let base = crate::prompt::tokens(&crate::prompt::play_prompt(&w)) + crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
     let room = base * 2 + 2_000;
-    for n in 0..80 {
+    // Enough chapters to fill the room whatever the length of the rules.
+    for n in 0..base / 30 {
         w.story.chapters.push(format!("Chapter {n}: {}", "a long road walked and many people met on it. ".repeat(6)));
     }
+    let many = w.story.chapters.len();
     let (what, _) = crate::prompt::compaction(&w, room).expect("too many chapters");
     assert!(matches!(what, crate::prompt::Compaction::Merge { .. }), "{what:?}");
     write_up(&mut w, room);
-    assert!(w.story.chapters.len() < 80);
+    assert!(w.story.chapters.len() < many);
 }
 
 #[test]
@@ -463,8 +465,10 @@ fn after_the_story_is_written_up_the_master_still_sees_where_everyone_stands_and
         w.story.say(crate::Speaker::Master, &format!("Stone {n} skips and sinks."));
     }
     w.story.say(crate::Speaker::Player, "Brak: I ask Bob where he learned that.");
-    let base = crate::prompt::tokens(&crate::prompt::play_prompt(&w)) + crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
-    write_up(&mut w, base / 3 + 3_000);
+    // A room the rules fit in with some to spare, but not a third of the long story.
+    let rules = crate::prompt::tokens(&crate::prompt::play_prompt(&w));
+    let story = crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
+    write_up(&mut w, rules + story / 3 + 3_000);
     let asked = crate::prompt::turn(&w, "Brak: I look at the water in front of me", None);
     for wanted in [
         "The party stands at (3, 8)",
@@ -510,4 +514,253 @@ fn things_without_a_picture_are_drawn_with_the_next_turn_with_the_palette_at_han
     let map = w.story.bags[0].inventory.iter().find(|i| i.name == "Old Map").unwrap();
     assert!(!map.rows.is_empty() && map.size() == (2, 2));
     assert!(!crate::prompt::turn(&w, "x", None).contains("\"Old Map\""), "asked for no more once drawn");
+}
+
+#[test]
+fn each_hero_reads_the_part_written_for_it_and_only_its_own_choices() {
+    let mut w = three_at_the_lake();
+    w.places.insert("Carl".into(), "lake".into());
+    w.acting = Some(1);
+    w.actors = vec![1];
+    let (turn, notes) = answer(&mut w, "Bob's hero: I tip the bin over and leave a mess in it", serde_json::json!({
+        "narration": "You tip the bin; the stink rises.",
+        "options": [{ "label": "Run off", "outcome": "You run.", "effects": [] }],
+        "parts": [
+            { "to": ["Brak"], "narration": "Bob's hero tips the bin over beside you and fouls it; the stink hits you.", "options": [{ "label": "Shout at Bob", "outcome": "You shout.", "effects": [] }] },
+            { "to": ["Carl's hero"], "narration": "From the reeds you see Bob's hero tip a bin and foul it.", "options": [] }
+        ]
+    }));
+    assert!(notes.iter().all(|n| !n.contains("could not")), "{notes:?}");
+    // The one who acted: the telling and the choices that are not another's.
+    let bob = turn.view_for(Some("Bob's hero"));
+    assert_eq!(bob.narration, "You tip the bin; the stink rises.");
+    assert_eq!(bob.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Run off"]);
+    // Brak: what happened as it looks to him, and his own choice, which only he may take.
+    let brak = turn.view_for(Some("Brak"));
+    assert!(brak.narration.contains("Bob's hero tips the bin"));
+    assert!(brak.options.iter().any(|o| o.label == "Shout at Bob" && o.for_hero.as_deref() == Some("Brak")));
+    // Carl: his part, no choices of anyone else's.
+    let carl = turn.view_for(Some("Carl's hero"));
+    assert!(carl.narration.contains("From the reeds") && !carl.options.iter().any(|o| o.label == "Shout at Bob"));
+    // Alone, a player reads it all; the parts are in the story for the master to remember.
+    let all = turn.view_for(None);
+    assert!(all.narration.contains("the stink rises") && all.narration.contains("From the reeds"));
+    assert!(w.story.log.iter().any(|l| l.text.starts_with("(Brak) ")));
+    assert!(turn.every_option().len() == 2, "every choice can be found to be taken");
+    assert!(crate::prompt::turn(&w, "x", None).contains("\"parts\""), "the master is told how to write parts");
+}
+
+#[test]
+fn the_master_has_the_place_drawn_again_as_wanted_and_it_takes_the_old_ones_place() {
+    let mut w = three_at_the_lake();
+    let camp = w.locations.keys().find(|k| *k != "lake").unwrap().clone();
+    let mut seen = w.clone();
+    seen.stubs.insert("lake".into(), crate::Stub { name: "The Lake".into(), description: "Still water.".into() });
+    seen.redraw_wish = "a frozen lake with a hut on the ice".into();
+    let asked = crate::prompt::new_location(&seen, "lake", &camp);
+    assert!(asked.contains("THE GAME MASTER HAS THIS PLACE DRAWN AGAIN, AS THEY WANT IT: a frozen lake with a hut on the ice"), "{asked}");
+    assert!(asked.contains(&format!("{camp} (")), "its ways out are kept");
+    let drawn: crate::LocationDraft = serde_json::from_str(&fake::location("lake", "The Frozen Lake", &camp)).unwrap();
+    w.add_location(&drawn, "lake", None).unwrap();
+    assert_eq!(w.locations["lake"].name, "The Frozen Lake");
+    assert!(w.locations["lake"].exits.iter().any(|e| e.to == camp), "the way back is still there");
+    let (x, y) = w.locations["lake"].spawn;
+    assert!(!w.locations["lake"].blocked(x as i32, y as i32, &w.tiles), "everyone stands on ground that can be walked");
+}
+
+/// Effects as the master writes them, read the way the game reads them.
+fn steps(raw: serde_json::Value) -> Vec<crate::story::Effect> {
+    crate::story::read_effects(raw.as_array().unwrap(), &mut Vec::new())
+}
+
+/// "A lever: a blast, three minutes of quiet, another blast": the second blast waits for its
+/// second of play, and happens in the place where the lever is even when the party is away.
+#[test]
+fn a_lever_blasts_waits_three_minutes_and_blasts_again() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    let blast = |x: i64| serde_json::json!({ "op": "tile", "x": x, "y": 0, "tile": "rock" });
+    w.apply(&steps(serde_json::json!([blast(1), { "op": "wait", "seconds": 180 }, blast(2)])), None);
+    let tile = |w: &World, x: usize| w.locations["lake"].tile_id(x, 0).map(str::to_string);
+    assert_eq!(tile(&w, 1).as_deref(), Some("rock"));
+    assert_eq!(tile(&w, 2).as_deref(), Some("grass"), "the second blast waits");
+    for _ in 0..179 {
+        w.tick_second();
+    }
+    assert_eq!(tile(&w, 2).as_deref(), Some("grass"));
+    // The party walked off meanwhile: it still goes off by the lake.
+    let home = w.locations.keys().find(|k| *k != "lake").cloned().unwrap();
+    w.travel(&home);
+    w.tick_second();
+    assert_eq!(tile(&w, 2).as_deref(), Some("rock"));
+    assert!(w.later.is_empty());
+}
+
+/// Variables, ways by them, repeats and scripts that are named and run by name.
+#[test]
+fn scripts_count_choose_repeat_and_run_by_name() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([
+        { "op": "define", "id": "boom", "effects": [{ "op": "add", "var": "blasts" }] },
+        { "op": "repeat", "times": 3, "effects": [{ "op": "script", "id": "boom" }] },
+        { "op": "if", "var": "blasts", "at_least": 3, "then": [{ "op": "set", "var": "door", "value": 1 }], "else": [{ "op": "set", "var": "door", "value": 0 }] }
+    ])), None);
+    assert_eq!(w.vars["blasts"], 3);
+    assert_eq!(w.vars["door"], 1);
+    // A script that runs itself stops, it does not hang the game.
+    let notes = w.apply(&steps(serde_json::json!([{ "op": "define", "id": "loop", "effects": [{ "op": "script", "id": "loop" }] }, { "op": "script", "id": "loop" }])), None);
+    assert!(notes.iter().any(|n| n.contains("too deep")));
+}
+
+/// A script set off by walking into a place, by an hour, by a variable.
+#[test]
+fn scripts_go_off_by_themselves() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([
+        { "op": "define", "id": "welcome", "on": "enter", "place": "lake", "effects": [{ "op": "add", "var": "visits" }] },
+        { "op": "define", "id": "alarm", "on": "var", "var": "noise", "at": 3, "effects": [{ "op": "set", "var": "guards", "value": 1 }] }
+    ])), None);
+    w.trigger("enter", "lake");
+    assert_eq!(w.vars["visits"], 1);
+    w.vars.insert("noise".into(), 3);
+    w.tick_second();
+    w.tick_second();
+    assert_eq!(w.vars["guards"], 1);
+    w.vars.insert("guards".into(), 0);
+    w.tick_second();
+    assert_eq!(w.vars["guards"], 0, "it goes off once till it is due again");
+}
+
+/// A guard says its lines by itself, in turn, every so many seconds.
+#[test]
+fn a_creature_says_its_lines_in_turn() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([{ "op": "spawn", "kind": "creature", "id": "guard", "name": "Guard", "x": 4, "y": 1, "attitude": "neutral" }, { "op": "lines", "id": "guard", "lines": ["Halt!", "Who goes there?"], "every": 5 }])), None);
+    let mut said = Vec::new();
+    for _ in 0..10 {
+        w.tick_second();
+        said.extend(w.bubbles.drain(..).map(|(_, text, _)| text));
+    }
+    assert_eq!(said, vec!["Halt!".to_string(), "Who goes there?".to_string()]);
+    w.apply(&steps(serde_json::json!([{ "op": "say", "id": "guard", "text": "Move along." }])), None);
+    assert_eq!(w.bubbles.last().map(|b| b.1.as_str()), Some("Move along."));
+}
+
+/// A boss three cells across is spawned that big.
+#[test]
+fn a_boss_takes_three_cells() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([{ "op": "spawn", "kind": "creature", "id": "ogre", "name": "Ogre", "x": 24, "y": 10, "monster": "ogre", "attitude": "hostile", "count": 1, "size": 3 }])), None);
+    let ogre = w.locations["lake"].creatures.iter().find(|c| c.id == "ogre").unwrap();
+    assert_eq!(ogre.size, 3);
+}
+
+/// The master makes a creature bigger and tougher, and gives a statue something to do.
+#[test]
+fn a_creature_is_changed_and_a_thing_given_an_action() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([{ "id": "statue", "name": "Statue", "description": "Stone.", "x": 5, "y": 5, "blocking": true, "sprite": "rock" }]));
+    w.apply(&steps(serde_json::json!([
+        { "op": "spawn", "kind": "creature", "id": "wolf", "name": "Wolf", "x": 4, "y": 1, "monster": "wolf", "attitude": "neutral", "count": 1 },
+        { "op": "edit", "id": "wolf", "name": "Dire wolf", "size": 2, "hp": 40, "ac": 15 },
+        { "op": "action", "id": "statue", "label": "Touch the eyes", "outcome": "The statue groans.", "effects": [{ "op": "shake", "seconds": 1 }, { "op": "set", "var": "statue", "value": 1 }] }
+    ])), None);
+    let here = &w.locations["lake"];
+    let wolf = here.creatures.iter().find(|c| c.id == "wolf").unwrap();
+    assert_eq!((wolf.name.as_str(), wolf.size), ("Dire wolf", 2));
+    assert_eq!(wolf.stats.as_ref().map(|s| (s.hp, s.ac)), Some((40, 15)));
+    assert!(wolf.monster.is_none());
+    let statue = here.props.iter().find(|p| p.id == "statue").unwrap();
+    let touch = statue.actions.iter().find(|a| a.label == "Touch the eyes").unwrap();
+    assert_eq!(touch.effects.len(), 2);
+}
+
+/// The master drew a sword and put it in the chest beforehand; the merchant sells a lamp.
+#[test]
+fn a_thing_drawn_by_the_master_waits_in_a_chest_or_on_a_merchants_shelf() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([{ "id": "crate", "name": "Crate", "description": "Wood.", "x": 5, "y": 5, "blocking": true, "sprite": "rock" }]));
+    let sword: Vec<String> = (0..48).map(|_| "0000000110000000".to_string()).collect();
+    w.apply(&steps(serde_json::json!([
+        { "op": "stash", "id": "crate", "name": "Moon blade", "kind": "weapon", "gear": "longsword", "size": [1, 3], "rows": sword, "bonus": 1 },
+        { "op": "spawn", "kind": "creature", "id": "peddler", "name": "Peddler", "x": 4, "y": 1, "attitude": "friendly" },
+        { "op": "stash", "id": "peddler", "name": "Lamp", "kind": "light", "light": 4, "price": 12 }
+    ])), None);
+    let here = &w.locations["lake"];
+    let chest = here.props.iter().find(|p| p.id == "crate").and_then(|p| p.chest.as_ref()).unwrap();
+    assert_eq!(chest.items[0].name, "Moon blade");
+    assert_eq!(chest.items[0].size_cells, Some((1, 3)));
+    assert_eq!(chest.items[0].rows.len(), 48);
+    let peddler = here.creatures.iter().find(|c| c.id == "peddler").unwrap();
+    assert!(peddler.stock.iter().any(|i| i.name == "Lamp" && i.price == 12));
+}
+
+/// A blast in the far corner is felt only by the hero near it; a wink is seen by one alone.
+#[test]
+fn a_sight_is_for_those_it_is_meant_for() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([{ "op": "shake", "seconds": 1, "x": 28, "y": 14, "radius": 3 }])), None);
+    assert!(w.cues.iter().all(|c| !c.motion.starts_with("quake")), "nobody is near the blast: nothing is shown");
+    w.apply(&steps(serde_json::json!([{ "op": "shake", "seconds": 1, "x": 3, "y": 2, "radius": 3 }])), None);
+    assert_eq!(w.cues.last().map(|c| c.who.clone()), Some(vec!["Brak".to_string()]));
+    w.apply(&steps(serde_json::json!([{ "op": "animate", "id": "party", "motion": "nod", "who": ["Brak"] }, { "op": "say", "id": "party", "text": "psst", "who": ["Brak"] }])), None);
+    assert_eq!(w.cues.last().map(|c| c.who.clone()), Some(vec!["Brak".to_string()]));
+    assert_eq!(w.bubbles.last().map(|b| b.2.clone()), Some(vec!["Brak".to_string()]));
+    // With nobody named and no cell, everyone in the place sees it.
+    w.apply(&steps(serde_json::json!([{ "op": "shake", "seconds": 1 }])), None);
+    assert!(w.cues.last().is_some_and(|c| c.who.is_empty()));
+}
+
+/// A boss three cells across set down by a wall stands where all its cells are free.
+#[test]
+fn a_boss_is_set_down_where_all_its_cells_are_free() {
+    let mut map = lake();
+    map[6] = "....rrrr......................";
+    let mut w = world_in(&map, (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([{ "op": "spawn", "kind": "creature", "id": "ogre", "name": "Ogre", "x": 4, "y": 4, "monster": "ogre", "attitude": "neutral", "count": 1, "size": 3 }])), None);
+    let place = &w.locations["lake"];
+    let ogre = place.creatures.iter().find(|c| c.id == "ogre").unwrap();
+    let tiles = &w.tiles;
+    for dx in 0..3 {
+        for dy in 0..3 {
+            let (x, y) = (ogre.x + dx, ogre.y + dy);
+            let id = place.tile_id(x, y).unwrap_or("");
+            assert!(tiles.get(id).is_some_and(|t| t.walkable), "({x}, {y}) under the ogre is {id}");
+        }
+    }
+}
+
+/// The master lets the party sleep, stops a fight with a parley, and leaves a thing on the ground.
+#[test]
+fn the_master_rests_the_party_makes_peace_and_drops_a_thing() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.party[0].hp = 3;
+    w.apply(&steps(serde_json::json!([{ "op": "rest", "kind": "long" }])), None);
+    assert_eq!(w.party[0].hp, w.party[0].max_hp);
+    w.apply(&steps(serde_json::json!([{ "op": "spawn", "kind": "creature", "id": "bandit", "name": "Bandit", "x": 4, "y": 2, "monster": "bandit", "attitude": "hostile", "count": 1 }, { "op": "fight", "with": ["bandit"] }])), None);
+    assert!(w.fight_here());
+    w.apply(&steps(serde_json::json!([{ "op": "peace" }])), None);
+    assert!(!w.fight_here());
+    assert!(w.locations["lake"].creatures.iter().all(|c| c.attitude != crate::Attitude::Hostile));
+    w.apply(&steps(serde_json::json!([{ "op": "drop", "x": 6, "y": 2, "name": "Silver ring", "kind": "junk", "price": 40 }])), None);
+    assert!(w.locations["lake"].items.iter().any(|l| l.item.name == "Silver ring" && (l.x, l.y) == (6, 2)));
+}
+
+/// Every tree of the world can be cut down, once the master says so for the tree tile: the
+/// tree the hero faces becomes a stump and a log goes into the bag; the next tree too.
+#[test]
+fn every_tree_can_be_cut_once_the_tile_says_so() {
+    let mut w = world_in(&lake(), (3, 7), serde_json::json!([]));
+    w.facing = (1, 0);
+    w.apply(&steps(serde_json::json!([{ "op": "tile_action", "tile": "tree", "label": "Cut it down", "outcome": "The tree falls.", "effects": [{ "op": "tile", "x": "self", "y": "self", "tile": "grass" }, { "op": "give", "name": "Log", "kind": "junk" }] }])), None);
+    let cell = w.tile_near().expect("the tree in front has something to do");
+    assert_eq!(cell, (4, 7));
+    let (name, actions) = w.ground_actions(cell).unwrap();
+    assert_eq!((name, actions[0].label.as_str()), (w.tiles["tree"].name.as_str(), "Cut it down"));
+    let thing = format!("tile@{},{}", cell.0, cell.1);
+    assert_eq!(w.perform(&thing, 0).as_deref(), Some("The tree falls."));
+    assert_eq!(w.locations["lake"].tile_id(4, 7), Some("grass"));
+    assert!(w.story.bags[0].inventory.iter().any(|i| i.name == "Log"));
+    // The action stays with the tile, for the next tree.
+    assert_eq!(w.tiles["tree"].actions.len(), 1);
+    // And travels with the tile to the library and into another world.
+    let art = crate::library::Art::of_tile(&w, "tree").unwrap();
+    assert_eq!(art.actions.len(), 1);
 }

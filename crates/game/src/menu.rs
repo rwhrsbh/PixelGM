@@ -124,6 +124,7 @@ fn main_menu(mut egui: bevy_egui::EguiContexts, store: Res<Store>, settings: Res
     match crate::ui::screens::main_menu::main_menu(&mut ui, &view) {
         Some(MainAct::Go(screen)) => next.set(screen),
         Some(MainAct::Continue) => crate::saves::continue_newest(&store, &mut commands, &mut next),
+        Some(MainAct::Workshop) => crate::play::rehearse(&mut commands, &mut next, &settings),
         Some(MainAct::Quit) => {
             exit.write(AppExit::Success);
         }

@@ -20,6 +20,20 @@ pub enum Kind {
     OpenCodeGo,
 }
 
+impl Kind {
+    /// The provider's name in OpenCode's catalog of models, where the levels of thinking its
+    /// models take are listed; none for a service of the player's own.
+    pub fn catalog_name(self) -> Option<&'static str> {
+        match self {
+            Kind::Nim => Some("nvidia"),
+            Kind::OpenRouter => Some("openrouter"),
+            Kind::Cloudflare => Some("cloudflare-workers-ai"),
+            Kind::OpenCodeGo => Some("opencode-go"),
+            Kind::Custom => None,
+        }
+    }
+}
+
 /// Where OpenCode Go takes the OpenAI shape, unless the player wrote another address.
 pub const OPENCODE_GO: &str = "https://opencode.ai/inference/go/openai/v1";
 /// Where OpenCode Go lists its models, should its OpenAI address not.
@@ -471,16 +485,19 @@ impl Rotation {
                             (_, "") => {}
                             // NVIDIA's models take the switch through their chat template,
                             // and a budget for the thoughts when they are on.
-                            (Kind::Nim, "none") => body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false }),
+                            (Kind::Nim, "none") => body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false, "thinking": false }),
                             (Kind::Nim, _) => {
+                                // DeepSeek on NVIDIA reads the level inside the chat template.
                                 body["reasoning_effort"] = serde_json::json!(effort);
-                                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
+                                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true, "thinking": true, "reasoning_effort": effort });
                                 body["reasoning_budget"] = serde_json::json!(match effort {
                                     "low" => 1024,
                                     "medium" => 4096,
                                     _ => 16384,
                                 });
                             }
+                            // OpenRouter takes every level, "max" too, in its reasoning object.
+                            (Kind::OpenRouter, _) => body["reasoning"] = serde_json::json!({ "effort": effort }),
                             _ => body["reasoning_effort"] = serde_json::json!(effort),
                         }
                         body.to_string()
@@ -489,17 +506,24 @@ impl Rotation {
                     let name = (provider.kind, model.to_string());
                     // Thinking switched off is said aloud to a service in the cloud: left
                     // unsaid, its models think all the same, some without end.
-                    let effort = {
+                    let effort: String = {
                         let state = self.state.lock().unwrap();
                         let cloud = provider.kind != Kind::Custom;
                         if state.plain.contains(&name) {
-                            ""
+                            String::new()
+                        } else if let Some(takes) = (!state.mute.contains(&name)).then(|| provider.kind.catalog_name().map(|c| crate::effort::efforts(c, model)).unwrap_or_default()).filter(|t| !t.is_empty()) {
+                            // The levels the catalog says this model takes: the nearest one.
+                            crate::effort::level_among(&takes, provider.effort.trim())
                         } else if cloud && (state.mute.contains(&name) || provider.effort.trim().is_empty()) {
-                            "none"
+                            "none".to_string()
+                        } else if matches!(provider.effort.trim(), "xhigh" | "max") {
+                            // A model the catalog says nothing of is not asked past "high".
+                            "high".to_string()
                         } else {
-                            provider.effort.trim()
+                            provider.effort.trim().to_string()
                         }
                     };
+                    let effort = effort.as_str();
                     let (endpoint, headers) = (provider.endpoint_for(model), provider.headers());
                     let post = |body: &str| transport.post_with(&endpoint, key, &headers, body, timeout);
                     let mut answer = post(&body(effort));
