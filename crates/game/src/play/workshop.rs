@@ -184,6 +184,9 @@ pub struct Workshop {
     carry: Option<String>,
     /// The workshop was opened from the main menu, with no game.
     rehearsing: bool,
+    /// Where the drawing lies on the screen: the picker takes colours from anywhere else
+    /// on the screen.
+    canvas: Option<Rect>,
     /// A card being dragged from a palette or the library onto the map, with its picture.
     pub dragging: Option<(Dragged, egui::TextureId)>,
     /// What can be done with what is made: a label, what happens, the steps; each with the
@@ -284,6 +287,7 @@ impl Default for Workshop {
             carry: None,
             dragging: None,
             rehearsing: false,
+            canvas: None,
             deeds: Vec::new(),
             script_for: None,
             tool: MapTool::Brush,
@@ -680,10 +684,18 @@ pub(super) fn workshop_ui(
     (mut phase, game, session, settings, store): (ResMut<Phase>, Res<Game>, Res<Session>, Res<Settings>, Res<Store>),
     (mut ws, mut table, mut images, mut panel): (ResMut<Workshop>, ResMut<Table>, ResMut<Assets<Image>>, ResMut<Panel>),
     mut cache: Local<HashMap<String, egui::TextureId>>,
-    mut next: ResMut<NextState<Screen>>,
+    (mut next, picked): (ResMut<NextState<Screen>>, Res<PickedColour>),
 ) {
     let mut leave_to_menu = false;
     ws.panels.clear();
+    // A colour the picker took from the screen: the nearest of this world's palette.
+    if let Some(colour) = picked.0.lock().unwrap().take() {
+        let distance = |c: &[u8; 3]| (0..3).map(|k| (c[k] as i32 - colour[k] as i32).pow(2)).sum::<i32>();
+        if let Some((i, _)) = game.world.palette.colors.iter().enumerate().min_by_key(|(_, c)| distance(c)) {
+            ws.color = i as u8 + 1;
+            ws.pen = Pen::Pencil;
+        }
+    }
     // The workshop from the main menu opens on making things.
     let rehearsal = game.world_id == super::REHEARSAL;
     if rehearsal && !ws.rehearsing {
@@ -967,6 +979,7 @@ fn make_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, tiles: &[(St
             // A cell of the drawing as big as fits: a long thing for the bag is drawn smaller.
             let pixel = PIXEL.min(176.0 / ws.gw as f32).min(200.0 / ws.gh as f32);
             let (rect, response) = row.allocate_exact_size(vec2(pixel * ws.gw as f32, pixel * ws.gh as f32), Sense::click_and_drag());
+            ws.canvas = Some(rect);
             let painter = row.painter_at(rect);
             for y in 0..ws.gh {
                 for x in 0..ws.gw {
@@ -2327,4 +2340,40 @@ pub(super) fn workshop_map(
     if let Some(act) = act {
         send(act, &session, &settings, &mut table);
     }
+}
+
+/// A colour the picker took from the screen, waiting to be matched to the palette.
+#[derive(Resource, Default, Clone)]
+pub struct PickedColour(std::sync::Arc<std::sync::Mutex<Option<[u8; 3]>>>);
+
+/// With the picker in hand, a click anywhere on the screen — the map, a card, a window —
+/// takes the colour under the mouse, as it is shown.
+pub(super) fn pick_anywhere(
+    mut commands: Commands,
+    mut egui: EguiContexts,
+    phase: Res<Phase>,
+    ws: Res<Workshop>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    picked: Res<PickedColour>,
+) {
+    if *phase != Phase::Master || ws.mode != Mode::Make || ws.pen != Pen::Picker || !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    // On the drawing itself the picker takes the drawing's own colour, exactly.
+    let pointer = egui.ctx_mut().ok().and_then(|ctx| ctx.pointer_latest_pos());
+    if pointer.zip(ws.canvas).is_some_and(|(at, rect)| rect.contains(at)) {
+        return;
+    }
+    let Some(at) = window.physical_cursor_position() else { return };
+    let shared = picked.0.clone();
+    commands.spawn(bevy::render::view::screenshot::Screenshot::primary_window()).observe(move |shot: On<bevy::render::view::screenshot::ScreenshotCaptured>| {
+        let Ok(image) = shot.image.clone().try_into_dynamic() else { return };
+        let image = image.to_rgb8();
+        let (x, y) = (at.x as u32, at.y as u32);
+        if x < image.width() && y < image.height() {
+            let pixel = image.get_pixel(x, y);
+            *shared.lock().unwrap() = Some([pixel[0], pixel[1], pixel[2]]);
+        }
+    });
 }

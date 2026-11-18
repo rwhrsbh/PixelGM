@@ -4316,6 +4316,8 @@ impl Plugin for PlayPlugin {
             .add_systems(Update, ambush_ask.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, brush_paint.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .init_resource::<workshop::Workshop>()
+            .init_resource::<workshop::PickedColour>()
+            .add_systems(Update, workshop::pick_anywhere.run_if(in_state(Screen::Play)))
             .add_systems(bevy_egui::EguiPrimaryContextPass, workshop::workshop_ui.in_set(crate::ui::UiSet::Screens).after(sheets::overlay).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, workshop::workshop_map.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (place_allies, live_world, scripts, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
