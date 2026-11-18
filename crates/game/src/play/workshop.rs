@@ -105,6 +105,13 @@ pub struct Workshop {
     panels: Vec<Rect>,
     /// The card chosen in the library: a creature or object (true) or a picture, by place.
     picked: Option<(bool, usize)>,
+    /// The shelf of the library shown, by its source, and what it holds.
+    source: usize,
+    shelf: Option<(Vec<Art>, Vec<Entity>)>,
+    /// The worlds saved on this computer: title, place, file; one each, the newest.
+    saves: Vec<(String, String, std::path::PathBuf)>,
+    saves_read: bool,
+    pub favorites: crate::store::Favorites,
     /// The master's question about the rules, and the ruling that came.
     question: String,
     answer: String,
@@ -143,7 +150,7 @@ pub struct Workshop {
     tool: MapTool,
     tile: String,
     /// The library's creature or object put on a cell by a click, by its place in the list.
-    placing: Option<usize>,
+    placing: Option<Entity>,
     /// What is being dragged across the map, by its id.
     moving: Option<String>,
     rect_from: Option<(usize, usize)>,
@@ -188,6 +195,11 @@ impl Default for Workshop {
             hovered: String::new(),
             panels: Vec::new(),
             picked: None,
+            source: 0,
+            shelf: None,
+            saves: Vec::new(),
+            saves_read: false,
+            favorites: Default::default(),
             question: String::new(),
             answer: String::new(),
             asking: false,
@@ -557,7 +569,19 @@ pub(super) fn workshop_ui(
     if !ws.loaded {
         ws.arts = store.load_arts();
         ws.made = store.load_entities();
+        ws.favorites = store.load_favorites();
         ws.loaded = true;
+    }
+    // The library's shelves are read when they are looked at.
+    if ws.mode == Mode::Library {
+        if !ws.saves_read {
+            let mut seen = std::collections::HashSet::new();
+            ws.saves = store.list_saves().into_iter().filter(|s| seen.insert(s.meta.world_id.clone())).map(|s| (s.meta.title, s.meta.place, s.path)).collect();
+            ws.saves_read = true;
+        }
+        if ws.shelf.is_none() {
+            ws.shelf = Some(shelf_of(ws.source, &ws, &game.world, &store));
+        }
     }
     let world = &game.world;
     // The pictures of the world's tiles and sprites, and of the library's.
@@ -569,7 +593,16 @@ pub(super) fn workshop_ui(
     }
     tiles.sort_by(|a, b| b.3.cmp(&a.3).then(a.1.cmp(&b.1)));
     let made_pictures: Vec<egui::TextureId> = ws.made.iter().map(|e| texture(format!("made:{}:{}", e.id, e.art.rows.concat().bytes().map(|b| b as usize).sum::<usize>()), || art_pixels(&e.art), &mut egui, &mut images, &mut cache)).collect();
-    let art_pictures: Vec<egui::TextureId> = ws.arts.iter().map(|a| texture(format!("art:{}:{}:{}", a.tile, a.id, a.rows.concat().bytes().map(|b| b as usize).sum::<usize>()), || art_pixels(a), &mut egui, &mut images, &mut cache)).collect();
+    let key = |a: &Art| format!("art:{}:{}:{}", a.tile, a.id, a.rows.concat().bytes().map(|b| b as usize).sum::<usize>());
+    let mut shelf = ShelfPictures::default();
+    if let (Mode::Library, Some((arts, entities))) = (ws.mode, ws.shelf.as_ref()) {
+        shelf.arts = arts.iter().map(|a| texture(key(a), || art_pixels(a), &mut egui, &mut images, &mut cache)).collect();
+        shelf.entities = entities.iter().map(|e| texture(key(&e.art), || art_pixels(&e.art), &mut egui, &mut images, &mut cache)).collect();
+    }
+    let favourite_pictures = ShelfPictures {
+        arts: ws.favorites.arts.iter().map(|a| texture(key(a), || art_pixels(a), &mut egui, &mut images, &mut cache)).collect(),
+        entities: ws.favorites.entities.iter().map(|e| texture(key(&e.art), || art_pixels(&e.art), &mut egui, &mut images, &mut cache)).collect(),
+    };
     let Ok(ctx) = egui.ctx_mut() else { return };
     let screen = ctx.content_rect();
     let mut acts: Vec<GmAct> = Vec::new();
@@ -594,9 +627,9 @@ pub(super) fn workshop_ui(
     let top = bar.response.rect.max.y + 6.0;
     match ws.mode {
         Mode::Run => run_room(ctx, ws, world, &mut table, &mut acts, &mut phase, lang, top, screen, &player_name(&settings)),
-        Mode::Map => map_room(ctx, ws, &tiles, &made_pictures, &mut acts, lang, top, screen),
+        Mode::Map => map_room(ctx, ws, &tiles, &made_pictures, &favourite_pictures, &mut acts, lang, top, screen),
         Mode::Make => make_room(ctx, ws, world, &tiles, &mut acts, lang, top, screen),
-        Mode::Library => library_room(ctx, ws, world, &art_pictures, &made_pictures, &mut acts, &store, lang, top, screen),
+        Mode::Library => library_room(ctx, ws, world, &shelf, &mut acts, &store, lang, top, screen),
         Mode::Rules => rules_room(ctx, ws, world, &mut table, &mut acts, lang, top, screen),
     }
     // The ring over what was clicked on the map, and the page opened from it.
@@ -629,7 +662,7 @@ pub(super) fn workshop_ui(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, egui::TextureId, bool)], made: &[egui::TextureId], acts: &mut Vec<GmAct>, lang: Lang, top: f32, screen: Rect) {
+fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, egui::TextureId, bool)], made: &[egui::TextureId], favourite: &ShelfPictures, acts: &mut Vec<GmAct>, lang: Lang, top: f32, screen: Rect) {
     let t = |text: T| text.text(lang);
     let mut panels = std::mem::take(&mut ws.panels);
     window(ctx, &mut panels, "palette", t(T::WsPalette), egui::pos2(8.0, top), vec2(236.0, (screen.height() - top - 60.0).min(screen.height() * 0.7)), |ui| {
@@ -646,6 +679,32 @@ fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, eg
         let about = tools.iter().find(|(tool, _, _)| *tool == ws.tool).map_or(T::WsBrushHint, |(_, _, about)| *about);
         hint(ui, t(about));
         egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+            // What the master starred comes first: from any world, put in with a click.
+            if !ws.favorites.arts.is_empty() || !ws.favorites.entities.is_empty() {
+                heading(ui, t(T::WsFavourites));
+                ui.horizontal_wrapped(|row| {
+                    for (n, entity) in ws.favorites.entities.clone().iter().enumerate() {
+                        let chosen = ws.placing.as_ref().is_some_and(|p| p.id == entity.id) && ws.tool == MapTool::Place;
+                        if card(row, favourite.entities[n], chosen, &entity.name, if entity.creature { "☺" } else { "▣" }, 48.0) {
+                            ws.placing = Some(entity.clone());
+                            ws.tool = MapTool::Place;
+                        }
+                    }
+                    for (n, art) in ws.favorites.arts.clone().iter().enumerate().filter(|(_, a)| a.tile) {
+                        let id = world::build::slug(&art.id);
+                        if card(row, favourite.arts[n], ws.tile == id && matches!(ws.tool, MapTool::Brush | MapTool::Rect), &art.name, if art.walkable { "○" } else { "×" }, 48.0) {
+                            // A tile of another world comes into this one first.
+                            if !tiles.iter().any(|(t, ..)| *t == id) {
+                                acts.push(GmAct::ImportArt(art.clone()));
+                            }
+                            ws.tile = id;
+                            if !matches!(ws.tool, MapTool::Brush | MapTool::Rect) {
+                                ws.tool = MapTool::Brush;
+                            }
+                        }
+                    }
+                });
+            }
             heading(ui, t(T::WsTiles));
             ui.horizontal_wrapped(|row| {
                 for (id, name, picture, walkable) in tiles {
@@ -671,8 +730,8 @@ fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, eg
             ui.horizontal_wrapped(|row| {
                 for (n, entity) in ws.made.iter().enumerate() {
                     let mark = if entity.creature { "☺" } else { "▣" };
-                    if card(row, made[n], ws.placing == Some(n) && ws.tool == MapTool::Place, &entity.name, mark, 48.0) {
-                        ws.placing = Some(n);
+                    if card(row, made[n], ws.placing.as_ref().is_some_and(|p| p.id == entity.id) && ws.tool == MapTool::Place, &entity.name, mark, 48.0) {
+                        ws.placing = Some(entity.clone());
                         ws.tool = MapTool::Place;
                     }
                 }
@@ -685,7 +744,7 @@ fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, eg
     // What is in hand and what is under the mouse, along the bottom.
     let chosen = match ws.tool {
         MapTool::Brush | MapTool::Rect => tiles.iter().find(|(id, ..)| *id == ws.tile).map(|(_, name, ..)| name.clone()).unwrap_or_else(|| t(T::WsPickTile).to_string()),
-        MapTool::Place => ws.placing.and_then(|n| ws.made.get(n)).map(|e| e.name.clone()).unwrap_or_else(|| t(T::WsPickMade).to_string()),
+        MapTool::Place => ws.placing.as_ref().map(|e| e.name.clone()).unwrap_or_else(|| t(T::WsPickMade).to_string()),
         MapTool::Erase | MapTool::Move => String::new(),
     };
     let tool = [(MapTool::Brush, T::WsBrush), (MapTool::Rect, T::WsRect), (MapTool::Erase, T::WsErase), (MapTool::Place, T::WsPlace), (MapTool::Move, T::WsMove)].iter().find(|(tool, _)| *tool == ws.tool).map_or("", |(_, l)| t(*l));
@@ -1005,116 +1064,192 @@ fn save(ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>) {
     }
 }
 
+/// Where a shelf of the library comes from.
+fn source_name(n: usize, saves: &[(String, String, std::path::PathBuf)], lang: Lang) -> String {
+    let ru = lang == Lang::Ru;
+    match n {
+        0 => (if ru { "Эта игра" } else { "This game" }).to_string(),
+        1 => (if ru { "Моя библиотека" } else { "My library" }).to_string(),
+        2 => (if ru { "Стартовый набор" } else { "Starter pack" }).to_string(),
+        3 => (if ru { "★ Избранное" } else { "★ Favourites" }).to_string(),
+        n => saves.get(n - 4).map_or_else(String::new, |(title, place, _)| format!("{title} · {place}")),
+    }
+}
+
+/// The shelf of a source: its tiles and pictures, its creatures and things.
+fn shelf_of(n: usize, ws: &Workshop, world: &World, store: &Store) -> (Vec<Art>, Vec<Entity>) {
+    match n {
+        0 => world::library::harvest(world),
+        1 => (store.load_arts(), store.load_entities()),
+        2 => world::library::starter(),
+        3 => (ws.favorites.arts.clone(), ws.favorites.entities.clone()),
+        n => ws.saves.get(n - 4).and_then(|(_, _, path)| store.load_game(path).ok()).map(|(_, w)| world::library::harvest(&w)).unwrap_or_default(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, arts: &[egui::TextureId], made: &[egui::TextureId], acts: &mut Vec<GmAct>, store: &Store, lang: Lang, top: f32, screen: Rect) {
+fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures: &ShelfPictures, acts: &mut Vec<GmAct>, store: &Store, lang: Lang, top: f32, screen: Rect) {
     let t = |text: T| text.text(lang);
+    let ru = lang == Lang::Ru;
     let mut panels = std::mem::take(&mut ws.panels);
-    let size = vec2(520.0_f32.min(screen.width() - 40.0), (screen.height() - top - 60.0).min(460.0));
+    let size = vec2(640.0_f32.min(screen.width() - 40.0), (screen.height() - top - 60.0).min(480.0));
     window(ctx, &mut panels, "library", t(T::WsLibrary), egui::pos2((screen.width() - size.x) / 2.0, top), size, |ui| {
-        let filters = [T::WsAll, T::WsCreatures, T::WsObjects, T::WsTilesAndArt];
-        ui.horizontal(|row| {
-            for (n, label) in filters.iter().enumerate() {
-                if lit(row, t(*label), ws.filter == n, "") {
-                    ws.filter = n;
-                }
-            }
-            if row.add(button(t(T::WsRefresh))).clicked() {
-                ws.arts = store.load_arts();
-                ws.made = store.load_entities();
-                ws.picked = None;
-            }
-        });
-        hint(ui, t(T::WsLibraryHint));
-        egui::ScrollArea::vertical().max_height(size.y - 150.0).auto_shrink([false, true]).show(ui, |ui| {
-            ui.horizontal_wrapped(|row| {
-                for (n, entity) in ws.made.iter().enumerate() {
-                    if ws.filter == 3 || (ws.filter == 1 && !entity.creature) || (ws.filter == 2 && entity.creature) {
-                        continue;
-                    }
-                    let mark = if entity.creature { "☺" } else { "▣" };
-                    if card(row, made[n], ws.picked == Some((true, n)), &entity.name, mark, 64.0) {
-                        ws.picked = Some((true, n));
-                    }
-                }
-                if ws.filter == 0 || ws.filter == 3 {
-                    for (n, art) in ws.arts.iter().enumerate() {
-                        let mark = if art.tile { if art.walkable { "○" } else { "×" } } else { "☺" };
-                        if card(row, arts[n], ws.picked == Some((false, n)), &art.name, mark, 64.0) {
-                            ws.picked = Some((false, n));
+        ui.horizontal_top(|row| {
+            // The sources on the left: this game, the library, the starter pack, the
+            // favourites, and every world saved on this computer.
+            row.vertical(|col| {
+                col.set_width(170.0);
+                egui::ScrollArea::vertical().id_salt("sources").max_height(size.y - 40.0).show(col, |col| {
+                    for n in 0..4 + ws.saves.len() {
+                        if n == 4 {
+                            col.label(egui::RichText::new(if ru { "Сохранения:" } else { "Saves:" }).strong());
                         }
+                        let name = source_name(n, &ws.saves, lang);
+                        if col.add_sized([165.0, 20.0], egui::Button::selectable(ws.source == n, name)).clicked() {
+                            ws.source = n;
+                            ws.shelf = None;
+                            ws.picked = None;
+                        }
+                    }
+                    if col.add(button(t(T::WsRefresh))).clicked() {
+                        ws.saves.clear();
+                        ws.saves_read = false;
+                        ws.shelf = None;
+                        ws.arts = store.load_arts();
+                        ws.made = store.load_entities();
+                    }
+                });
+            });
+            row.separator();
+            row.vertical(|col| {
+                let filters = [T::WsAll, T::WsCreatures, T::WsObjects, T::WsTilesAndArt];
+                col.horizontal(|row| {
+                    for (n, label) in filters.iter().enumerate() {
+                        if lit(row, t(*label), ws.filter == n, "") {
+                            ws.filter = n;
+                        }
+                    }
+                });
+                let Some((arts, entities)) = ws.shelf.clone() else { return };
+                egui::ScrollArea::vertical().id_salt("shelf").max_height(size.y - 140.0).auto_shrink([false, true]).show(col, |col| {
+                    col.horizontal_wrapped(|row| {
+                        for (n, entity) in entities.iter().enumerate() {
+                            if ws.filter == 3 || (ws.filter == 1 && !entity.creature) || (ws.filter == 2 && entity.creature) {
+                                continue;
+                            }
+                            let star = ws.favorites.entities.iter().any(|e| e.id == entity.id);
+                            let mark = format!("{}{}", if star { "★" } else { "" }, if entity.creature { "☺" } else { "▣" });
+                            if card(row, pictures.entities[n], ws.picked == Some((true, n)), &entity.name, &mark, 60.0) {
+                                ws.picked = Some((true, n));
+                            }
+                        }
+                        if ws.filter == 0 || ws.filter == 3 {
+                            for (n, art) in arts.iter().enumerate() {
+                                let star = ws.favorites.arts.iter().any(|a| a.id == art.id && a.tile == art.tile);
+                                let mark = format!("{}{}", if star { "★" } else { "" }, if art.tile { if art.walkable { "○" } else { "×" } } else { "☺" });
+                                if card(row, pictures.arts[n], ws.picked == Some((false, n)), &art.name, &mark, 60.0) {
+                                    ws.picked = Some((false, n));
+                                }
+                            }
+                        }
+                    });
+                    if entities.is_empty() && arts.is_empty() {
+                        hint(col, t(T::WsNothingMade));
+                    }
+                });
+                col.separator();
+                match ws.picked {
+                    Some((true, n)) if n < entities.len() => {
+                        let entity = entities[n].clone();
+                        let kind = if entity.creature { t(T::WsCreature) } else { t(T::WsObject) };
+                        col.label(egui::RichText::new(format!("{} — {kind}", entity.name)).strong());
+                        let s = &entity.spawn;
+                        let mut facts = Vec::new();
+                        if let Some(a) = s["attitude"].as_str() {
+                            facts.push(a.to_string());
+                        }
+                        if let Some(m) = s["monster"].as_str() {
+                            facts.push(m.to_string());
+                        }
+                        if s["stats"].is_object() {
+                            facts.push(format!("{} {} · {} {}", t(T::WsAc), s["stats"]["ac"], t(T::WsHp), s["stats"]["hp"]));
+                        }
+                        if let Some(n) = s["actions"].as_array().filter(|a| !a.is_empty()) {
+                            facts.push(format!("{}: {}", if ru { "действий" } else { "actions" }, n.len()));
+                        }
+                        hint(col, &facts.join(" · "));
+                        col.horizontal(|row| {
+                            if row.add(button(t(T::WsPutOnMap)).primary()).on_hover_text(t(T::WsPlaceHint)).clicked() {
+                                ws.placing = Some(entity.clone());
+                                ws.tool = MapTool::Place;
+                                ws.mode = Mode::Map;
+                            }
+                            if row.add(button(t(T::WsEdit))).clicked() {
+                                ws.edit(&entity, world);
+                                ws.mode = Mode::Make;
+                            }
+                            let star = ws.favorites.entities.iter().any(|e| e.id == entity.id);
+                            if row.add(button(if star { t(T::WsUnstar) } else { t(T::WsStar) })).clicked() {
+                                if star {
+                                    ws.favorites.entities.retain(|e| e.id != entity.id);
+                                } else {
+                                    ws.favorites.entities.push(entity.clone());
+                                }
+                                let _ = store.save_favorites(&ws.favorites);
+                            }
+                        });
+                    }
+                    Some((false, n)) if n < arts.len() => {
+                        let art = arts[n].clone();
+                        let kind = if art.tile { t(T::WsTile) } else { t(T::WsSprite) };
+                        col.label(egui::RichText::new(format!("{} — {kind}", art.name)).strong());
+                        col.horizontal(|row| {
+                            if row.add(button(t(T::WsToWorld)).primary()).on_hover_text(t(T::WsToWorldHint)).clicked() {
+                                acts.push(GmAct::ImportArt(art.clone()));
+                                if art.tile {
+                                    ws.tile = world::build::slug(&art.id);
+                                }
+                            }
+                            if row.add(button(t(T::WsEdit))).clicked() {
+                                let rows = art.rows.clone();
+                                ws.kind = if art.tile { MakeKind::Tile } else { MakeKind::Creature };
+                                ws.id = art.id.clone();
+                                ws.name = art.name.clone();
+                                ws.walkable = art.walkable;
+                                let entity = Entity { id: art.id.clone(), name: art.name.clone(), creature: !art.tile, spawn: serde_json::json!({}), art: art.clone() };
+                                ws.edit(&entity, world);
+                                ws.take(&rows);
+                                if art.tile {
+                                    ws.kind = MakeKind::Tile;
+                                }
+                                ws.mode = Mode::Make;
+                            }
+                            let star = ws.favorites.arts.iter().any(|a| a.id == art.id && a.tile == art.tile);
+                            if row.add(button(if star { t(T::WsUnstar) } else { t(T::WsStar) })).clicked() {
+                                if star {
+                                    ws.favorites.arts.retain(|a| !(a.id == art.id && a.tile == art.tile));
+                                } else {
+                                    ws.favorites.arts.push(art.clone());
+                                }
+                                let _ = store.save_favorites(&ws.favorites);
+                            }
+                        });
+                    }
+                    _ => {
+                        hint(col, t(T::WsLibraryHint));
                     }
                 }
             });
-            if ws.made.is_empty() && ws.arts.is_empty() {
-                hint(ui, t(T::WsNothingMade));
-            }
         });
-        ui.separator();
-        match ws.picked {
-            Some((true, n)) if n < ws.made.len() => {
-                let entity = ws.made[n].clone();
-                let s = &entity.spawn;
-                let kind = if entity.creature { t(T::WsCreature) } else { t(T::WsObject) };
-                ui.label(egui::RichText::new(format!("{} — {kind}", entity.name)).strong());
-                let mut facts = Vec::new();
-                if let Some(a) = s["attitude"].as_str() {
-                    facts.push(a.to_string());
-                }
-                if let Some(m) = s["monster"].as_str() {
-                    facts.push(m.to_string());
-                }
-                if s["stats"].is_object() {
-                    facts.push(format!("{} {} · {} {}", t(T::WsAc), s["stats"]["ac"], t(T::WsHp), s["stats"]["hp"]));
-                }
-                if let Some(shop) = s["shop"].as_array() {
-                    facts.push(format!("{} ({})", t(T::WsMerchant), shop.len()));
-                }
-                if let Some(contents) = s["contents"].as_array() {
-                    facts.push(format!("{} ({})", t(T::WsChest), contents.len()));
-                }
-                hint(ui, &facts.join(" · "));
-                ui.horizontal(|row| {
-                    if row.add(button(t(T::WsPutOnMap)).primary()).clicked() {
-                        ws.placing = Some(n);
-                        ws.tool = MapTool::Place;
-                        ws.mode = Mode::Map;
-                    }
-                    if row.add(button(t(T::WsEdit))).clicked() {
-                        ws.edit(&entity, world);
-                        ws.mode = Mode::Make;
-                    }
-                });
-            }
-            Some((false, n)) if n < ws.arts.len() => {
-                let art = ws.arts[n].clone();
-                let kind = if art.tile { t(T::WsTile) } else { t(T::WsSprite) };
-                ui.label(egui::RichText::new(format!("{} — {kind}", art.name)).strong());
-                ui.horizontal(|row| {
-                    if row.add(button(t(T::WsToWorld)).primary()).on_hover_text(t(T::WsToWorldHint)).clicked() {
-                        acts.push(GmAct::ImportArt(art.clone()));
-                    }
-                    if row.add(button(t(T::WsEdit))).clicked() {
-                        let rows = art.rows.clone();
-                        ws.kind = if art.tile { MakeKind::Tile } else { MakeKind::Creature };
-                        ws.id = art.id.clone();
-                        ws.name = art.name.clone();
-                        ws.walkable = art.walkable;
-                        let entity = Entity { id: art.id.clone(), name: art.name.clone(), creature: !art.tile, spawn: serde_json::json!({}), art };
-                        ws.edit(&entity, world);
-                        ws.take(&rows);
-                        if entity.art.tile {
-                            ws.kind = MakeKind::Tile;
-                        }
-                        ws.mode = Mode::Make;
-                    }
-                });
-            }
-            _ => {
-                hint(ui, t(T::WsPickCard));
-            }
-        }
     });
     ws.panels = panels;
+}
+
+/// The pictures of the shelf shown, made once each.
+#[derive(Default)]
+struct ShelfPictures {
+    arts: Vec<egui::TextureId>,
+    entities: Vec<egui::TextureId>,
 }
 
 /// What a press in the ring does: open a form of an effect filled for the thing, do an
@@ -1670,7 +1805,7 @@ pub(super) fn workshop_map(
             }
         }
         MapTool::Place if mouse.just_pressed(MouseButton::Left) => {
-            if let Some(entity) = ws.placing.and_then(|n| ws.made.get(n)) {
+            if let Some(entity) = ws.placing.as_ref() {
                 act = Some(GmAct::Place { entity: Box::new(entity.clone()), x: cell.0, y: cell.1 });
             }
         }

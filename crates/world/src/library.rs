@@ -195,3 +195,89 @@ mod tests {
         assert!(!w.set_walkable("no_such_tile", true));
     }
 }
+
+/// Everything of a world a library can keep: its tiles and pictures, and its creatures and
+/// things as they stand, with their numbers, lines, actions and contents — to be used in any
+/// other world.
+pub fn harvest(world: &World) -> (Vec<Art>, Vec<Entity>) {
+    let mut arts: Vec<Art> = world.tiles.keys().filter_map(|id| Art::of_tile(world, id)).collect();
+    arts.extend(world.sprites.keys().filter_map(|id| Art::of_sprite(world, id)));
+    let mut entities: Vec<Entity> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for place in world.locations.values() {
+        for c in &place.creatures {
+            if !seen.insert(c.id.clone()) {
+                continue;
+            }
+            let Some(art) = Art::of_sprite(world, &c.sprite) else { continue };
+            let attitude = match c.attitude {
+                crate::Attitude::Hostile => "hostile",
+                crate::Attitude::Neutral => "neutral",
+                _ => "friendly",
+            };
+            let mut spawn = serde_json::json!({ "name": c.name, "description": c.description, "attitude": attitude, "size": c.size.max(1), "count": c.count });
+            if let Some(m) = &c.monster {
+                spawn["monster"] = m.clone().into();
+            }
+            if let Some(stats) = &c.stats {
+                spawn["stats"] = serde_json::to_value(stats).unwrap_or_default();
+            }
+            if !c.faction.is_empty() {
+                spawn["faction"] = c.faction.clone().into();
+            }
+            if !c.stock.is_empty() {
+                spawn["shop"] = serde_json::to_value(c.stock.iter().map(crate::story::Item::as_draft).collect::<Vec<_>>()).unwrap_or_default();
+            }
+            spawn["actions"] = actions_of(&c.actions);
+            entities.push(Entity { id: c.id.clone(), name: c.name.clone(), creature: true, spawn, art });
+        }
+        for p in place.props.iter().filter(|p| p.body.is_none()) {
+            if !seen.insert(p.id.clone()) {
+                continue;
+            }
+            let Some(art) = Art::of_sprite(world, &p.sprite) else { continue };
+            let mut spawn = serde_json::json!({ "name": p.name, "description": p.description, "blocking": p.blocking, "size": p.size.max(1) });
+            if let Some(chest) = &p.chest {
+                spawn["contents"] = serde_json::to_value(chest.items.iter().map(crate::story::Item::as_draft).collect::<Vec<_>>()).unwrap_or_default();
+                spawn["lock"] = chest.lock.into();
+                spawn["key"] = chest.key.clone().into();
+            }
+            spawn["actions"] = actions_of(&p.actions);
+            entities.push(Entity { id: p.id.clone(), name: p.name.clone(), creature: false, spawn, art });
+        }
+    }
+    (arts, entities)
+}
+
+/// Actions as a spawn writes them.
+fn actions_of(actions: &[crate::story::Action]) -> serde_json::Value {
+    serde_json::Value::Array(actions.iter().map(|a| serde_json::json!({ "label": a.label, "outcome": a.outcome, "effects": a.effects, "needs": a.needs, "spends": a.spends })).collect())
+}
+
+/// What every master has from the start: the tiles, pictures, creatures and things of the
+/// game's own demonstration scene.
+pub fn starter() -> (Vec<Art>, Vec<Entity>) {
+    let draft: crate::WorldDraft = serde_json::from_str(&crate::fake::world("starter")).expect("the demonstration world is valid");
+    let world = crate::build_world(&draft, "starter", "English").expect("the demonstration world builds").0;
+    harvest(&world)
+}
+
+#[cfg(test)]
+mod harvest_tests {
+    use super::*;
+
+    #[test]
+    fn the_starter_pack_has_tiles_pictures_and_things_that_go_into_any_world() {
+        let (arts, entities) = starter();
+        assert!(arts.iter().filter(|a| a.tile).count() >= 10, "the built-in tiles and the scene's own");
+        assert!(arts.iter().any(|a| !a.tile));
+        assert!(!entities.is_empty());
+        // A thing of the pack is put into another world with its picture.
+        let draft: crate::WorldDraft = serde_json::from_str(&crate::fake::world("other")).unwrap();
+        let mut w = crate::build_world(&draft, "other", "English").unwrap().0;
+        let thing = &entities[0];
+        let (x, y) = w.player.cell();
+        w.place_entity(thing, x as usize + 2, y as usize);
+        assert!(w.here().creatures.iter().any(|c| c.name == thing.name) || w.here().props.iter().any(|p| p.name == thing.name));
+    }
+}

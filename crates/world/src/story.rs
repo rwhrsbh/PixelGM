@@ -605,6 +605,23 @@ pub struct Item {
     pub light: u8,
 }
 
+impl Item {
+    /// The thing as the master would write it in "give", "contents" or "shop".
+    pub fn as_draft(&self) -> Value {
+        let mut draft = serde_json::json!({ "name": self.name, "description": self.description, "kind": self.kind, "rows": self.rows, "heal": self.heal, "damage": self.damage, "price": self.price, "rarity": self.rarity });
+        if let Some((w, h)) = self.size_cells {
+            draft["size"] = serde_json::json!([w, h]);
+        }
+        if let Some(gear) = &self.gear {
+            draft["gear"] = gear.clone().into();
+        }
+        if self.light > 0 {
+            draft["light"] = self.light.into();
+        }
+        draft
+    }
+}
+
 /// One hero's bag: the grid of things, and the light in the off hand.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
 #[serde(default)]

@@ -500,6 +500,9 @@ texts! {
     RedrawHere: "Перерисовать место", "Redraw the place";
     ArtSaved: "Готово, можно ставить:", "Done, ready to use:";
     WsRun: "Ведение игры", "Running the game";
+    WsFavourites: "★ Избранное", "★ Favourites";
+    WsStar: "★ В избранное", "★ Add to favourites";
+    WsUnstar: "Убрать из избранного", "Remove from favourites";
     WsTell: "Рассказ", "Tell";
     WsTellAbout: "Рассказать всем или шепнуть одному; реплика существа облачком.", "Tell everyone or whisper to one; a creature's line in a bubble.";
     WsChange: "Изменить мир", "Change the world";
@@ -600,7 +603,6 @@ texts! {
     WsObjects: "Объекты", "Objects";
     WsTilesAndArt: "Тайлы и рисунки", "Tiles and pictures";
     WsLibraryHint: "Щёлкни по карточке, чтобы увидеть, что с ней можно сделать.", "Click a card to see what can be done with it.";
-    WsPickCard: "Ничего не выбрано.", "Nothing picked.";
     WsPutOnMap: "Поставить на карту", "Put on the map";
     WsToWorldHint: "Добавить этот тайл или рисунок в текущий мир, чтобы им можно было рисовать.", "Add this tile or picture to the current world, so it can be painted with.";
     WsSprite: "рисунок", "picture";
