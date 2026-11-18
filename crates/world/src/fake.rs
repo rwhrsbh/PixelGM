@@ -321,6 +321,11 @@ pub fn portrait() -> String {
     .to_string()
 }
 
+/// The answer to a human master's question about the rules.
+pub fn ruling(question: &str) -> String {
+    json!({ "answer": format!("Roll a d20 check against DC 15 for: {}", question.trim()) }).to_string()
+}
+
 /// The answer to a human master's "make me a creature".
 pub fn creature(request: &str) -> String {
     let name = request.trim().chars().take(24).collect::<String>();

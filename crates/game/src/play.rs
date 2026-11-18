@@ -24,6 +24,8 @@ use world::{CreatureCard, LocationDraft, Speaker, TILE, Turn, TurnDraft, Whisper
 
 mod hud;
 mod sheets;
+mod rules_book;
+mod workshop;
 
 /// The game being played.
 #[derive(Resource)]
@@ -451,6 +453,7 @@ pub enum Tool {
     ToModel,
     /// The place drawn again by the model, as the field says.
     Redraw,
+    /// The workshop opened or closed.
     Narrate,
     Whisper,
     NextTarget,
@@ -490,6 +493,8 @@ struct Panel {
     presses: u32,
     /// The tile the brush lays with each click on the map, while it is on.
     brush: Option<String>,
+    /// The master's screen is one of the editor's rooms, not the running of the game.
+    pub workshop: bool,
 }
 
 /// With the brush on, the master paints the map: each cell clicked, or dragged over with the
@@ -2399,6 +2404,14 @@ fn receive(
                     _ => background.chapter_rest = if background.urgent { 20.0 } else { BACKGROUND_REST },
                 }
             }
+            Answer::Ruling { for_player, answer } => {
+                let answer = answer.map_err(|trouble| trouble_text(&trouble, gm.dispatcher.now(), settings.lang));
+                if for_player == player_name(&settings) {
+                    table.ruling = Some(answer);
+                } else {
+                    session.send_to(&for_player, &Down::Ruling(answer));
+                }
+            }
             Answer::Card { for_player, card } => {
                 let card = card.map(|card| *card).map_err(|trouble| trouble_text(&trouble, gm.dispatcher.now(), settings.lang));
                 // A creature made for the master goes into everyone's library at the table.
@@ -3958,6 +3971,9 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             desk.session.broadcast(&Down::Bubble { place, who: who.clone(), text: text.clone() });
             desk.table.bubbles.push((who, text));
         }
+        GmAct::AskRules { book, question } => {
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Ruling { world: Box::new(desk.game.world.clone()), book, question, for_player: player.to_string() });
+        }
         GmAct::Invent(request) => {
             desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Invent { world: Box::new(desk.game.world.clone()), request, for_player: player.to_string() });
         }
@@ -4167,6 +4183,9 @@ impl Plugin for PlayPlugin {
             .init_resource::<ShownPlace>()
             .add_systems(Update, ambush_ask.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, brush_paint.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .init_resource::<workshop::Workshop>()
+            .add_systems(bevy_egui::EguiPrimaryContextPass, workshop::workshop_ui.in_set(crate::ui::UiSet::Screens).after(sheets::overlay).run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
+            .add_systems(Update, workshop::workshop_map.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, (place_allies, live_world, bubbles).chain().run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, run_clock.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))
             .add_systems(Update, keep_facing.run_if(in_state(Screen::Play)).run_if(resource_exists::<Game>))

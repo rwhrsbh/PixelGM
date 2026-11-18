@@ -83,6 +83,10 @@ pub fn overlay(
         };
     }
     let sheet = translated(sheet_for(&phase, &game.world, gm.dispatcher.now(), lang, &extra), foreign(&game.world, lang), translator.bypass_change_detection());
+    // In the editor's rooms the master's panel gives way to the editor's windows.
+    if panel.workshop && matches!(sheet, Sheet::Master(_)) {
+        return;
+    }
     // A field opened afresh takes the keyboard.
     let entered = was.replace(std::mem::discriminant(&*phase)) != Some(std::mem::discriminant(&*phase));
     let Ok(ctx) = egui.ctx_mut() else { return };

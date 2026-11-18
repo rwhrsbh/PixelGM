@@ -1,0 +1,1185 @@
+//! The master's workshop, in the manner of the map editors of old role-playing makers: the
+//! map is painted with tiles (a brush, a rectangle), creatures and objects are put on a cell
+//! with a click and moved by dragging them, and what is made — tiles, creatures, objects —
+//! is drawn pixel by pixel or by the model, set up with everything the game lets it be, and
+//! kept in the library of everyone at the table.
+
+use super::*;
+use crate::ui::egui::{self, Rect, Sense, Ui, vec2};
+use crate::ui::kit::{self, button, hint};
+use crate::ui::theme::c;
+use bevy_egui::EguiContexts;
+use std::collections::HashMap;
+use world::library::{Art, Entity};
+
+/// The size of a drawing, and of a cell of it on the screen.
+const SIDE: usize = 16;
+const PIXEL: f32 = 11.0;
+
+/// What the master's screen is for at the moment: running the game, or one of the editor's
+/// rooms.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum Mode {
+    #[default]
+    Run,
+    Map,
+    Make,
+    Library,
+    Rules,
+}
+
+/// What the pen does on the drawing.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+enum Pen {
+    #[default]
+    Pencil,
+    Eraser,
+    Fill,
+    Picker,
+}
+
+/// What a click on the map does.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+enum MapTool {
+    #[default]
+    Brush,
+    Rect,
+    Erase,
+    Place,
+    Move,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+enum MakeKind {
+    #[default]
+    Creature,
+    Object,
+    Tile,
+}
+
+/// A thing sold, or kept in a chest.
+#[derive(Clone, Default, Debug)]
+struct Ware {
+    name: String,
+    kind: String,
+    price: u32,
+    heal: String,
+    damage: String,
+}
+
+/// An attack of a creature with numbers of its own.
+#[derive(Clone, Debug)]
+struct Hit {
+    name: String,
+    bonus: i32,
+    damage: String,
+    range: u32,
+}
+
+impl Default for Hit {
+    fn default() -> Self {
+        Self { name: String::new(), bonus: 3, damage: "1d6+1".into(), range: 5 }
+    }
+}
+
+/// Kinds a thing can be, as the game knows them.
+const KINDS: [&str; 10] = ["weapon", "armor", "light", "potion", "food", "throwable", "key", "tool", "junk", "quest"];
+
+#[derive(Resource)]
+pub struct Workshop {
+    pub mode: Mode,
+    pen: Pen,
+    /// The library shown: 0 everything, 1 creatures, 2 objects, 3 tiles.
+    filter: usize,
+    /// What the cell under the mouse is, for the line at the bottom.
+    hovered: String,
+    /// Where the editor's panels lie on the screen: clicks there are not the map's.
+    panels: Vec<Rect>,
+    /// The card chosen in the library: a creature or object (true) or a picture, by place.
+    picked: Option<(bool, usize)>,
+    /// The master's question about the rules, and the ruling that came.
+    question: String,
+    answer: String,
+    asking: bool,
+    tool: MapTool,
+    tile: String,
+    /// The library's creature or object put on a cell by a click, by its place in the list.
+    placing: Option<usize>,
+    /// What is being dragged across the map, by its id.
+    moving: Option<String>,
+    rect_from: Option<(usize, usize)>,
+    last_cell: Option<(usize, usize)>,
+    kind: MakeKind,
+    grid: Vec<u8>,
+    color: u8,
+    id: String,
+    name: String,
+    description: String,
+    /// 0 hostile, 1 neutral, 2 friendly.
+    attitude: usize,
+    merchant: bool,
+    wares: Vec<Ware>,
+    /// A monster of the book whose numbers it fights with; empty for numbers of its own.
+    book: String,
+    ac: i32,
+    hp: i32,
+    speed: u32,
+    xp: u32,
+    hits: Vec<Hit>,
+    count: u32,
+    faction: String,
+    walkable: bool,
+    blocking: bool,
+    chest: bool,
+    contents: Vec<Ware>,
+    lock: i32,
+    key: String,
+    describe: String,
+    arts: Vec<Art>,
+    made: Vec<Entity>,
+    loaded: bool,
+}
+
+impl Default for Workshop {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Run,
+            pen: Pen::Pencil,
+            filter: 0,
+            hovered: String::new(),
+            panels: Vec::new(),
+            picked: None,
+            question: String::new(),
+            answer: String::new(),
+            asking: false,
+            tool: MapTool::Brush,
+            tile: String::new(),
+            placing: None,
+            moving: None,
+            rect_from: None,
+            last_cell: None,
+            kind: MakeKind::Creature,
+            grid: vec![0; SIDE * SIDE],
+            color: 1,
+            id: String::new(),
+            name: String::new(),
+            description: String::new(),
+            attitude: 0,
+            merchant: false,
+            wares: Vec::new(),
+            book: String::new(),
+            ac: 12,
+            hp: 11,
+            speed: 30,
+            xp: 50,
+            hits: vec![Hit::default()],
+            count: 0,
+            faction: String::new(),
+            walkable: true,
+            blocking: true,
+            chest: false,
+            contents: Vec::new(),
+            lock: 0,
+            key: String::new(),
+            describe: String::new(),
+            arts: Vec::new(),
+            made: Vec::new(),
+            loaded: false,
+        }
+    }
+}
+
+impl Workshop {
+    /// The drawing as rows of the world's palette characters.
+    fn rows(&self) -> Vec<String> {
+        self.grid.chunks(SIDE).map(|row| row.iter().map(|i| world::model::char_of(*i)).collect()).collect()
+    }
+
+    /// A picture of the world taken into the drawing, when it is of the drawing's size.
+    fn take(&mut self, rows: &[String]) {
+        if rows.len() != SIDE || rows.iter().any(|r| r.chars().count() != SIDE) {
+            return;
+        }
+        let index = |ch: char| (0..world::model::PALETTE_MAX as u8).find(|i| world::model::char_of(*i) == ch).unwrap_or(0);
+        self.grid = rows.iter().flat_map(|r| r.chars().map(index)).collect();
+    }
+
+    /// The spawn of what is being made, with everything set for it.
+    fn spawn(&self) -> serde_json::Value {
+        let ware = |w: &Ware| serde_json::json!({ "name": w.name, "kind": w.kind, "price": w.price, "heal": w.heal, "damage": w.damage });
+        let mut spawn = serde_json::json!({ "name": self.name.trim(), "description": self.description.trim() });
+        match self.kind {
+            MakeKind::Creature => {
+                spawn["attitude"] = ["hostile", "neutral", "friendly"][self.attitude.min(2)].into();
+                if self.book.is_empty() {
+                    spawn["stats"] = serde_json::json!({
+                        "ac": self.ac, "hp": self.hp, "speed": self.speed, "xp": self.xp,
+                        "attacks": self.hits.iter().filter(|h| !h.name.trim().is_empty()).map(|h| serde_json::json!({ "name": h.name, "bonus": h.bonus, "damage": h.damage, "range": h.range })).collect::<Vec<_>>()
+                    });
+                } else {
+                    spawn["monster"] = self.book.clone().into();
+                }
+                if self.count > 0 {
+                    spawn["count"] = self.count.into();
+                }
+                if !self.faction.is_empty() {
+                    spawn["faction"] = self.faction.clone().into();
+                }
+                if self.merchant {
+                    spawn["shop"] = self.wares.iter().filter(|w| !w.name.trim().is_empty()).map(ware).collect::<Vec<_>>().into();
+                }
+            }
+            MakeKind::Object => {
+                spawn["blocking"] = self.blocking.into();
+                if self.chest {
+                    spawn["contents"] = self.contents.iter().filter(|w| !w.name.trim().is_empty()).map(ware).collect::<Vec<_>>().into();
+                    spawn["lock"] = self.lock.into();
+                    spawn["key"] = self.key.trim().into();
+                }
+            }
+            MakeKind::Tile => {}
+        }
+        spawn
+    }
+
+    /// The form filled again from a creature or object of the library.
+    fn edit(&mut self, entity: &Entity, world: &World) {
+        let s = &entity.spawn;
+        self.kind = if entity.creature { MakeKind::Creature } else { MakeKind::Object };
+        self.id = entity.id.clone();
+        self.name = entity.name.clone();
+        self.description = s["description"].as_str().unwrap_or("").to_string();
+        self.attitude = match s["attitude"].as_str() {
+            Some("neutral") => 1,
+            Some("friendly") => 2,
+            _ => 0,
+        };
+        self.book = s["monster"].as_str().unwrap_or("").to_string();
+        let n = |v: &serde_json::Value| v.as_i64().unwrap_or(0);
+        self.ac = n(&s["stats"]["ac"]) as i32;
+        self.hp = n(&s["stats"]["hp"]) as i32;
+        self.speed = n(&s["stats"]["speed"]) as u32;
+        self.xp = n(&s["stats"]["xp"]) as u32;
+        self.hits = s["stats"]["attacks"].as_array().map(|list| list.iter().map(|a| Hit { name: a["name"].as_str().unwrap_or("").into(), bonus: n(&a["bonus"]) as i32, damage: a["damage"].as_str().unwrap_or("").into(), range: n(&a["range"]) as u32 }).collect()).unwrap_or_default();
+        self.count = n(&s["count"]) as u32;
+        self.faction = s["faction"].as_str().unwrap_or("").to_string();
+        let wares = |v: &serde_json::Value| v.as_array().map(|list| list.iter().map(|w| Ware { name: w["name"].as_str().unwrap_or("").into(), kind: w["kind"].as_str().unwrap_or("").into(), price: n(&w["price"]) as u32, heal: w["heal"].as_str().unwrap_or("").into(), damage: w["damage"].as_str().unwrap_or("").into() }).collect()).unwrap_or_default();
+        self.merchant = s["shop"].is_array();
+        self.wares = wares(&s["shop"]);
+        self.blocking = s["blocking"].as_bool().unwrap_or(true);
+        self.chest = s["contents"].is_array();
+        self.contents = wares(&s["contents"]);
+        self.lock = n(&s["lock"]) as i32;
+        self.key = s["key"].as_str().unwrap_or("").to_string();
+        // The picture in the nearest colours of this world.
+        let nearest = |color: [u8; 3]| {
+            let distance = |c: &[u8; 3]| (0..3).map(|k| (c[k] as i32 - color[k] as i32).pow(2)).sum::<i32>();
+            world.palette.colors.iter().enumerate().min_by_key(|(_, c)| distance(c)).map_or(1, |(i, _)| i as u8 + 1)
+        };
+        let rows: Vec<String> = entity.art.rows.iter().map(|r| r.chars().map(|ch| entity.art.colors.iter().find(|(c, _)| *c == ch).map_or(ch, |(_, color)| world::model::char_of(nearest(*color)))).collect()).collect();
+        self.take(&rows);
+    }
+}
+
+/// An action of the master's, sent the way every other is.
+fn send(act: GmAct, session: &Session, settings: &Settings, table: &mut Table) {
+    if session.is_client() {
+        session.intend(Intent::Gm(act));
+    } else {
+        table.inbox.push((player_name(settings), Intent::Gm(act)));
+    }
+}
+
+/// A picture as egui knows it, made once for what it shows.
+fn texture(key: String, pixels: impl FnOnce() -> crate::art::Pixels, egui: &mut EguiContexts, images: &mut Assets<Image>, cache: &mut HashMap<String, egui::TextureId>) -> egui::TextureId {
+    if let Some(id) = cache.get(&key) {
+        return *id;
+    }
+    let id = egui.add_image(bevy_egui::EguiTextureHandle::Strong(images.add(pixels().into_image())));
+    cache.insert(key, id);
+    id
+}
+
+fn art_pixels(art: &Art) -> crate::art::Pixels {
+    let (w, h) = (art.rows.first().map_or(1, |r| r.chars().count()) as u32, art.rows.len().max(1) as u32);
+    let mut p = crate::art::Pixels::new(w, h, CLEAR);
+    for (y, row) in art.rows.iter().enumerate() {
+        for (x, ch) in row.chars().enumerate() {
+            if let Some((_, [r, g, b])) = art.colors.iter().find(|(c, _)| *c == ch) {
+                p.set(x as i32, y as i32, [*r, *g, *b, 255]);
+            }
+        }
+    }
+    p
+}
+
+/// A card of the palette: the picture large, its name under it, outlined when chosen.
+fn card(ui: &mut Ui, picture: egui::TextureId, chosen: bool, name: &str, mark: &str, side: f32) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(side, side + 14.0), Sense::click());
+    let painter = ui.painter_at(rect);
+    let back = if chosen { BRASS_LIGHT } else if response.hovered() { PARCHMENT_LIGHT } else { PARCHMENT_SHADE };
+    painter.rect_filled(rect, 2.0, c(back));
+    let face = Rect::from_min_size(rect.min + vec2(3.0, 3.0), vec2(side - 6.0, side - 6.0));
+    painter.rect_filled(face, 0.0, c(WOOD_DEEP));
+    painter.image(picture, face, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(if chosen { 2.0 } else { 1.0 }, c(if chosen { WAX_DARK } else { BRASS_DARK })), egui::StrokeKind::Inside);
+    let short: String = name.chars().take(((side / 6.0) as usize).max(4)).collect();
+    painter.text(egui::pos2(rect.center().x, rect.max.y - 7.0), egui::Align2::CENTER_CENTER, short, egui::FontId::proportional(9.0), c(INK));
+    if !mark.is_empty() {
+        painter.text(face.right_top() + vec2(-2.0, 2.0), egui::Align2::RIGHT_TOP, mark, egui::FontId::proportional(10.0), c(PARCHMENT_LIGHT));
+    }
+    response.on_hover_text(format!("{name} {mark}")).clicked()
+}
+
+/// A tab of the editor's bar or a tool: lit while it is the one in use.
+fn lit(ui: &mut Ui, label: &str, on: bool, about: &str) -> bool {
+    let b = button(label);
+    ui.add(if on { b.primary() } else { b }).on_hover_text(about).clicked()
+}
+
+fn wares_ui(ui: &mut Ui, list: &mut Vec<Ware>, salt: &str, lang: Lang) {
+    let t = |text: T| text.text(lang);
+    let mut gone = None;
+    for (n, ware) in list.iter_mut().enumerate() {
+        ui.horizontal(|row| {
+            row.add(egui::TextEdit::singleline(&mut ware.name).desired_width(90.0).hint_text(t(T::WsWareName)));
+            egui::ComboBox::from_id_salt(format!("{salt}_kind_{n}")).width(70.0).selected_text(if ware.kind.is_empty() { "—" } else { ware.kind.as_str() }).show_ui(row, |ui| {
+                for kind in KINDS {
+                    ui.selectable_value(&mut ware.kind, kind.to_string(), kind);
+                }
+            });
+            row.add(egui::DragValue::new(&mut ware.price).range(0..=100_000).prefix("$"));
+            if row.add(button("×")).clicked() {
+                gone = Some(n);
+            }
+        });
+        if matches!(ware.kind.as_str(), "potion" | "food") {
+            ui.horizontal(|row| {
+                hint(row, t(T::WsHeal));
+                row.add(egui::TextEdit::singleline(&mut ware.heal).desired_width(60.0).hint_text("2d4+2"));
+            });
+        }
+        if matches!(ware.kind.as_str(), "throwable" | "weapon") {
+            ui.horizontal(|row| {
+                hint(row, t(T::WsDamage));
+                row.add(egui::TextEdit::singleline(&mut ware.damage).desired_width(60.0).hint_text("1d6"));
+            });
+        }
+    }
+    if let Some(n) = gone {
+        list.remove(n);
+    }
+    if ui.add(button(t(T::WsAddWare))).clicked() {
+        list.push(Ware { kind: "junk".into(), price: 5, ..Ware::default() });
+    }
+}
+
+/// The look of the editor's windows: parchment like every sheet of the game.
+fn frame() -> egui::Frame {
+    egui::Frame::new().fill(c(PARCHMENT)).stroke(egui::Stroke::new(1.0, c(BRASS_DARK))).inner_margin(8.0).corner_radius(3.0)
+}
+
+/// A window of the editor: it can be dragged by its title, folded to its title, and resized,
+/// and it never covers more of the screen than it was given.
+fn window<R>(ctx: &egui::Context, panels: &mut Vec<Rect>, id: &str, title: &str, at: egui::Pos2, size: egui::Vec2, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    // Folded or not, kept by egui with the window's place.
+    let folded_id = egui::Id::new(("workshop_folded", id));
+    let folded = ctx.data(|d| d.get_temp::<bool>(folded_id)).unwrap_or(false);
+    let mut inner = None;
+    let shown = egui::Window::new(title)
+        .id(egui::Id::new(("workshop", id)))
+        .title_bar(false)
+        .default_pos(at)
+        .default_size(size)
+        .max_width(size.x.max(200.0) * 1.6)
+        .resizable(!folded)
+        .constrain(true)
+        .frame(frame())
+        .show(ctx, |ui| {
+            // The window's own header: its name, and a button that folds it to that line.
+            // The window is dragged by any empty part of it, the header included.
+            ui.horizontal(|row| {
+                let mark = if folded { "[+]" } else { "[-]" };
+                if row.add(egui::Button::new(egui::RichText::new(mark).color(c(INK))).frame(false)).clicked() {
+                    row.ctx().data_mut(|d| d.insert_temp(folded_id, !folded));
+                }
+                row.label(egui::RichText::new(title).strong().size(15.0).color(c(INK)));
+            });
+            if !folded {
+                ui.separator();
+                inner = Some(add(ui));
+            }
+        })?;
+    panels.push(shown.response.rect);
+    inner
+}
+
+/// The name of a group that folds, written dark enough to read.
+fn dark(text: &str) -> egui::RichText {
+    egui::RichText::new(text).strong().color(c(INK))
+}
+
+/// A heading inside a window: the name of a group of things below it.
+fn heading(ui: &mut Ui, text: &str) {
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(text).strong().color(c(WAX_DARK)));
+}
+
+/// The drawing on the screen, `scale` screen pixels to a pixel of it; `tiled` repeats a tile
+/// three by three to show how it lies on the ground.
+fn preview(ui: &mut Ui, ws: &Workshop, world: &World, scale: f32, tiled: bool) {
+    let times = if tiled { 3 } else { 1 };
+    let side = SIDE as f32 * scale * times as f32;
+    let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, c(WOOD_DEEP));
+    for ty in 0..times {
+        for tx in 0..times {
+            for y in 0..SIDE {
+                for x in 0..SIDE {
+                    let [r, g, b, a] = world.palette.rgba(ws.grid[y * SIDE + x]);
+                    if a == 0 {
+                        continue;
+                    }
+                    let at = rect.min + vec2(((tx * SIDE + x) as f32) * scale, ((ty * SIDE + y) as f32) * scale);
+                    painter.rect_filled(Rect::from_min_size(at, vec2(scale, scale)), 0.0, egui::Color32::from_rgb(r, g, b));
+                }
+            }
+        }
+    }
+    response.on_hover_text(format!("×{}", scale as u32));
+}
+
+/// The cells of one colour joined to `start`, filled with `color`.
+fn flood(grid: &mut [u8], start: usize, color: u8) {
+    let from = grid[start];
+    if from == color {
+        return;
+    }
+    let mut stack = vec![start];
+    while let Some(at) = stack.pop() {
+        if grid[at] != from {
+            continue;
+        }
+        grid[at] = color;
+        let (x, y) = (at % SIDE, at / SIDE);
+        if x > 0 {
+            stack.push(at - 1);
+        }
+        if x + 1 < SIDE {
+            stack.push(at + 1);
+        }
+        if y > 0 {
+            stack.push(at - SIDE);
+        }
+        if y + 1 < SIDE {
+            stack.push(at + SIDE);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn workshop_ui(
+    mut egui: EguiContexts,
+    (phase, game, session, settings, store): (Res<Phase>, Res<Game>, Res<Session>, Res<Settings>, Res<Store>),
+    (mut ws, mut table, mut images, mut panel): (ResMut<Workshop>, ResMut<Table>, ResMut<Assets<Image>>, ResMut<Panel>),
+    mut cache: Local<HashMap<String, egui::TextureId>>,
+) {
+    ws.panels.clear();
+    if *phase != Phase::Master {
+        if panel.workshop {
+            panel.workshop = false;
+        }
+        return;
+    }
+    let lang = settings.lang;
+    let t = |text: T| text.text(lang);
+    if !ws.loaded {
+        ws.arts = store.load_arts();
+        ws.made = store.load_entities();
+        ws.loaded = true;
+    }
+    let world = &game.world;
+    // The pictures of the world's tiles and sprites, and of the library's.
+    let mut tiles: Vec<(String, String, egui::TextureId, bool)> = Vec::new();
+    for (id, def) in &world.tiles {
+        let key = format!("tile:{id}:{}", def.sprite.rows.concat().bytes().map(|b| b as usize).sum::<usize>());
+        let picture = texture(key, || crate::scene::sprite(&def.sprite, &world.palette), &mut egui, &mut images, &mut cache);
+        tiles.push((id.clone(), def.name.clone(), picture, def.walkable));
+    }
+    tiles.sort_by(|a, b| b.3.cmp(&a.3).then(a.1.cmp(&b.1)));
+    let made_pictures: Vec<egui::TextureId> = ws.made.iter().map(|e| texture(format!("made:{}:{}", e.id, e.art.rows.concat().bytes().map(|b| b as usize).sum::<usize>()), || art_pixels(&e.art), &mut egui, &mut images, &mut cache)).collect();
+    let art_pictures: Vec<egui::TextureId> = ws.arts.iter().map(|a| texture(format!("art:{}:{}:{}", a.tile, a.id, a.rows.concat().bytes().map(|b| b as usize).sum::<usize>()), || art_pixels(a), &mut egui, &mut images, &mut cache)).collect();
+    let Ok(ctx) = egui.ctx_mut() else { return };
+    let screen = ctx.content_rect();
+    let mut acts: Vec<GmAct> = Vec::new();
+    let ws = &mut *ws;
+    // The bar of rooms across the top: what the master is doing now, at a glance.
+    let rooms = [(Mode::Run, T::WsRun, T::WsRunAbout), (Mode::Map, T::WsMap, T::WsMapAbout), (Mode::Make, T::WsMake, T::WsMakeAbout), (Mode::Library, T::WsLibrary, T::WsLibraryAbout), (Mode::Rules, T::WsRules, T::WsRulesAbout)];
+    let bar = egui::Area::new(egui::Id::new("workshop_bar")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, vec2(0.0, 4.0)).show(ctx, |ui| {
+        frame().inner_margin(4.0).show(ui, |ui| {
+            ui.horizontal(|row| {
+                for (mode, label, about) in rooms {
+                    if lit(row, t(label), ws.mode == mode, t(about)) {
+                        ws.mode = mode;
+                        ws.rect_from = None;
+                        ws.moving = None;
+                    }
+                }
+            });
+        });
+    });
+    ws.panels.push(bar.response.rect);
+    panel.workshop = ws.mode != Mode::Run;
+    let top = bar.response.rect.max.y + 6.0;
+    match ws.mode {
+        Mode::Run => {}
+        Mode::Map => map_room(ctx, ws, &tiles, &made_pictures, &mut acts, lang, top, screen),
+        Mode::Make => make_room(ctx, ws, world, &tiles, &mut acts, lang, top, screen),
+        Mode::Library => library_room(ctx, ws, world, &art_pictures, &made_pictures, &mut acts, &store, lang, top, screen),
+        Mode::Rules => rules_room(ctx, ws, world, &mut table, &mut acts, lang, top, screen),
+    }
+    for act in acts {
+        send(act, &session, &settings, &mut table);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, egui::TextureId, bool)], made: &[egui::TextureId], acts: &mut Vec<GmAct>, lang: Lang, top: f32, screen: Rect) {
+    let t = |text: T| text.text(lang);
+    let mut panels = std::mem::take(&mut ws.panels);
+    window(ctx, &mut panels, "palette", t(T::WsPalette), egui::pos2(8.0, top), vec2(236.0, (screen.height() - top - 60.0).min(screen.height() * 0.7)), |ui| {
+        heading(ui, t(T::WsTools));
+        let tools = [(MapTool::Brush, T::WsBrush, T::WsBrushHint), (MapTool::Rect, T::WsRect, T::WsRectHint), (MapTool::Erase, T::WsErase, T::WsEraseHint), (MapTool::Place, T::WsPlace, T::WsPlaceHint), (MapTool::Move, T::WsMove, T::WsMoveHint)];
+        ui.horizontal_wrapped(|row| {
+            for (tool, label, about) in tools {
+                if lit(row, t(label), ws.tool == tool, t(about)) {
+                    ws.tool = tool;
+                    ws.rect_from = None;
+                }
+            }
+        });
+        let about = tools.iter().find(|(tool, _, _)| *tool == ws.tool).map_or(T::WsBrushHint, |(_, _, about)| *about);
+        hint(ui, t(about));
+        egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+            heading(ui, t(T::WsTiles));
+            ui.horizontal_wrapped(|row| {
+                for (id, name, picture, walkable) in tiles {
+                    let mark = if *walkable { "○" } else { "×" };
+                    if card(row, *picture, ws.tile == *id && matches!(ws.tool, MapTool::Brush | MapTool::Rect), name, mark, 48.0) {
+                        ws.tile = id.clone();
+                        if !matches!(ws.tool, MapTool::Brush | MapTool::Rect) {
+                            ws.tool = MapTool::Brush;
+                        }
+                    }
+                }
+            });
+            if let Some((id, name, _, walkable)) = tiles.iter().find(|(id, ..)| *id == ws.tile) {
+                let mut on = *walkable;
+                if kit::toggle(ui, &format!("{name}: {}", t(T::WsWalkable)), &mut on).changed() {
+                    acts.push(GmAct::SetWalkable { tile: id.clone(), walkable: on });
+                }
+            }
+            heading(ui, t(T::WsMade));
+            if ws.made.is_empty() {
+                hint(ui, t(T::WsNothingMade));
+            }
+            ui.horizontal_wrapped(|row| {
+                for (n, entity) in ws.made.iter().enumerate() {
+                    let mark = if entity.creature { "☺" } else { "▣" };
+                    if card(row, made[n], ws.placing == Some(n) && ws.tool == MapTool::Place, &entity.name, mark, 48.0) {
+                        ws.placing = Some(n);
+                        ws.tool = MapTool::Place;
+                    }
+                }
+            });
+            if ui.add(button(t(T::WsMakeNew))).clicked() {
+                ws.mode = Mode::Make;
+            }
+        });
+    });
+    // What is in hand and what is under the mouse, along the bottom.
+    let chosen = match ws.tool {
+        MapTool::Brush | MapTool::Rect => tiles.iter().find(|(id, ..)| *id == ws.tile).map(|(_, name, ..)| name.clone()).unwrap_or_else(|| t(T::WsPickTile).to_string()),
+        MapTool::Place => ws.placing.and_then(|n| ws.made.get(n)).map(|e| e.name.clone()).unwrap_or_else(|| t(T::WsPickMade).to_string()),
+        MapTool::Erase | MapTool::Move => String::new(),
+    };
+    let tool = [(MapTool::Brush, T::WsBrush), (MapTool::Rect, T::WsRect), (MapTool::Erase, T::WsErase), (MapTool::Place, T::WsPlace), (MapTool::Move, T::WsMove)].iter().find(|(tool, _)| *tool == ws.tool).map_or("", |(_, l)| t(*l));
+    let line = [tool.to_string(), chosen, ws.hovered.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("   ·   ");
+    let status = egui::Area::new(egui::Id::new("workshop_status")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -6.0)).show(ctx, |ui| {
+        frame().inner_margin(5.0).show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(line).color(c(INK))).wrap_mode(egui::TextWrapMode::Extend));
+        });
+    });
+    panels.push(status.response.rect);
+    ws.panels = panels;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, tiles: &[(String, String, egui::TextureId, bool)], acts: &mut Vec<GmAct>, lang: Lang, top: f32, screen: Rect) {
+    let t = |text: T| text.text(lang);
+    let mut panels = std::mem::take(&mut ws.panels);
+    window(ctx, &mut panels, "drawing", t(T::WsDrawing), egui::pos2(8.0, top), vec2(PIXEL * SIDE as f32 + 140.0, 420.0), |ui| {
+        let kinds = [(MakeKind::Creature, T::WsCreature), (MakeKind::Object, T::WsObject), (MakeKind::Tile, T::WsTile)];
+        ui.horizontal(|row| {
+            row.label(t(T::WsWhat));
+            egui::ComboBox::from_id_salt("ws_kind").width(200.0).selected_text(t(kinds.iter().find(|(k, _)| *k == ws.kind).map_or(T::WsCreature, |(_, l)| *l))).show_ui(row, |ui| {
+                for (kind, label) in kinds {
+                    ui.selectable_value(&mut ws.kind, kind, t(label));
+                }
+            });
+        });
+        // The pens.
+        ui.horizontal(|row| {
+            for (pen, label, about) in [(Pen::Pencil, T::WsPencil, T::WsPencilHint), (Pen::Eraser, T::WsEraser, T::WsEraserHint), (Pen::Fill, T::WsFill, T::WsFillHint), (Pen::Picker, T::WsPicker, T::WsPickerHint)] {
+                if lit(row, t(label), ws.pen == pen, t(about)) {
+                    ws.pen = pen;
+                }
+            }
+        });
+        ui.horizontal_top(|row| {
+            // The drawing: the left button uses the pen, the right one always clears.
+            let (rect, response) = row.allocate_exact_size(vec2(PIXEL * SIDE as f32, PIXEL * SIDE as f32), Sense::click_and_drag());
+            let painter = row.painter_at(rect);
+            for y in 0..SIDE {
+                for x in 0..SIDE {
+                    let cell = Rect::from_min_size(rect.min + vec2(x as f32 * PIXEL, y as f32 * PIXEL), vec2(PIXEL, PIXEL));
+                    let [r, g, b, a] = world.palette.rgba(ws.grid[y * SIDE + x]);
+                    let shade = if (x + y) % 2 == 0 { 200 } else { 225 };
+                    painter.rect_filled(cell, 0.0, if a == 0 { egui::Color32::from_gray(shade) } else { egui::Color32::from_rgb(r, g, b) });
+                }
+            }
+            let mut cell_under = None;
+            if let Some(at) = response.hover_pos() {
+                let (x, y) = (((at.x - rect.min.x) / PIXEL) as usize, ((at.y - rect.min.y) / PIXEL) as usize);
+                if x < SIDE && y < SIDE {
+                    cell_under = Some(y * SIDE + x);
+                    let cell = Rect::from_min_size(rect.min + vec2(x as f32 * PIXEL, y as f32 * PIXEL), vec2(PIXEL, PIXEL));
+                    painter.rect_stroke(cell, 0.0, egui::Stroke::new(1.0, c(INK)), egui::StrokeKind::Inside);
+                }
+            }
+            painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, c(BRASS_DARK)), egui::StrokeKind::Inside);
+            let (primary, secondary) = row.input(|i| (i.pointer.primary_down(), i.pointer.secondary_down()));
+            if let Some(at) = cell_under.filter(|_| response.hovered() || response.dragged()) {
+                if secondary {
+                    ws.grid[at] = 0;
+                } else if primary {
+                    match ws.pen {
+                        Pen::Pencil => ws.grid[at] = ws.color,
+                        Pen::Eraser => ws.grid[at] = 0,
+                        Pen::Fill => {
+                            if response.is_pointer_button_down_on() && row.input(|i| i.pointer.primary_pressed()) {
+                                let color = ws.color;
+                                flood(&mut ws.grid, at, color);
+                            }
+                        }
+                        Pen::Picker => {
+                            ws.color = ws.grid[at];
+                            ws.pen = Pen::Pencil;
+                        }
+                    }
+                }
+            }
+            // How it will look: as big as on the map, larger, and laid on the ground.
+            row.vertical(|col| {
+                hint(col, t(T::WsPreview));
+                preview(col, ws, world, 1.0, false);
+                preview(col, ws, world, 2.0, false);
+                if ws.kind == MakeKind::Tile {
+                    preview(col, ws, world, 1.0, true);
+                } else {
+                    preview(col, ws, world, 4.0, false);
+                }
+            });
+        });
+        // The colours of this world: index 0 is clear.
+        hint(ui, t(T::WsColors));
+        ui.horizontal_wrapped(|row| {
+            row.spacing_mut().item_spacing = vec2(2.0, 2.0);
+            for index in 0..world.palette.len() as u8 {
+                let (rect, response) = row.allocate_exact_size(vec2(16.0, 16.0), Sense::click());
+                let [r, g, b, a] = world.palette.rgba(index);
+                row.painter().rect_filled(rect, 0.0, if a == 0 { egui::Color32::from_gray(210) } else { egui::Color32::from_rgb(r, g, b) });
+                if index == 0 {
+                    row.painter().line_segment([rect.left_top(), rect.right_bottom()], egui::Stroke::new(1.0, egui::Color32::RED));
+                }
+                if ws.color == index {
+                    row.painter().rect_stroke(rect, 0.0, egui::Stroke::new(2.0, c(INK)), egui::StrokeKind::Inside);
+                }
+                if response.clicked() {
+                    ws.color = index;
+                    if ws.pen != Pen::Fill {
+                        ws.pen = Pen::Pencil;
+                    }
+                }
+            }
+        });
+        ui.horizontal_wrapped(|row| {
+            if row.add(button(t(T::WsClear))).clicked() {
+                ws.grid = vec![0; SIDE * SIDE];
+            }
+            // A picture of the world taken into the drawing, to change it.
+            egui::ComboBox::from_id_salt("ws_take").width(150.0).selected_text(t(T::WsTake)).height(260.0).show_ui(row, |ui| {
+                for (id, name, _, _) in tiles {
+                    if ui.button(format!("▦ {name}")).clicked()
+                        && let Some(def) = world.tiles.get(id)
+                    {
+                        let rows = def.sprite.rows.clone();
+                        ws.take(&rows);
+                    }
+                }
+                for (id, sprite) in &world.sprites {
+                    if ui.button(format!("☺ {id}")).clicked() {
+                        let rows = sprite.rows.clone();
+                        ws.take(&rows);
+                    }
+                }
+            });
+        });
+        // The model draws it instead, as described: it is kept and can be taken to change.
+        heading(ui, t(T::WsAskModel));
+        ui.add(egui::TextEdit::multiline(&mut ws.describe).desired_rows(2).desired_width(f32::INFINITY).hint_text(t(T::WsDescribe)));
+        let ready = !ws.describe.trim().is_empty() && !ws.id.trim().is_empty();
+        if ui.add(button(t(T::WsAskModel)).enabled(ready, t(T::WsNeedIdFirst))).clicked() {
+            acts.push(GmAct::DrawArt { tile: ws.kind == MakeKind::Tile, id: world::build::slug(&ws.id), description: ws.describe.trim().to_string(), walkable: ws.walkable });
+        }
+    });
+    let width = 300.0;
+    window(ctx, &mut panels, "properties", t(T::WsProperties), egui::pos2(screen.width() - width - 24.0, top), vec2(width, (screen.height() - top - 40.0).min(screen.height() * 0.75)), |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| properties(ui, ws, world, acts, lang));
+    });
+    ws.panels = panels;
+}
+
+/// What is being made, set up in groups that fold.
+fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>, lang: Lang) {
+    let t = |text: T| text.text(lang);
+    let field = |ui: &mut Ui, label: &str, text: &mut String, hint_text: &str| {
+        ui.horizontal(|row| {
+            row.add_sized(vec2(70.0, 18.0), egui::Label::new(label));
+            row.add(egui::TextEdit::singleline(text).desired_width(180.0).hint_text(hint_text));
+        });
+    };
+    egui::CollapsingHeader::new(dark(t(T::WsMain))).default_open(true).show(ui, |ui| {
+        field(ui, t(T::WsName), &mut ws.name, t(T::WsNameHint));
+        field(ui, t(T::WsId), &mut ws.id, t(T::WsIdHint));
+        if ws.kind != MakeKind::Tile {
+            ui.label(t(T::WsDescription));
+            ui.add(egui::TextEdit::multiline(&mut ws.description).desired_rows(2).desired_width(f32::INFINITY));
+        }
+        if ws.kind == MakeKind::Tile {
+            kit::toggle(ui, t(T::WsWalkable), &mut ws.walkable);
+        }
+    });
+    match ws.kind {
+        MakeKind::Tile => {}
+        MakeKind::Object => {
+            egui::CollapsingHeader::new(dark(t(T::WsBehaviour))).default_open(true).show(ui, |ui| {
+                kit::toggle(ui, t(T::WsBlocking), &mut ws.blocking);
+            });
+            egui::CollapsingHeader::new(dark(t(T::WsChestPart))).default_open(ws.chest).show(ui, |ui| {
+                kit::toggle(ui, t(T::WsChest), &mut ws.chest);
+                if ws.chest {
+                    wares_ui(ui, &mut ws.contents, "contents", lang);
+                    ui.horizontal(|row| {
+                        row.label(t(T::WsLock));
+                        row.add(egui::DragValue::new(&mut ws.lock).range(0..=30));
+                    });
+                    hint(ui, t(T::WsLockHint));
+                    field(ui, t(T::WsKey), &mut ws.key, t(T::WsKeyHint));
+                }
+            });
+        }
+        MakeKind::Creature => {
+            egui::CollapsingHeader::new(dark(t(T::WsBehaviour))).default_open(true).show(ui, |ui| {
+                let attitudes = [t(T::WsHostile), t(T::WsNeutral), t(T::WsFriendly)];
+                ui.horizontal(|row| {
+                    row.add_sized(vec2(70.0, 18.0), egui::Label::new(t(T::WsAttitude)));
+                    egui::ComboBox::from_id_salt("ws_attitude").width(160.0).selected_text(attitudes[ws.attitude.min(2)]).show_ui(row, |ui| {
+                        for (n, label) in attitudes.iter().enumerate() {
+                            ui.selectable_value(&mut ws.attitude, n, *label);
+                        }
+                    });
+                });
+                ui.horizontal(|row| {
+                    row.add_sized(vec2(70.0, 18.0), egui::Label::new(t(T::WsFaction)));
+                    let shown = if ws.faction.is_empty() { "—".to_string() } else { world.factions.iter().find(|f| f.id == ws.faction).map_or(ws.faction.clone(), |f| f.name.clone()) };
+                    egui::ComboBox::from_id_salt("ws_faction").width(160.0).selected_text(shown).show_ui(row, |ui| {
+                        ui.selectable_value(&mut ws.faction, String::new(), "—");
+                        for faction in &world.factions {
+                            ui.selectable_value(&mut ws.faction, faction.id.clone(), faction.name.as_str());
+                        }
+                    });
+                });
+                ui.horizontal(|row| {
+                    row.add_sized(vec2(70.0, 18.0), egui::Label::new(t(T::WsCount)));
+                    row.add(egui::DragValue::new(&mut ws.count).range(0..=8));
+                });
+                hint(ui, t(T::WsCountHint));
+            });
+            egui::CollapsingHeader::new(dark(t(T::WsFight))).default_open(true).show(ui, |ui| {
+                // Its numbers: a monster of the book's, or its own.
+                let mut monsters: Vec<(&String, &String)> = rules::srd().monsters.iter().map(|(index, m)| (index, &m.name)).collect();
+                monsters.sort_by(|a, b| a.1.cmp(b.1));
+                let shown = if ws.book.is_empty() { t(T::WsOwnNumbers).to_string() } else { rules::srd().monsters.get(&ws.book).map_or(ws.book.clone(), |m| m.name.clone()) };
+                ui.horizontal(|row| {
+                    row.add_sized(vec2(70.0, 18.0), egui::Label::new(t(T::WsNumbers)));
+                    egui::ComboBox::from_id_salt("ws_book").width(160.0).selected_text(shown).height(260.0).show_ui(row, |ui| {
+                        ui.selectable_value(&mut ws.book, String::new(), t(T::WsOwnNumbers));
+                        for (index, name) in monsters {
+                            ui.selectable_value(&mut ws.book, index.clone(), name.as_str());
+                        }
+                    });
+                });
+                if !ws.book.is_empty() {
+                    if let Some(m) = rules::srd().monsters.get(&ws.book) {
+                        hint(ui, &format!("{} {} · {} {} · {} {}", t(T::WsAc), m.ac, t(T::WsHp), m.hp, t(T::WsXp), m.xp));
+                    }
+                    return;
+                }
+                egui::Grid::new("ws_numbers").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |grid| {
+                    grid.label(t(T::WsAc));
+                    grid.add(egui::DragValue::new(&mut ws.ac).range(1..=30));
+                    grid.label(t(T::WsHp));
+                    grid.add(egui::DragValue::new(&mut ws.hp).range(1..=999));
+                    grid.end_row();
+                    grid.label(t(T::WsSpeed));
+                    grid.add(egui::DragValue::new(&mut ws.speed).range(0..=120).speed(5).suffix(" ft"));
+                    grid.label(t(T::WsXp));
+                    grid.add(egui::DragValue::new(&mut ws.xp).range(0..=50_000).speed(10));
+                    grid.end_row();
+                });
+                hint(ui, t(T::WsAttacks));
+                let mut gone = None;
+                for (n, hit) in ws.hits.iter_mut().enumerate() {
+                    ui.horizontal(|row| {
+                        row.add(egui::TextEdit::singleline(&mut hit.name).desired_width(70.0).hint_text(t(T::WsAttackName)));
+                        row.add(egui::DragValue::new(&mut hit.bonus).range(-5..=20).prefix("+")).on_hover_text(t(T::WsBonusHint));
+                        row.add(egui::TextEdit::singleline(&mut hit.damage).desired_width(50.0).hint_text("1d6+1")).on_hover_text(t(T::WsDamage));
+                        row.add(egui::DragValue::new(&mut hit.range).range(5..=600).speed(5).suffix(" ft")).on_hover_text(t(T::WsRangeHint));
+                        if row.add(button("×")).clicked() {
+                            gone = Some(n);
+                        }
+                    });
+                }
+                if let Some(n) = gone {
+                    ws.hits.remove(n);
+                }
+                if ui.add(button(t(T::WsAddAttack))).clicked() {
+                    ws.hits.push(Hit::default());
+                }
+            });
+            egui::CollapsingHeader::new(dark(t(T::WsTrade))).default_open(ws.merchant).show(ui, |ui| {
+                kit::toggle(ui, t(T::WsMerchant), &mut ws.merchant);
+                if ws.merchant {
+                    wares_ui(ui, &mut ws.wares, "shop", lang);
+                }
+            });
+        }
+    }
+    ui.add_space(6.0);
+    let ready = !ws.id.trim().is_empty() && ws.grid.iter().any(|i| *i != 0);
+    ui.horizontal(|row| {
+        if row.add(button(t(T::WsSave)).primary().enabled(ready, t(T::WsNeedId))).clicked() {
+            save(ws, world, acts);
+        }
+        if row.add(button(t(T::WsNew))).on_hover_text(t(T::WsNewHint)).clicked() {
+            let (mode, kind, loaded, arts, made) = (ws.mode, ws.kind, ws.loaded, std::mem::take(&mut ws.arts), std::mem::take(&mut ws.made));
+            *ws = Workshop { mode, kind, loaded, arts, made, ..Workshop::default() };
+        }
+    });
+}
+
+/// What was made, sent to be kept for good: a tile into the world and the library, a
+/// creature or an object into the library, ready to be put on the map.
+fn save(ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>) {
+    let id = world::build::slug(&ws.id);
+    let name = if ws.name.trim().is_empty() { id.replace('_', " ") } else { ws.name.trim().to_string() };
+    let rows = ws.rows();
+    match ws.kind {
+        MakeKind::Tile => acts.push(GmAct::SaveArt { tile: true, id, name, walkable: ws.walkable, rows }),
+        kind => {
+            // The picture with the colours of this world, so it looks the same anywhere.
+            let mut colors: Vec<(char, [u8; 3])> = Vec::new();
+            for &index in ws.grid.iter().filter(|i| **i != 0) {
+                let ch = world::model::char_of(index);
+                if !colors.iter().any(|(c, _)| *c == ch) {
+                    let [r, g, b, _] = world.palette.rgba(index);
+                    colors.push((ch, [r, g, b]));
+                }
+            }
+            let art = Art { id: id.clone(), name: name.clone(), tile: false, walkable: false, rows, colors };
+            let mut spawn = ws.spawn();
+            spawn["name"] = name.clone().into();
+            let entity = Entity { id: id.clone(), name, creature: kind == MakeKind::Creature, spawn, art };
+            match ws.made.iter().position(|e| e.id == id) {
+                Some(n) => ws.made[n] = entity.clone(),
+                None => ws.made.push(entity.clone()),
+            }
+            acts.push(GmAct::SaveEntity(Box::new(entity)));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, arts: &[egui::TextureId], made: &[egui::TextureId], acts: &mut Vec<GmAct>, store: &Store, lang: Lang, top: f32, screen: Rect) {
+    let t = |text: T| text.text(lang);
+    let mut panels = std::mem::take(&mut ws.panels);
+    let size = vec2(520.0_f32.min(screen.width() - 40.0), (screen.height() - top - 60.0).min(460.0));
+    window(ctx, &mut panels, "library", t(T::WsLibrary), egui::pos2((screen.width() - size.x) / 2.0, top), size, |ui| {
+        let filters = [T::WsAll, T::WsCreatures, T::WsObjects, T::WsTilesAndArt];
+        ui.horizontal(|row| {
+            for (n, label) in filters.iter().enumerate() {
+                if lit(row, t(*label), ws.filter == n, "") {
+                    ws.filter = n;
+                }
+            }
+            if row.add(button(t(T::WsRefresh))).clicked() {
+                ws.arts = store.load_arts();
+                ws.made = store.load_entities();
+                ws.picked = None;
+            }
+        });
+        hint(ui, t(T::WsLibraryHint));
+        egui::ScrollArea::vertical().max_height(size.y - 150.0).auto_shrink([false, true]).show(ui, |ui| {
+            ui.horizontal_wrapped(|row| {
+                for (n, entity) in ws.made.iter().enumerate() {
+                    if ws.filter == 3 || (ws.filter == 1 && !entity.creature) || (ws.filter == 2 && entity.creature) {
+                        continue;
+                    }
+                    let mark = if entity.creature { "☺" } else { "▣" };
+                    if card(row, made[n], ws.picked == Some((true, n)), &entity.name, mark, 64.0) {
+                        ws.picked = Some((true, n));
+                    }
+                }
+                if ws.filter == 0 || ws.filter == 3 {
+                    for (n, art) in ws.arts.iter().enumerate() {
+                        let mark = if art.tile { if art.walkable { "○" } else { "×" } } else { "☺" };
+                        if card(row, arts[n], ws.picked == Some((false, n)), &art.name, mark, 64.0) {
+                            ws.picked = Some((false, n));
+                        }
+                    }
+                }
+            });
+            if ws.made.is_empty() && ws.arts.is_empty() {
+                hint(ui, t(T::WsNothingMade));
+            }
+        });
+        ui.separator();
+        match ws.picked {
+            Some((true, n)) if n < ws.made.len() => {
+                let entity = ws.made[n].clone();
+                let s = &entity.spawn;
+                let kind = if entity.creature { t(T::WsCreature) } else { t(T::WsObject) };
+                ui.label(egui::RichText::new(format!("{} — {kind}", entity.name)).strong());
+                let mut facts = Vec::new();
+                if let Some(a) = s["attitude"].as_str() {
+                    facts.push(a.to_string());
+                }
+                if let Some(m) = s["monster"].as_str() {
+                    facts.push(m.to_string());
+                }
+                if s["stats"].is_object() {
+                    facts.push(format!("{} {} · {} {}", t(T::WsAc), s["stats"]["ac"], t(T::WsHp), s["stats"]["hp"]));
+                }
+                if let Some(shop) = s["shop"].as_array() {
+                    facts.push(format!("{} ({})", t(T::WsMerchant), shop.len()));
+                }
+                if let Some(contents) = s["contents"].as_array() {
+                    facts.push(format!("{} ({})", t(T::WsChest), contents.len()));
+                }
+                hint(ui, &facts.join(" · "));
+                ui.horizontal(|row| {
+                    if row.add(button(t(T::WsPutOnMap)).primary()).clicked() {
+                        ws.placing = Some(n);
+                        ws.tool = MapTool::Place;
+                        ws.mode = Mode::Map;
+                    }
+                    if row.add(button(t(T::WsEdit))).clicked() {
+                        ws.edit(&entity, world);
+                        ws.mode = Mode::Make;
+                    }
+                });
+            }
+            Some((false, n)) if n < ws.arts.len() => {
+                let art = ws.arts[n].clone();
+                let kind = if art.tile { t(T::WsTile) } else { t(T::WsSprite) };
+                ui.label(egui::RichText::new(format!("{} — {kind}", art.name)).strong());
+                ui.horizontal(|row| {
+                    if row.add(button(t(T::WsToWorld)).primary()).on_hover_text(t(T::WsToWorldHint)).clicked() {
+                        acts.push(GmAct::ImportArt(art.clone()));
+                    }
+                    if row.add(button(t(T::WsEdit))).clicked() {
+                        let rows = art.rows.clone();
+                        ws.kind = if art.tile { MakeKind::Tile } else { MakeKind::Creature };
+                        ws.id = art.id.clone();
+                        ws.name = art.name.clone();
+                        ws.walkable = art.walkable;
+                        let entity = Entity { id: art.id.clone(), name: art.name.clone(), creature: !art.tile, spawn: serde_json::json!({}), art };
+                        ws.edit(&entity, world);
+                        ws.take(&rows);
+                        if entity.art.tile {
+                            ws.kind = MakeKind::Tile;
+                        }
+                        ws.mode = Mode::Make;
+                    }
+                });
+            }
+            _ => {
+                hint(ui, t(T::WsPickCard));
+            }
+        }
+    });
+    ws.panels = panels;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rules_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, table: &mut Table, acts: &mut Vec<GmAct>, lang: Lang, top: f32, screen: Rect) {
+    let t = |text: T| text.text(lang);
+    let mut panels = std::mem::take(&mut ws.panels);
+    let book = super::rules_book::book(world, lang);
+    let width = 420.0_f32.min(screen.width() / 2.0 - 20.0);
+    window(ctx, &mut panels, "rules", t(T::WsRulesBook), egui::pos2(8.0, top), vec2(width, screen.height() - top - 40.0), |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+            for (n, (title, body)) in book.iter().enumerate() {
+                egui::CollapsingHeader::new(dark(title)).id_salt(("rule", n)).default_open(n == 0).show(ui, |ui| {
+                    for line in body.lines() {
+                        ui.label(line);
+                    }
+                });
+            }
+            egui::CollapsingHeader::new(dark(t(T::WsMasterGuide))).id_salt("guide").default_open(false).show(ui, |ui| {
+                hint(ui, t(T::WsMasterGuideHint));
+                ui.label(egui::RichText::new(world::prompt::play_prompt(world)).small());
+            });
+        });
+    });
+    // The answer that came for the question.
+    if ws.asking
+        && let Some(answer) = table.ruling.take()
+    {
+        ws.asking = false;
+        ws.answer = match answer {
+            Ok(text) => text,
+            Err(trouble) => format!("{} {trouble}", t(T::WsNoRuling)),
+        };
+    }
+    let side = 340.0_f32.min(screen.width() / 2.0 - 20.0);
+    window(ctx, &mut panels, "ask_rules", t(T::WsAskRules), egui::pos2(screen.width() - side - 24.0, top), vec2(side, 380.0), |ui| {
+        hint(ui, t(T::WsAskRulesHint));
+        ui.add(egui::TextEdit::multiline(&mut ws.question).desired_rows(5).desired_width(f32::INFINITY).hint_text(t(T::WsQuestionHint)));
+        ui.horizontal(|row| {
+            let ready = !ws.question.trim().is_empty() && !ws.asking;
+            let why = if ws.asking { t(T::WsThinking) } else { t(T::NeedText) };
+            if row.add(button(t(T::WsAsk)).primary().enabled(ready, why)).clicked() {
+                ws.asking = true;
+                ws.answer.clear();
+                table.ruling = None;
+                acts.push(GmAct::AskRules { book: super::rules_book::text(world, lang), question: ws.question.trim().to_string() });
+            }
+            if row.add(button(t(T::WsClear))).clicked() {
+                ws.question.clear();
+                ws.answer.clear();
+            }
+        });
+        if ws.asking {
+            ui.horizontal(|row| {
+                row.spinner();
+                hint(row, t(T::WsThinking));
+            });
+        }
+        if !ws.answer.is_empty() {
+            heading(ui, t(T::WsRuling));
+            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.label(&ws.answer);
+            });
+        }
+    });
+    ws.panels = panels;
+}
+
+/// The map under the master's hand, while the workshop is open: painted, filled, cleared,
+/// set with creatures and objects, and rearranged by dragging.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn workshop_map(
+    mut egui: EguiContexts,
+    (phase, game, session, settings): (Res<Phase>, Res<Game>, Res<Session>, Res<Settings>),
+    (mut ws, mut table): (ResMut<Workshop>, ResMut<Table>),
+    mouse: Res<ButtonInput<MouseButton>>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    frame: Res<crate::view::View>,
+) {
+    if *phase != Phase::Master || ws.mode != Mode::Map {
+        return;
+    }
+    // Over the editor's windows the mouse is theirs, not the map's.
+    let over_window = egui.ctx_mut().ok().and_then(|ctx| ctx.pointer_latest_pos()).is_some_and(|at| ws.panels.iter().any(|rect| rect.contains(at)));
+    if over_window && !mouse.just_released(MouseButton::Left) {
+        return;
+    }
+    let here = game.world.here();
+    let (w, h) = here.size();
+    let cell = crate::view::map_under_cursor(&window, &frame).and_then(|point| {
+        let side = TILE as f32 * crate::scene::PX as f32;
+        let (cx, cy) = ((point.x / side).floor() as i32, (point.y / side).floor() as i32);
+        (cx >= 0 && cy >= 0 && cx < w as i32 && cy < h as i32).then_some((cx as usize, cy as usize))
+    });
+    let Some(cell) = cell else {
+        ws.hovered.clear();
+        return;
+    };
+    // What is under the mouse, for the line at the bottom.
+    let ground = here.tile_id(cell.0, cell.1).and_then(|id| game.world.tiles.get(id).map(|def| format!("{} {}", def.name, if def.walkable { "○" } else { "×" }))).unwrap_or_default();
+    let mut on_it: Vec<String> = here.creatures.iter().filter(|c| (c.x, c.y) == cell).map(|c| c.name.clone()).collect();
+    on_it.extend(here.props.iter().filter(|p| (p.x, p.y) == cell).map(|p| p.name.clone()));
+    ws.hovered = format!("({}, {}) {ground}{}{}", cell.0, cell.1, if on_it.is_empty() { "" } else { ": " }, on_it.join(", "));
+    if let (Some(from), MapTool::Rect) = (ws.rect_from, ws.tool) {
+        ws.hovered.push_str(&format!("  [{}×{}]", from.0.abs_diff(cell.0) + 1, from.1.abs_diff(cell.1) + 1));
+    }
+    let thing_at = |cell: (usize, usize)| here.creatures.iter().find(|c| (c.x, c.y) == cell).map(|c| c.id.clone()).or_else(|| here.props.iter().find(|p| (p.x, p.y) == cell).map(|p| p.id.clone()));
+    let apply = |effects: Vec<serde_json::Value>| GmAct::Apply(Box::new(TurnDraft { effects, ..TurnDraft::default() }));
+    let mut act = None;
+    match ws.tool {
+        MapTool::Brush if mouse.pressed(MouseButton::Left) && !ws.tile.is_empty() => {
+            if ws.last_cell != Some(cell) {
+                ws.last_cell = Some(cell);
+                act = Some(apply(vec![serde_json::json!({ "op": "tile", "x": cell.0, "y": cell.1, "tile": ws.tile })]));
+            }
+        }
+        MapTool::Rect if !ws.tile.is_empty() => {
+            if mouse.just_pressed(MouseButton::Left) {
+                ws.rect_from = Some(cell);
+            } else if mouse.just_released(MouseButton::Left)
+                && let Some(from) = ws.rect_from.take()
+            {
+                act = Some(apply(vec![serde_json::json!({ "op": "tile", "x": from.0, "y": from.1, "to": [cell.0, cell.1], "tile": ws.tile })]));
+            }
+        }
+        MapTool::Erase if mouse.just_pressed(MouseButton::Left) => {
+            if let Some(id) = thing_at(cell) {
+                act = Some(apply(vec![serde_json::json!({ "op": "remove", "id": id })]));
+            }
+        }
+        MapTool::Place if mouse.just_pressed(MouseButton::Left) => {
+            if let Some(entity) = ws.placing.and_then(|n| ws.made.get(n)) {
+                act = Some(GmAct::Place { entity: Box::new(entity.clone()), x: cell.0, y: cell.1 });
+            }
+        }
+        MapTool::Move => {
+            if mouse.just_pressed(MouseButton::Left) {
+                ws.moving = thing_at(cell);
+            } else if mouse.just_released(MouseButton::Left)
+                && let Some(id) = ws.moving.take()
+            {
+                act = Some(apply(vec![serde_json::json!({ "op": "move", "id": id, "x": cell.0, "y": cell.1 })]));
+            }
+        }
+        _ => {}
+    }
+    if !mouse.pressed(MouseButton::Left) {
+        ws.last_cell = None;
+    }
+    if let Some(act) = act {
+        send(act, &session, &settings, &mut table);
+    }
+}

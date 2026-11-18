@@ -82,6 +82,13 @@ pub enum Ask {
         /// Whose library it is for.
         for_player: String,
     },
+    /// A human master asks how the rules settle what happened at the table.
+    Ruling {
+        world: Box<World>,
+        book: String,
+        question: String,
+        for_player: String,
+    },
     /// The master may make something happen of its own accord.
     Event {
         world: Box<World>,
@@ -123,6 +130,8 @@ pub enum Answer {
     /// A tile or sprite drawn for the human master.
     Art { tile: bool, id: String, walkable: bool, rows: Result<Vec<String>, Trouble> },
     Translated { texts: Vec<String>, translated: Result<Vec<String>, Trouble> },
+    /// The ruling a human master asked for.
+    Ruling { for_player: String, answer: Result<String, Trouble> },
 }
 
 /// How many times an answer that cannot be read is asked for again before giving up. Each
@@ -477,6 +486,7 @@ impl Master {
                 Ask::Art { tile, id, .. } => format!("the master's {} '{id}'", if *tile { "tile" } else { "sprite" }),
                 Ask::Translate { texts, language } => format!("{} texts into {language}", texts.len()),
                 Ask::Invent { .. } => "a creature for a library".to_string(),
+                Ask::Ruling { .. } => "a ruling for the human master".to_string(),
             },
             if fake { " (fake master)" } else { "" }
         );
@@ -591,6 +601,15 @@ impl Master {
                 Ask::Portrait { world, hero } => {
                     let draft: Result<PortraitDraft, Trouble> = if fake { faked(fake::portrait()) } else { call.read(prompt::system_prompt(&world.language), &prompt::portrait(&world, hero)) };
                     Answer::Portrait { hero, rows: draft.map(|d| d.rows) }
+                }
+                Ask::Ruling { world, book, question, for_player } => {
+                    #[derive(serde::Deserialize, Default)]
+                    #[serde(default)]
+                    struct RulingDraft {
+                        answer: String,
+                    }
+                    let draft: Result<RulingDraft, Trouble> = if fake { faked(world::fake::ruling(&question)) } else { call.read("You know the rules of a tabletop role-playing game by heart and advise its human game master. You answer with ONE JSON object and nothing else.".to_string(), &prompt::ruling(&world, &book, &question, language)) };
+                    Answer::Ruling { for_player, answer: draft.map(|d| d.answer) }
                 }
                 Ask::Invent { world, request, for_player } => {
                     let card: Result<CreatureCard, Trouble> = if fake { faked(fake::creature(&request)) } else { call.read(prompt::play_prompt(&world), &prompt::invent(&world, &request)) };

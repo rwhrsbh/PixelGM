@@ -584,6 +584,32 @@ pub fn translate(texts: &[String], language: &str) -> String {
     )
 }
 
+/// A human game master asks how the rules settle something that happened at the table.
+/// `book` is the rules of this table as the master reads them; the master's own guide —
+/// how the model would run the game — goes with it, so that the answer follows this game
+/// and not some other.
+pub fn ruling(world: &World, book: &str, question: &str, language: &str) -> String {
+    format!(
+        "A human game master runs this game and asks you, as an adviser who knows its rules by heart, how to settle something by the rules. Answer in {language}: first the ruling in one or two sentences (what to roll, against what, what happens on success and on failure), then why, naming the rule. When the rules leave it to the master, say so and suggest a fair way. Be short and concrete: the master is at the table and players are waiting.
+
+THE RULES OF THIS TABLE:
+{book}
+
+HOW THE GAME MASTER RUNS THIS GAME (the game's own rules for the master):
+{guide}
+
+THE PARTY: {party}
+
+WHAT HAPPENED, IN THE MASTER'S WORDS:
+{question}
+
+Answer with this JSON object: {{\"answer\": \"…\"}}",
+        guide = play_prompt(world),
+        party = world.party.iter().map(|h| format!("{} (level {} {} {}, {}/{} HP, AC {})", h.name, h.level, h.race, h.class, h.hp, h.max_hp, h.ac())).collect::<Vec<_>>().join("; "),
+        question = question.trim(),
+    )
+}
+
 /// A human game master asks for a creature to keep in their library.
 pub fn invent(world: &World, request: &str) -> String {
     format!(

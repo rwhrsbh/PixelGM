@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 18;
+pub const PROTOCOL: u32 = 19;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -106,6 +106,8 @@ pub enum GmAct {
     Whisper { to: String, text: String },
     /// Ask the model for a creature for the master's library.
     Invent(String),
+    /// How the rules settle what the master describes: the model answers the master alone.
+    AskRules { book: String, question: String },
     /// Someone in the master's place says something aloud, as a bubble.
     Say { who: String, text: String },
     /// The place the master is in is drawn again by the model, as the master wants it.
@@ -242,6 +244,8 @@ pub enum Down {
     LibraryArt(world::library::Art),
     LibraryCard(world::CreatureCard),
     LibraryEntity(Box<world::library::Entity>),
+    /// The ruling the master asked for, or why there is none.
+    Ruling(Result<String, String>),
     /// Who the guest's deed waits for, by player name: empty when it waits for nobody.
     WaitingFor(Vec<String>),
     /// What happened in the fight of a place: only the players there watch it.
@@ -710,6 +714,8 @@ pub struct Table {
     pub judging: Option<DraftView>,
     /// For the player in the master's seat: the last thing the panel has to say.
     pub master_note: String,
+    /// The last ruling the master asked of the model; `None` while it is being asked.
+    pub ruling: Option<Result<String, String>>,
     /// This player's library of creatures, as last read from disk.
     pub cards: Vec<CreatureCard>,
 }
@@ -1524,6 +1530,7 @@ fn client_pump(
                     warn!("could not keep {} in the library: {e}", art.id);
                 }
             }
+            ClientEvent::Message(Down::Ruling(answer)) => table.ruling = Some(answer),
             ClientEvent::Message(Down::LibraryEntity(entity)) => {
                 if let Err(e) = store.save_entity(&entity) {
                     warn!("could not keep {} in the library: {e}", entity.id);
