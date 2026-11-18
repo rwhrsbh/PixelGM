@@ -19,19 +19,34 @@ pub struct Notice {
     life: f32,
 }
 
-/// How long a line stays: three seconds and one more for every fifteen letters, between four
-/// and twenty. The cursor over it keeps it.
+/// How long a line stays: six seconds and one more for every ten letters, between seven
+/// and thirty. The cursor over it keeps it.
 pub fn life_of(text: &str) -> f32 {
-    (3.0 + text.chars().count() as f32 / 15.0).clamp(4.0, 20.0)
+    (6.0 + text.chars().count() as f32 / 10.0).clamp(7.0, 30.0)
 }
 
-/// The lines in the corner, oldest first.
+/// The lines in the corner, oldest first; and every line of this session, to read again.
 #[derive(Resource, Default)]
-pub struct Notices(pub Vec<Notice>);
+pub struct Notices(pub Vec<Notice>, pub Vec<(String, Rgba)>, pub NoticeView);
+
+/// What of the lines is open: all of them, or one read whole.
+#[derive(Default)]
+pub struct NoticeView {
+    all: bool,
+    one: Option<String>,
+}
+
+/// How many lines are kept to read again.
+const KEPT: usize = 200;
+/// How many letters a line in the corner shows; the rest is read by clicking it.
+const SHORT: usize = 110;
 
 impl Notices {
     pub fn push(&mut self, text: String, tint: Rgba) {
         let life = life_of(&text);
+        self.1.push((text.clone(), tint));
+        let extra = self.1.len().saturating_sub(KEPT);
+        self.1.drain(..extra);
         self.0.push(Notice { text, tint, age: 0.0, life });
     }
 }
@@ -182,18 +197,77 @@ pub fn hud(
         Phase::Bag => crate::bag_ui::draw::panels(screen, false).0.left() - 6.0,
         _ => map.right(),
     };
+    let mut open_all = false;
+    let mut read_one = None;
     egui::Area::new(egui::Id::new("hud_notices")).order(egui::Order::Foreground).pivot(Align2::RIGHT_TOP).fixed_pos(egui::pos2(right - 4.0, map.top() + 4.0)).show(ctx, |ui| {
         ui.set_max_width(NOTICE_WIDTH.min(map.width() * 0.45));
         ui.spacing_mut().item_spacing.y = 2.0;
-        for (n, notice) in notices.0.iter().take(SHOWN_AT_ONCE).enumerate() {
+        // The bell: every line of the session, to read again.
+        if !notices.1.is_empty() {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |row| {
+                let bell = egui::Button::new(RichText::new(format!("{} {}", t(T::NoticesShort), notices.1.len())).color(c(PARCHMENT))).fill(backing);
+                if row.add(bell).on_hover_text(t(T::NoticesAll)).clicked() {
+                    open_all = true;
+                }
+            });
+        }
+        // With all of them open, the corner keeps only the bell.
+        let shown = if notices.2.all { 0 } else { SHOWN_AT_ONCE };
+        for (n, notice) in notices.0.iter().take(shown).enumerate() {
             let fade = ((notice.life - notice.age) / 0.6).clamp(0.0, 1.0);
             let tint = c(notice.tint).gamma_multiply(fade);
+            let short: String = if notice.text.chars().count() > SHORT { format!("{}…", notice.text.chars().take(SHORT - 1).collect::<String>()) } else { notice.text.clone() };
             let r = egui::Frame::new().fill(backing.gamma_multiply(fade)).inner_margin(egui::Margin::symmetric(4, 2)).show(ui, |ui| {
-                ui.add(egui::Label::new(RichText::new(&notice.text).color(tint)).wrap());
+                ui.add(egui::Label::new(RichText::new(short).color(tint)).wrap());
             });
-            hovered[n] = r.response.contains_pointer();
+            let r = r.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            hovered[n] = r.contains_pointer();
+            if r.clicked() {
+                read_one = Some(notice.text.clone());
+            }
         }
     });
+    if open_all {
+        notices.2.all = !notices.2.all;
+        notices.2.one = None;
+    }
+    if read_one.is_some() {
+        notices.2.one = read_one;
+    }
+    // A line read whole, or all of them, in a window of their own.
+    let mut close = false;
+    if let Some(text) = notices.2.one.clone() {
+        egui::Window::new(t(T::NoticeTitle)).id(egui::Id::new("notice_one")).collapsible(false).resizable(false).pivot(Align2::CENTER_CENTER).default_pos(map.center()).max_width(map.width() * 0.6).show(ctx, |ui| {
+            ui.add(egui::Label::new(RichText::new(&text).color(c(crate::theme::INK))).wrap());
+            if ui.add(crate::ui::kit::button(t(T::Close))).clicked() {
+                close = true;
+            }
+        });
+        if close {
+            notices.2.one = None;
+        }
+    }
+    if notices.2.all {
+        let mut shut = false;
+        egui::Window::new(t(T::NoticesAll)).id(egui::Id::new("notices_all")).collapsible(false).resizable(true).pivot(Align2::RIGHT_TOP).default_pos(egui::pos2(right - 4.0, map.top() + 26.0)).default_width(NOTICE_WIDTH * 1.4).max_height(map.height() * 0.8).show(ctx, |ui| {
+            egui::ScrollArea::vertical().stick_to_bottom(true).max_height(map.height() * 0.7).show(ui, |ui| {
+                for (text, tint) in &notices.1 {
+                    // Ink on the parchment, with the line's own colour as a mark before it.
+                    ui.horizontal_top(|row| {
+                        row.label(RichText::new("■").color(c(*tint).linear_multiply(0.7).to_opaque()));
+                        row.add(egui::Label::new(RichText::new(text).color(c(crate::theme::INK))).wrap());
+                    });
+                    ui.separator();
+                }
+            });
+            if ui.add(crate::ui::kit::button(t(T::Close))).clicked() {
+                shut = true;
+            }
+        });
+        if shut {
+            notices.2.all = false;
+        }
+    }
     for (notice, held) in notices.0.iter_mut().take(SHOWN_AT_ONCE).zip(&hovered) {
         if !held {
             notice.age += dt;
@@ -233,9 +307,8 @@ mod tests {
 
     #[test]
     fn a_line_stays_for_as_long_as_it_takes_to_read() {
-        assert_eq!(life_of("+ Rope"), 4.0);
-        let long = "x".repeat(150);
-        assert_eq!(life_of(&long), 13.0);
-        assert_eq!(life_of(&"x".repeat(1000)), 20.0);
+        assert_eq!(life_of("+ Rope"), 7.0);
+        assert_eq!(life_of(&"x".repeat(150)), 21.0);
+        assert_eq!(life_of(&"x".repeat(1000)), 30.0);
     }
 }

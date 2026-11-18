@@ -233,12 +233,37 @@ struct ExitMarker {
 #[derive(Component)]
 struct ExitAt(usize, usize);
 
-/// In the night a way out shows only once the party has seen where it is.
-fn exits_seen(game: Res<Game>, settings: Res<Settings>, cache: Res<SceneCache>, mut marks: Query<(&ExitAt, &mut Visibility)>) {
+/// The words naming where a way out leads, by the place: shown only when wanted.
+#[derive(Component, Clone)]
+struct ExitWords(String);
+
+/// In the night a way out shows only once the party has seen where it is. Its words show
+/// only while Alt is held, the mouse is over a cell of it, or the hero stands within a cell
+/// of it: the map is not covered with names.
+#[allow(clippy::too_many_arguments)]
+fn exits_seen(
+    game: Res<Game>,
+    settings: Res<Settings>,
+    cache: Res<SceneCache>,
+    keys: Res<ButtonInput<KeyCode>>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    view: Res<crate::view::View>,
+    mut marks: Query<(&ExitAt, Option<&ExitWords>, &mut Visibility)>,
+) {
     let dark = (settings.gfx.night && cache.hour.is_some_and(|h| h.dark >= 0.8)) || (settings.gfx.weather && cache.sky == crate::weather::Sky::Fog);
     let here = game.world.here();
-    for (at, mut visibility) in &mut marks {
-        let wanted = if !dark || here.was_seen(at.0, at.1) { Visibility::Inherited } else { Visibility::Hidden };
+    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    let side = TILE as f32 * crate::scene::PX as f32;
+    let hovered = crate::view::map_under_cursor(&window, &view).map(|p| ((p.x / side).floor() as i32, (p.y / side).floor() as i32));
+    let (hx, hy) = game.world.player.cell();
+    let wanted_words = |to: &str| {
+        let cells = || here.exits.iter().filter(|e| e.to == to).map(|e| (e.x as i32, e.y as i32));
+        alt || cells().any(|c| Some(c) == hovered) || cells().any(|(x, y)| (x - hx).abs() <= 1 && (y - hy).abs() <= 1)
+    };
+    for (at, words, mut visibility) in &mut marks {
+        let seen = !dark || here.was_seen(at.0, at.1);
+        let shown = seen && words.is_none_or(|w| wanted_words(&w.0));
+        let wanted = if shown { Visibility::Inherited } else { Visibility::Hidden };
         if *visibility != wanted {
             *visibility = wanted;
         }
@@ -864,7 +889,6 @@ fn draw(
         let arrow = images.add(crate::scene::exit_arrow(dir.0, dir.1).into_image());
         commands.spawn((InLocation, ExitAt(exit.x, exit.y), ExitMarker { home, dir: Vec2::new(dir.0 as f32, -(dir.1 as f32)) }, Sprite { color: Color::linear_rgb(1.5, 1.4, 1.1), ..Sprite::from_image(arrow) }, Transform::from_translation(home)));
         let name = if exit.label.trim().is_empty() { world.place_name(&exit.to).to_string() } else { exit.label.clone() };
-        let name: String = if name.chars().count() > 26 { format!("{}…", name.chars().take(25).collect::<String>()) } else { name };
         // The words sit inside the map, beside the arrow, on the side away from the edge.
         let (anchor, offset) = match dir {
             (-1, _) => (Anchor::CENTER_LEFT, Vec2::new(20.0, 0.0)),
@@ -884,9 +908,10 @@ fn draw(
         // A dark plate under the words, so that they read over any ground and over each other.
         let plate = Vec2::new(name.chars().count() as f32 * 17.6 + 12.0, 30.0);
         let pad = Vec2::new(if anchor.as_vec().x < 0.0 { -6.0 } else if anchor.as_vec().x > 0.0 { 6.0 } else { 0.0 }, if anchor.as_vec().y < 0.0 { -4.0 } else if anchor.as_vec().y > 0.0 { 4.0 } else { 0.0 });
-        commands.spawn((InLocation, ExitAt(exit.x, exit.y), Sprite::from_color(Color::srgba(0.06, 0.04, 0.03, 0.8), plate), anchor, Transform::from_translation((home.truncate() + offset + pad).extend(1.805))));
+        let words = ExitWords(exit.to.clone());
+        commands.spawn((InLocation, ExitAt(exit.x, exit.y), words.clone(), Visibility::Hidden, Sprite::from_color(Color::srgba(0.06, 0.04, 0.03, 0.8), plate), anchor, Transform::from_translation((home.truncate() + offset + pad).extend(1.805))));
         for (shift, tint, z) in [(Vec2::new(2.0, -2.0), Color::srgba(0.05, 0.03, 0.02, 0.85), 1.81), (Vec2::ZERO, Color::srgb(1.0, 0.92, 0.7), 1.82)] {
-            commands.spawn((InLocation, ExitAt(exit.x, exit.y), Text2d::new(name.clone()), fonts.body(), TextColor(tint), anchor, Transform::from_translation((home.truncate() + offset + shift).extend(z)).with_scale(Vec3::splat(2.0))));
+            commands.spawn((InLocation, ExitAt(exit.x, exit.y), words.clone(), Visibility::Hidden, Text2d::new(name.clone()), fonts.body(), TextColor(tint), anchor, Transform::from_translation((home.truncate() + offset + shift).extend(z)).with_scale(Vec3::splat(2.0))));
         }
     }
     let mut picture = |id: &str| world.sprites.get(id).or_else(|| world.sprites.get(MARKER_SPRITE)).map(|s| images.add(crate::scene::sprite(s, &world.palette).into_image()));

@@ -500,6 +500,9 @@ texts! {
     RedrawHere: "Перерисовать место", "Redraw the place";
     ArtSaved: "Готово, можно ставить:", "Done, ready to use:";
     WsRun: "Ведение игры", "Running the game";
+    NoticesAll: "Все уведомления", "All notices";
+    NoticesShort: "Уведомления:", "Notices:";
+    NoticeTitle: "Уведомление", "Notice";
     WsSize: "Размер", "Size";
     WsSizeHint: "клеток на карте: 3 — огромный босс", "cells on the map: 3 for a huge boss";
     WsGroundAction: "Действие этой земли", "An action of this ground";
