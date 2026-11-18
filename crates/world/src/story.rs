@@ -366,6 +366,15 @@ pub enum Effect {
         #[serde(default)]
         remove: bool,
     },
+    /// A thing is put into a chest, a crate or a body here, or into a merchant's wares.
+    Stash {
+        id: String,
+        name: String,
+        #[serde(default)]
+        description: String,
+        #[serde(flatten)]
+        traits: ItemTraits,
+    },
     /// Someone here says a line, in a bubble over them.
     Say {
         #[serde(default)]
@@ -1501,6 +1510,18 @@ impl World {
                             }
                         }
                         None => notes.push(format!("action: nothing called '{id}' is here")),
+                    }
+                }
+                Effect::Stash { id, name, description, traits } => {
+                    let id = resolve(id);
+                    let Some(item) = (ThingDraft { name: name.clone(), description: description.clone(), traits: traits.clone() }).item() else { continue };
+                    if let Some(p) = location.props.iter_mut().find(|p| p.id == id) {
+                        p.chest.get_or_insert_with(Default::default).items.push(item);
+                    } else if let Some(c) = location.creatures.iter_mut().find(|c| c.id == id) {
+                        c.stock.push(item.clone());
+                        c.wares.push(item);
+                    } else {
+                        notes.push(format!("stash: nothing called '{id}' is here"));
                     }
                 }
                 Effect::Say { id, text } => {

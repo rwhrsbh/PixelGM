@@ -40,6 +40,7 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "animate", "id": "hero name|creature id|party", "motion": "jump|crouch|sit|lie|fall|shake|spin|strike|dance|wave|nod|bow|cower|stagger"} — someone moves their body; everyone at the table sees it
   {"op": "edit", "id": "…", "name": "…", "size": 2, "ac": 15, "hp": 40, "speed": 30, "xp": 200, "monster": "srd index", "blocking": true, "sprite": "…"} — a creature or thing here changes: only what is given (a beast grows, a guard is badly hurt for good, a door stops blocking)
   {"op": "action", "id": "…", "label": "what the players choose", "outcome": "what happens", "effects": [], "needs": "a thing's name", "remove": false} — something new can be done with a creature or thing here (a lever appears to pull, a statue to question); "remove": true takes it away
+  {"op": "stash", "id": "chest, crate, body or merchant id", "name": "…", …as in "give"} — a thing goes into a container here (found when it is opened) or onto a merchant's shelf
   {"op": "say", "id": "creature id", "text": "…"} — someone says a line aloud, in a bubble over them
   {"op": "lines", "id": "creature id", "lines": ["…", "…"], "every": 20, "order": "in_turn|random"} — what someone keeps saying by themselves every so many seconds (a crier, a guard, a parrot); "lines": [] makes them quiet
   {"op": "wait", "seconds": 180} — everything after it in the list happens later: seconds of play (a clock minute passes each second), or "minutes"/"hours" of the clock; a fuse, a slow flood, a second blast

@@ -668,3 +668,22 @@ fn a_creature_is_changed_and_a_thing_given_an_action() {
     let touch = statue.actions.iter().find(|a| a.label == "Touch the eyes").unwrap();
     assert_eq!(touch.effects.len(), 2);
 }
+
+/// The master drew a sword and put it in the chest beforehand; the merchant sells a lamp.
+#[test]
+fn a_thing_drawn_by_the_master_waits_in_a_chest_or_on_a_merchants_shelf() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([{ "id": "crate", "name": "Crate", "description": "Wood.", "x": 5, "y": 5, "blocking": true, "sprite": "rock" }]));
+    let sword: Vec<String> = (0..48).map(|_| "0000000110000000".to_string()).collect();
+    w.apply(&steps(serde_json::json!([
+        { "op": "stash", "id": "crate", "name": "Moon blade", "kind": "weapon", "gear": "longsword", "size": [1, 3], "rows": sword, "bonus": 1 },
+        { "op": "spawn", "kind": "creature", "id": "peddler", "name": "Peddler", "x": 4, "y": 1, "attitude": "friendly" },
+        { "op": "stash", "id": "peddler", "name": "Lamp", "kind": "light", "light": 4, "price": 12 }
+    ])), None);
+    let here = &w.locations["lake"];
+    let chest = here.props.iter().find(|p| p.id == "crate").and_then(|p| p.chest.as_ref()).unwrap();
+    assert_eq!(chest.items[0].name, "Moon blade");
+    assert_eq!(chest.items[0].size_cells, Some((1, 3)));
+    assert_eq!(chest.items[0].rows.len(), 48);
+    let peddler = here.creatures.iter().find(|c| c.id == "peddler").unwrap();
+    assert!(peddler.stock.iter().any(|i| i.name == "Lamp" && i.price == 12));
+}

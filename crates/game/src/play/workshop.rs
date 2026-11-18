@@ -55,6 +55,8 @@ enum MakeKind {
     Creature,
     Object,
     Tile,
+    /// A thing for a hero's bag.
+    Item,
 }
 
 /// A thing sold, or kept in a chest.
@@ -157,6 +159,23 @@ pub struct Workshop {
     last_cell: Option<(usize, usize)>,
     kind: MakeKind,
     grid: Vec<u8>,
+    /// The drawing's width and height in pixels: a cell is sixteen, a thing for the bag
+    /// as many cells as it takes.
+    gw: usize,
+    gh: usize,
+    /// A thing for the bag: its cells across and down, and what it is.
+    cells: (usize, usize),
+    item_kind: String,
+    gear: String,
+    heal: String,
+    damage: String,
+    bonus: i32,
+    light: u8,
+    price: u32,
+    rarity: String,
+    /// Who gets it, or what it is put into.
+    give_to: String,
+    stash_in: String,
     color: u8,
     id: String,
     name: String,
@@ -229,6 +248,19 @@ impl Default for Workshop {
             last_cell: None,
             kind: MakeKind::Creature,
             grid: vec![0; SIDE * SIDE],
+            gw: SIDE,
+            gh: SIDE,
+            cells: (1, 1),
+            item_kind: "weapon".into(),
+            gear: String::new(),
+            heal: String::new(),
+            damage: String::new(),
+            bonus: 0,
+            light: 0,
+            price: 10,
+            rarity: String::new(),
+            give_to: String::new(),
+            stash_in: String::new(),
             color: 1,
             id: String::new(),
             name: String::new(),
@@ -261,16 +293,32 @@ impl Default for Workshop {
 impl Workshop {
     /// The drawing as rows of the world's palette characters.
     fn rows(&self) -> Vec<String> {
-        self.grid.chunks(SIDE).map(|row| row.iter().map(|i| world::model::char_of(*i)).collect()).collect()
+        self.grid.chunks(self.gw).map(|row| row.iter().map(|i| world::model::char_of(*i)).collect()).collect()
     }
 
     /// A picture of the world taken into the drawing, when it is of the drawing's size.
     fn take(&mut self, rows: &[String]) {
-        if rows.len() != SIDE || rows.iter().any(|r| r.chars().count() != SIDE) {
+        let width = rows.first().map_or(0, |r| r.chars().count());
+        if width == 0 || width > 64 || rows.len() > 64 || rows.iter().any(|r| r.chars().count() != width) {
             return;
         }
+        (self.gw, self.gh) = (width, rows.len());
         let index = |ch: char| (0..world::model::PALETTE_MAX as u8).find(|i| world::model::char_of(*i) == ch).unwrap_or(0);
         self.grid = rows.iter().flat_map(|r| r.chars().map(index)).collect();
+    }
+
+    /// The drawing made this size, what was drawn kept in its top left corner.
+    fn resize(&mut self, gw: usize, gh: usize) {
+        if (gw, gh) == (self.gw, self.gh) {
+            return;
+        }
+        let mut grid = vec![0; gw * gh];
+        for y in 0..gh.min(self.gh) {
+            for x in 0..gw.min(self.gw) {
+                grid[y * gw + x] = self.grid[y * self.gw + x];
+            }
+        }
+        (self.grid, self.gw, self.gh) = (grid, gw, gh);
     }
 
     /// The spawn of what is being made, with everything set for it.
@@ -306,7 +354,7 @@ impl Workshop {
                     spawn["key"] = self.key.trim().into();
                 }
             }
-            MakeKind::Tile => {}
+            MakeKind::Tile | MakeKind::Item => {}
         }
         spawn
     }
@@ -500,19 +548,18 @@ fn heading(ui: &mut Ui, text: &str) {
 /// three by three to show how it lies on the ground.
 fn preview(ui: &mut Ui, ws: &Workshop, world: &World, scale: f32, tiled: bool) {
     let times = if tiled { 3 } else { 1 };
-    let side = SIDE as f32 * scale * times as f32;
-    let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(vec2(ws.gw as f32, ws.gh as f32) * scale * times as f32, Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, c(WOOD_DEEP));
     for ty in 0..times {
         for tx in 0..times {
-            for y in 0..SIDE {
-                for x in 0..SIDE {
-                    let [r, g, b, a] = world.palette.rgba(ws.grid[y * SIDE + x]);
+            for y in 0..ws.gh {
+                for x in 0..ws.gw {
+                    let [r, g, b, a] = world.palette.rgba(ws.grid[y * ws.gw + x]);
                     if a == 0 {
                         continue;
                     }
-                    let at = rect.min + vec2(((tx * SIDE + x) as f32) * scale, ((ty * SIDE + y) as f32) * scale);
+                    let at = rect.min + vec2(((tx * ws.gw + x) as f32) * scale, ((ty * ws.gh + y) as f32) * scale);
                     painter.rect_filled(Rect::from_min_size(at, vec2(scale, scale)), 0.0, egui::Color32::from_rgb(r, g, b));
                 }
             }
@@ -522,7 +569,8 @@ fn preview(ui: &mut Ui, ws: &Workshop, world: &World, scale: f32, tiled: bool) {
 }
 
 /// The cells of one colour joined to `start`, filled with `color`.
-fn flood(grid: &mut [u8], start: usize, color: u8) {
+fn flood(grid: &mut [u8], start: usize, color: u8, side: usize) {
+    let rows = grid.len() / side;
     let from = grid[start];
     if from == color {
         return;
@@ -533,18 +581,18 @@ fn flood(grid: &mut [u8], start: usize, color: u8) {
             continue;
         }
         grid[at] = color;
-        let (x, y) = (at % SIDE, at / SIDE);
+        let (x, y) = (at % side, at / side);
         if x > 0 {
             stack.push(at - 1);
         }
-        if x + 1 < SIDE {
+        if x + 1 < side {
             stack.push(at + 1);
         }
         if y > 0 {
-            stack.push(at - SIDE);
+            stack.push(at - side);
         }
-        if y + 1 < SIDE {
-            stack.push(at + SIDE);
+        if y + 1 < rows {
+            stack.push(at + side);
         }
     }
 }
@@ -763,7 +811,7 @@ fn make_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, tiles: &[(St
     let t = |text: T| text.text(lang);
     let mut panels = std::mem::take(&mut ws.panels);
     window(ctx, &mut panels, "drawing", t(T::WsDrawing), egui::pos2(8.0, top), vec2(PIXEL * SIDE as f32 + 140.0, 420.0), |ui| {
-        let kinds = [(MakeKind::Creature, T::WsCreature), (MakeKind::Object, T::WsObject), (MakeKind::Tile, T::WsTile)];
+        let kinds = [(MakeKind::Creature, T::WsCreature), (MakeKind::Object, T::WsObject), (MakeKind::Tile, T::WsTile), (MakeKind::Item, T::WsItem)];
         ui.horizontal(|row| {
             row.label(t(T::WsWhat));
             egui::ComboBox::from_id_salt("ws_kind").width(200.0).selected_text(t(kinds.iter().find(|(k, _)| *k == ws.kind).map_or(T::WsCreature, |(_, l)| *l))).show_ui(row, |ui| {
@@ -772,6 +820,9 @@ fn make_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, tiles: &[(St
                 }
             });
         });
+        // A thing for the bag is drawn a cell of sixteen pixels to each cell it takes.
+        let (gw, gh) = if ws.kind == MakeKind::Item { (SIDE * ws.cells.0, SIDE * ws.cells.1) } else { (SIDE, SIDE) };
+        ws.resize(gw, gh);
         // The pens.
         ui.horizontal(|row| {
             for (pen, label, about) in [(Pen::Pencil, T::WsPencil, T::WsPencilHint), (Pen::Eraser, T::WsEraser, T::WsEraserHint), (Pen::Fill, T::WsFill, T::WsFillHint), (Pen::Picker, T::WsPicker, T::WsPickerHint)] {
@@ -782,22 +833,24 @@ fn make_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, tiles: &[(St
         });
         ui.horizontal_top(|row| {
             // The drawing: the left button uses the pen, the right one always clears.
-            let (rect, response) = row.allocate_exact_size(vec2(PIXEL * SIDE as f32, PIXEL * SIDE as f32), Sense::click_and_drag());
+            // A cell of the drawing as big as fits: a long thing for the bag is drawn smaller.
+            let pixel = PIXEL.min(176.0 / ws.gw as f32).min(200.0 / ws.gh as f32);
+            let (rect, response) = row.allocate_exact_size(vec2(pixel * ws.gw as f32, pixel * ws.gh as f32), Sense::click_and_drag());
             let painter = row.painter_at(rect);
-            for y in 0..SIDE {
-                for x in 0..SIDE {
-                    let cell = Rect::from_min_size(rect.min + vec2(x as f32 * PIXEL, y as f32 * PIXEL), vec2(PIXEL, PIXEL));
-                    let [r, g, b, a] = world.palette.rgba(ws.grid[y * SIDE + x]);
+            for y in 0..ws.gh {
+                for x in 0..ws.gw {
+                    let cell = Rect::from_min_size(rect.min + vec2(x as f32 * pixel, y as f32 * pixel), vec2(pixel, pixel));
+                    let [r, g, b, a] = world.palette.rgba(ws.grid[y * ws.gw + x]);
                     let shade = if (x + y) % 2 == 0 { 200 } else { 225 };
                     painter.rect_filled(cell, 0.0, if a == 0 { egui::Color32::from_gray(shade) } else { egui::Color32::from_rgb(r, g, b) });
                 }
             }
             let mut cell_under = None;
             if let Some(at) = response.hover_pos() {
-                let (x, y) = (((at.x - rect.min.x) / PIXEL) as usize, ((at.y - rect.min.y) / PIXEL) as usize);
-                if x < SIDE && y < SIDE {
-                    cell_under = Some(y * SIDE + x);
-                    let cell = Rect::from_min_size(rect.min + vec2(x as f32 * PIXEL, y as f32 * PIXEL), vec2(PIXEL, PIXEL));
+                let (x, y) = (((at.x - rect.min.x) / pixel) as usize, ((at.y - rect.min.y) / pixel) as usize);
+                if x < ws.gw && y < ws.gh {
+                    cell_under = Some(y * ws.gw + x);
+                    let cell = Rect::from_min_size(rect.min + vec2(x as f32 * pixel, y as f32 * pixel), vec2(pixel, pixel));
                     painter.rect_stroke(cell, 0.0, egui::Stroke::new(1.0, c(INK)), egui::StrokeKind::Inside);
                 }
             }
@@ -813,7 +866,7 @@ fn make_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, tiles: &[(St
                         Pen::Fill => {
                             if response.is_pointer_button_down_on() && row.input(|i| i.pointer.primary_pressed()) {
                                 let color = ws.color;
-                                flood(&mut ws.grid, at, color);
+                                flood(&mut ws.grid, at, color, ws.gw);
                             }
                         }
                         Pen::Picker => {
@@ -828,10 +881,10 @@ fn make_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, tiles: &[(St
                 hint(col, t(T::WsPreview));
                 preview(col, ws, world, 1.0, false);
                 preview(col, ws, world, 2.0, false);
-                if ws.kind == MakeKind::Tile {
-                    preview(col, ws, world, 1.0, true);
-                } else {
-                    preview(col, ws, world, 4.0, false);
+                match ws.kind {
+                    MakeKind::Tile => preview(col, ws, world, 1.0, true),
+                    MakeKind::Item => {}
+                    _ => preview(col, ws, world, 4.0, false),
                 }
             });
         });
@@ -859,7 +912,7 @@ fn make_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, tiles: &[(St
         });
         ui.horizontal_wrapped(|row| {
             if row.add(button(t(T::WsClear))).clicked() {
-                ws.grid = vec![0; SIDE * SIDE];
+                ws.grid = vec![0; ws.gw * ws.gh];
             }
             // A picture of the world taken into the drawing, to change it.
             egui::ComboBox::from_id_salt("ws_take").width(150.0).selected_text(t(T::WsTake)).height(260.0).show_ui(row, |ui| {
@@ -916,6 +969,7 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
     });
     match ws.kind {
         MakeKind::Tile => {}
+        MakeKind::Item => item_properties(ui, ws, world, acts, lang),
         MakeKind::Object => {
             egui::CollapsingHeader::new(dark(t(T::WsBehaviour))).default_open(true).show(ui, |ui| {
                 kit::toggle(ui, t(T::WsBlocking), &mut ws.blocking);
@@ -1020,6 +1074,9 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
             });
         }
     }
+    if ws.kind == MakeKind::Item {
+        return;
+    }
     ui.add_space(6.0);
     let ready = !ws.id.trim().is_empty() && ws.grid.iter().any(|i| *i != 0);
     ui.horizontal(|row| {
@@ -1030,6 +1087,110 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
             let (mode, kind, loaded, arts, made) = (ws.mode, ws.kind, ws.loaded, std::mem::take(&mut ws.arts), std::mem::take(&mut ws.made));
             *ws = Workshop { mode, kind, loaded, arts, made, ..Workshop::default() };
         }
+    });
+}
+
+/// A thing for the bag: what it is and its numbers, and where it goes — to a hero now, or
+/// into a chest or onto a merchant's shelf to be found later.
+fn item_properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>, lang: Lang) {
+    let t = |text: T| text.text(lang);
+    let ru = lang == Lang::Ru;
+    egui::CollapsingHeader::new(dark(t(T::WsItemWhat))).default_open(true).show(ui, |ui| {
+        ui.horizontal(|row| {
+            row.label(t(T::WsCells));
+            row.add(egui::DragValue::new(&mut ws.cells.0).range(1..=4).suffix(" ×"));
+            row.add(egui::DragValue::new(&mut ws.cells.1).range(1..=4));
+            hint(row, t(T::WsCellsHint));
+        });
+        ui.horizontal(|row| {
+            row.label(t(T::WsItemKind));
+            egui::ComboBox::from_id_salt("item_kind").width(130.0).selected_text(ws.item_kind.clone()).show_ui(row, |ui| {
+                for kind in KINDS {
+                    ui.selectable_value(&mut ws.item_kind, kind.to_string(), kind);
+                }
+            });
+        });
+        if matches!(ws.item_kind.as_str(), "weapon" | "armor") {
+            // What it works as by the rules: its own name and picture stay.
+            let srd = rules::srd();
+            let mut gear: Vec<(String, String)> = if ws.item_kind == "weapon" { srd.weapons.iter().map(|(i, w)| (i.clone(), w.name.clone())).collect() } else { srd.armors.iter().map(|(i, a)| (i.clone(), a.name.clone())).collect() };
+            gear.sort_by(|a, b| a.1.cmp(&b.1));
+            ui.horizontal(|row| {
+                row.label(t(T::WsGear));
+                let shown = gear.iter().find(|(i, _)| *i == ws.gear).map_or("—".to_string(), |(_, n)| rules::tr(ru, n).to_string());
+                egui::ComboBox::from_id_salt("item_gear").width(150.0).height(240.0).selected_text(shown).show_ui(row, |ui| {
+                    for (index, name) in &gear {
+                        ui.selectable_value(&mut ws.gear, index.clone(), rules::tr(ru, name));
+                    }
+                });
+                row.label("+");
+                row.add(egui::DragValue::new(&mut ws.bonus).range(0..=3));
+            });
+        }
+        egui::Grid::new("item_numbers").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |grid| {
+            grid.label(t(T::WsHeal));
+            grid.add(egui::TextEdit::singleline(&mut ws.heal).desired_width(60.0).hint_text("2d4+2"));
+            grid.label(t(T::WsDamage));
+            grid.add(egui::TextEdit::singleline(&mut ws.damage).desired_width(60.0).hint_text("1d6"));
+            grid.end_row();
+            grid.label(t(T::WsLight));
+            grid.add(egui::DragValue::new(&mut ws.light).range(0..=8));
+            grid.label(t(T::WsPrice));
+            grid.add(egui::DragValue::new(&mut ws.price).range(0..=100_000));
+            grid.end_row();
+        });
+        ui.horizontal(|row| {
+            row.label(t(T::WsRarity));
+            egui::ComboBox::from_id_salt("item_rarity").width(120.0).selected_text(if ws.rarity.is_empty() { "common" } else { ws.rarity.as_str() }).show_ui(row, |ui| {
+                for rarity in ["", "uncommon", "rare", "legendary"] {
+                    ui.selectable_value(&mut ws.rarity, rarity.to_string(), if rarity.is_empty() { "common" } else { rarity });
+                }
+            });
+        });
+    });
+    let ready = !ws.name.trim().is_empty() && ws.grid.iter().any(|i| *i != 0);
+    let thing = {
+        let mut draft = serde_json::json!({ "name": ws.name.trim(), "description": ws.description.trim(), "kind": ws.item_kind, "size": [ws.cells.0, ws.cells.1], "rows": ws.rows(), "heal": ws.heal.trim(), "damage": ws.damage.trim(), "price": ws.price, "rarity": ws.rarity });
+        if !ws.gear.is_empty() && matches!(ws.item_kind.as_str(), "weapon" | "armor") {
+            draft["gear"] = ws.gear.clone().into();
+            draft["bonus"] = ws.bonus.into();
+        }
+        if ws.light > 0 {
+            draft["light"] = ws.light.into();
+        }
+        draft
+    };
+    egui::CollapsingHeader::new(dark(t(T::WsItemWhere))).default_open(true).show(ui, |ui| {
+        ui.horizontal(|row| {
+            let heroes: Vec<String> = world.party.iter().map(|h| h.name.clone()).collect();
+            egui::ComboBox::from_id_salt("give_to").width(120.0).selected_text(if ws.give_to.is_empty() { "—".to_string() } else { ws.give_to.clone() }).show_ui(row, |ui| {
+                for hero in &heroes {
+                    ui.selectable_value(&mut ws.give_to, hero.clone(), hero.as_str());
+                }
+            });
+            if row.add(button(t(T::WsGiveNow)).primary().enabled(ready && !ws.give_to.is_empty(), t(T::WsNeedItem))).clicked() {
+                let mut effect = thing.clone();
+                effect["op"] = "give".into();
+                effect["to"] = ws.give_to.clone().into();
+                acts.push(GmAct::Apply(Box::new(TurnDraft { effects: vec![effect], ..TurnDraft::default() })));
+            }
+        });
+        ui.horizontal(|row| {
+            let here = world.here();
+            let holders: Vec<(String, String)> = here.props.iter().map(|p| (p.id.clone(), p.name.clone())).chain(here.creatures.iter().filter(|c| !c.stock.is_empty()).map(|c| (c.id.clone(), c.name.clone()))).collect();
+            let shown = holders.iter().find(|(id, _)| *id == ws.stash_in).map_or("—".to_string(), |(_, n)| n.clone());
+            egui::ComboBox::from_id_salt("stash_in").width(120.0).selected_text(shown).show_ui(row, |ui| {
+                for (id, name) in &holders {
+                    ui.selectable_value(&mut ws.stash_in, id.clone(), name.as_str());
+                }
+            });
+            if row.add(button(t(T::WsStashNow)).enabled(ready && !ws.stash_in.is_empty(), t(T::WsNeedItem))).on_hover_text(t(T::WsStashHint)).clicked() {
+                let mut effect = thing.clone();
+                effect["op"] = "stash".into();
+                effect["id"] = ws.stash_in.clone().into();
+                acts.push(GmAct::Apply(Box::new(TurnDraft { effects: vec![effect], ..TurnDraft::default() })));
+            }
+        });
     });
 }
 
