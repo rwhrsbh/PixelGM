@@ -226,7 +226,7 @@ fn first_token_text(settings: &Settings) -> String {
 /// The tabs of the screen, and the settings on each.
 const TABS: [(T, &[Choice]); 3] = [
     (T::TabGame, &[Choice::Language, Choice::Initiative, Choice::Predraw, Choice::TurnTimer]),
-    (T::TabScreen, &[Choice::Screen, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill]),
+    (T::TabScreen, &[Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill]),
     (T::TabSound, &[Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice]),
 ];
 
@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn every_setting_is_on_a_tab_or_the_masters_screen_and_says_what_it_does() {
         let shown = all();
-        for choice in [Choice::TurnTimer, Choice::Language, Choice::Screen, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw, Choice::Initiative] {
+        for choice in [Choice::TurnTimer, Choice::Language, Choice::UiSize, Choice::Window, Choice::Size, Choice::Fill, Choice::Music, Choice::OnlineMusic, Choice::Sound, Choice::Voice, Choice::Thinking, Choice::FirstToken, Choice::Fallback, Choice::Predraw, Choice::Initiative] {
             assert!(shown.contains(&choice), "{choice:?} is on no tab");
             assert!(!choice.hint().text(Lang::Ru).is_empty(), "{choice:?}");
         }

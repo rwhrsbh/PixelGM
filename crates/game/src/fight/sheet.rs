@@ -36,6 +36,7 @@ pub fn sheet(
     (phase, game, view, lang, session, settings): (Res<Phase>, Res<Game>, Res<FightView>, Res<Lang>, Res<Session>, Res<Settings>),
     table: Res<crate::coop::Table>,
     mut slot: ResMut<crate::view::StoryPanel>,
+    camera: Res<crate::view::View>,
     mut field: ResMut<StuntField>,
     mut was_writing: Local<bool>,
     mut needed: Local<f32>,
@@ -52,13 +53,14 @@ pub fn sheet(
     let Ok(ctx) = egui.ctx_mut() else { return };
     let Some(mut ui) = kit::screen_ui(ctx, "fight_sheet") else { return };
     let screen = ui.max_rect();
-    // As tall as what it holds needs, and never more than a strip: in a fight the map is
-    // what the player looks at.
-    let height = needed.clamp(FIGHT_LEAST, FIGHT_MOST);
+    // One height for the whole fight, never more than a strip: the log grows line by line
+    // and buttons come and go with whose turn it is, and the map must not jump with them.
+    let _ = FIGHT_LEAST;
+    let height = FIGHT_MOST;
     if slot.0 != height {
         slot.0 = height;
     }
-    let map = Rect::from_min_max(screen.min, Pos2::new(screen.right() - PARTY, screen.bottom() - HUD - height));
+    let map = Rect::from_min_max(screen.min, Pos2::new(screen.right() - PARTY, screen.bottom() - HUD - height.max(camera.panel())));
     let rect = Rect::from_min_max(Pos2::new(screen.left(), map.bottom()), Pos2::new(map.right(), screen.bottom() - HUD));
     let fight = world.fight.as_ref();
 

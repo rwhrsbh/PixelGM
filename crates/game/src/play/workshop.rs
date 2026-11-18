@@ -614,7 +614,7 @@ fn window<R>(ctx: &egui::Context, panels: &mut Vec<Rect>, id: &str, title: &str,
             if !folded {
                 ui.separator();
                 // Whatever the window holds scrolls when the screen is too low for it.
-                let room = (ui.ctx().content_rect().height() - ui.min_rect().top() - 24.0).max(120.0);
+                let room = (crate::ui::kit::stage(ui.ctx()).height() - ui.min_rect().top() - 24.0).max(120.0);
                 egui::ScrollArea::vertical().id_salt(("window_scroll", id)).max_height(room).auto_shrink([false, true]).show(ui, |ui| {
                     inner = Some(add(ui));
                 });
@@ -759,12 +759,12 @@ pub(super) fn workshop_ui(
         entities: ws.favorites.entities.iter().map(|e| texture(key(&e.art), || art_pixels(&e.art), &mut egui, &mut images, &mut cache)).collect(),
     };
     let Ok(ctx) = egui.ctx_mut() else { return };
-    let screen = ctx.content_rect();
+    let screen = crate::ui::kit::stage(ctx);
     let mut acts: Vec<GmAct> = Vec::new();
     let ws = &mut *ws;
     // The bar of rooms across the top: what the master is doing now, at a glance.
     let rooms = [(Mode::Run, T::WsRun, T::WsRunAbout), (Mode::Map, T::WsMap, T::WsMapAbout), (Mode::Make, T::WsMake, T::WsMakeAbout), (Mode::Library, T::WsLibrary, T::WsLibraryAbout), (Mode::Rules, T::WsRules, T::WsRulesAbout)];
-    let bar = egui::Area::new(egui::Id::new("workshop_bar")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, vec2(0.0, 4.0)).show(ctx, |ui| {
+    let bar = egui::Area::new(egui::Id::new("workshop_bar")).order(egui::Order::Foreground).pivot(egui::Align2::CENTER_TOP).fixed_pos(crate::ui::kit::stage(ctx).center_top() + vec2(0.0, 4.0)).show(ctx, |ui| {
         frame().inner_margin(4.0).show(ui, |ui| {
             ui.horizontal(|row| {
                 for (mode, label, about) in rooms {
@@ -950,7 +950,7 @@ fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, eg
     };
     let tool = [(MapTool::Brush, T::WsBrush), (MapTool::Rect, T::WsRect), (MapTool::Erase, T::WsErase), (MapTool::Place, T::WsPlace), (MapTool::Move, T::WsMove)].iter().find(|(tool, _)| *tool == ws.tool).map_or("", |(_, l)| t(*l));
     let line = [tool.to_string(), chosen, ws.hovered.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("   ·   ");
-    let status = egui::Area::new(egui::Id::new("workshop_status")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -6.0)).show(ctx, |ui| {
+    let status = egui::Area::new(egui::Id::new("workshop_status")).order(egui::Order::Foreground).pivot(egui::Align2::CENTER_BOTTOM).fixed_pos(crate::ui::kit::stage(ctx).center_bottom() + vec2(0.0, -6.0)).show(ctx, |ui| {
         frame().inner_margin(5.0).show(ui, |ui| {
             ui.add(egui::Label::new(egui::RichText::new(line).color(c(INK))).wrap_mode(egui::TextWrapMode::Extend));
         });

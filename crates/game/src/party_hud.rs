@@ -60,7 +60,7 @@ fn column(mut egui: EguiContexts, game: Res<Game>, session: Res<Session>, settin
         return;
     }
     let t = |text: T| text.text(*lang);
-    let screen = ctx.content_rect();
+    let screen = crate::ui::kit::stage(ctx);
     let strip = crate::play::HUD_HEIGHT * crate::screen::UI_PIXEL;
     let rect = Rect::from_min_max(Pos2::new(screen.right() - WIDTH, screen.top()), Pos2::new(screen.right(), screen.bottom() - strip));
     egui::Area::new(egui::Id::new("party")).order(egui::Order::Background).fixed_pos(rect.min).interactable(false).show(ctx, |ui| {

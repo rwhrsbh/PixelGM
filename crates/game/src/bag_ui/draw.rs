@@ -412,7 +412,7 @@ pub fn quick_bar(mut egui: EguiContexts, game: Res<Game>, session: Res<Session>,
     if !kit::ready(ctx) {
         return;
     }
-    let screen = ctx.content_rect();
+    let screen = crate::ui::kit::stage(ctx);
     let strip = crate::play::HUD_HEIGHT * UI_PIXEL;
     let side = strip - 4.0;
     egui::Area::new(egui::Id::new("quick_bar")).order(egui::Order::Background).fixed_pos(Pos2::new(screen.left() + 4.0, screen.bottom() - strip + 2.0)).show(ctx, |ui| {

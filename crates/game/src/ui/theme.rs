@@ -3,24 +3,14 @@
 use super::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Stroke, TextStyle};
 use crate::theme::*;
 
-/// Physical pixels to a unit of the interface, for the screen the player chose (0 lets the
-/// window's height decide, then Full HD, 2K and 4K) and the size (0 smaller, 1 as is, 2
-/// larger). A window smaller than the screen chosen gets a smaller unit, so that nothing
-/// is cut off: everything is laid out in at least 800 by 450 units.
-pub fn zoom(window_height: u32, screen: u8, size: u8) -> f32 {
-    let screen = match screen {
-        1..=3 => screen,
-        _ if window_height < 1300 => 1,
-        _ if window_height < 1900 => 2,
-        _ => 3,
-    };
-    let base = match screen {
-        1 | 2 => 2.0,
-        _ => 3.0,
-    };
-    let unit = (base + size.min(2) as f32 - 1.0).max(1.0);
-    let fits = window_height.max(1) as f32 / 450.0;
-    unit.min(fits)
+/// How much larger or smaller than the picture's own scale the interface is drawn, by the
+/// player's choice of its size.
+pub fn size_ratio(size: u8) -> f32 {
+    match size {
+        0 => 0.75,
+        2 => 1.25,
+        _ => 1.0,
+    }
 }
 
 pub fn c(rgba: Rgba) -> Color32 {
@@ -118,15 +108,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_unit_follows_the_screen_chosen_and_never_cuts_anything_off() {
-        // Left to the window: Full HD and 2K are two pixels a unit, 4K three.
-        assert_eq!([zoom(1080, 0, 1), zoom(1440, 0, 1), zoom(2160, 0, 1)], [2.0, 2.0, 3.0]);
-        // Chosen by hand, and a step smaller or larger.
-        assert_eq!([zoom(2160, 1, 1), zoom(2160, 3, 0), zoom(2160, 3, 2)], [2.0, 2.0, 4.0]);
-        // A window lower than the screen chosen: everything still fits in 450 units.
-        assert_eq!(zoom(768, 1, 1), 768.0 / 450.0);
-        assert_eq!(zoom(720, 0, 2), 1.6);
-        // Never below one pixel a unit on a screen that has room for it.
-        assert_eq!(zoom(1080, 1, 0), 1.0);
+    fn the_interface_is_a_step_smaller_or_larger_by_choice() {
+        assert_eq!([size_ratio(0), size_ratio(1), size_ratio(2)], [0.75, 1.0, 1.25]);
     }
 }

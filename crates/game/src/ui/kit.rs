@@ -381,6 +381,8 @@ fn sheet_with<R>(ui: &mut Ui, sheet: Sheet, body: impl FnOnce(&mut Ui) -> R, foo
     let wanted: Option<f32> = ui.data(|d| d.get_temp(id));
     let height = if sheet.fixed { sheet.max.y } else { wanted.unwrap_or(sheet.max.y) }.min(sheet.max.y).min(room.y).max(1.0);
     let rect = Rect::from_min_size(Pos2::new(screen.center().x - width / 2.0, screen.top() + SHEET_GAP + sheet.top), vec2(width, height));
+    // Where the sheet lies, for what is laid beside or over it (the lobby's talk).
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("sheet_rect", sheet.id)), rect));
     let (out, needed) = fill(ui, sheet.id, rect, sheet.title, sheet.about, body, footer);
     if !sheet.fixed && wanted.is_none_or(|w| (w - needed).abs() > 0.5) {
         ui.data_mut(|d| d.insert_temp(id, needed));
@@ -456,7 +458,22 @@ pub fn screen_ui(ctx: &egui::Context, id: &'static str) -> Option<Ui> {
     if !ready(ctx) {
         return None;
     }
-    Some(Ui::new(ctx.clone(), egui::Id::new(id), UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.content_rect())))
+    Some(Ui::new(ctx.clone(), egui::Id::new(id), UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(stage(ctx))))
+}
+
+/// The part of the window the game's picture takes, in points: everything of the interface
+/// lies on it, whatever the shape of the screen.
+pub fn stage(ctx: &egui::Context) -> Rect {
+    ctx.data(|d| d.get_temp(egui::Id::new("stage"))).unwrap_or_else(|| ctx.content_rect())
+}
+
+pub fn set_stage(ctx: &egui::Context, rect: Rect) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("stage"), rect));
+}
+
+/// Where the sheet of that id lay when it was last drawn.
+pub fn sheet_rect(ctx: &egui::Context, id: &str) -> Option<Rect> {
+    ctx.data(|d| d.get_temp(egui::Id::new(("sheet_rect", id))))
 }
 
 /// Whether the game's own type has reached egui.

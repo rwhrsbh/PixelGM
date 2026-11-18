@@ -52,7 +52,7 @@ pub fn overlay(
     mut commands: Commands,
     (phase, game, gm, lang, session, table, panel): (Res<Phase>, Res<Game>, Res<Gm>, Res<Lang>, Res<Session>, Res<Table>, Res<Panel>),
     (mut settings, store, mut folded, use_for, link): (ResMut<Settings>, Res<Store>, ResMut<Folded>, Res<UseFor>, Res<crate::coop::SteamLink>),
-    (time, mut slot, arrival): (Res<Time>, ResMut<crate::view::StoryPanel>, Res<Arrival>),
+    (time, mut slot, arrival, view): (Res<Time>, ResMut<crate::view::StoryPanel>, Res<Arrival>, Res<crate::view::View>),
     mut translator: ResMut<Translator>,
     mut fields: ResMut<Fields>,
     mut was: Local<Option<std::mem::Discriminant<Phase>>>,
@@ -138,7 +138,10 @@ pub fn overlay(
     if slot.0 != panel_height && *phase != Phase::Fighting {
         slot.0 = panel_height;
     }
-    let story_rect = Rect::from_min_max(Pos2::new(screen.left(), screen.bottom() - HUD - panel_height), Pos2::new(screen.right() - PARTY, screen.bottom() - HUD));
+    // While the room under the map is held for a moment, the sheet fills it: no gap opens
+    // between the map and the sheet.
+    let drawn = if panel_height > 0.0 { panel_height.max(view.panel()) } else { 0.0 };
+    let story_rect = Rect::from_min_max(Pos2::new(screen.left(), screen.bottom() - HUD - drawn), Pos2::new(screen.right() - PARTY, screen.bottom() - HUD));
     let no_typing = !ctx.egui_wants_keyboard_input();
     let digit = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6].iter().position(|k| ui.input(|i| i.key_pressed(*k)));
     match &sheet {

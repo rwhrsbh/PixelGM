@@ -949,7 +949,7 @@ fn keys_vote(
     }
     let t = |text: T| text.text(*lang);
     if let Some(left) = table.keys_wait {
-        crate::ui::egui::Area::new(crate::ui::egui::Id::new("keys_wait")).anchor(crate::ui::egui::Align2::CENTER_TOP, vec2(0.0, 30.0)).interactable(false).show(ctx, |ui| {
+        crate::ui::egui::Area::new(crate::ui::egui::Id::new("keys_wait")).pivot(crate::ui::egui::Align2::CENTER_TOP).fixed_pos(crate::ui::kit::stage(ctx).center_top() + vec2(0.0, 30.0)).interactable(false).show(ctx, |ui| {
             crate::ui::egui::Frame::new().fill(crate::ui::egui::Color32::from_rgba_unmultiplied(0x10, 0x0a, 0x08, 0xe8)).inner_margin(crate::ui::egui::Margin::symmetric(6, 3)).show(ui, |ui| {
                 ui.label(crate::ui::egui::RichText::new(format!("{} {left} {}", t(T::KeysOutAgain), t(T::KeysOutSeconds))).color(crate::ui::theme::c(BRASS_LIGHT)));
             });
@@ -957,8 +957,8 @@ fn keys_vote(
     }
     let Some(vote) = table.keys_vote.clone().filter(|v| !keys && !v.entering) else { return };
     let mut chose = None;
-    crate::ui::egui::Area::new(crate::ui::egui::Id::new("keys_vote")).order(crate::ui::egui::Order::Foreground).fixed_pos(ctx.content_rect().min).show(ctx, |ui| {
-        ui.set_min_size(ctx.content_rect().size());
+    crate::ui::egui::Area::new(crate::ui::egui::Id::new("keys_vote")).order(crate::ui::egui::Order::Foreground).fixed_pos(crate::ui::kit::stage(ctx).min).show(ctx, |ui| {
+        ui.set_min_size(crate::ui::kit::stage(ctx).size());
         let paper = Sheet { id: "keys_vote", title: t(T::KeysOutTitle), about: "", max: vec2(320.0, 200.0), top: 90.0, fixed: false };
         kit::sheet(
             ui,
