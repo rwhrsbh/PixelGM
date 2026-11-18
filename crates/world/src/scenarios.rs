@@ -545,3 +545,21 @@ fn each_hero_reads_the_part_written_for_it_and_only_its_own_choices() {
     assert!(turn.every_option().len() == 2, "every choice can be found to be taken");
     assert!(crate::prompt::turn(&w, "x", None).contains("\"parts\""), "the master is told how to write parts");
 }
+
+#[test]
+fn the_master_has_the_place_drawn_again_as_wanted_and_it_takes_the_old_ones_place() {
+    let mut w = three_at_the_lake();
+    let camp = w.locations.keys().find(|k| *k != "lake").unwrap().clone();
+    let mut seen = w.clone();
+    seen.stubs.insert("lake".into(), crate::Stub { name: "The Lake".into(), description: "Still water.".into() });
+    seen.redraw_wish = "a frozen lake with a hut on the ice".into();
+    let asked = crate::prompt::new_location(&seen, "lake", &camp);
+    assert!(asked.contains("THE GAME MASTER HAS THIS PLACE DRAWN AGAIN, AS THEY WANT IT: a frozen lake with a hut on the ice"), "{asked}");
+    assert!(asked.contains(&format!("{camp} (")), "its ways out are kept");
+    let drawn: crate::LocationDraft = serde_json::from_str(&fake::location("lake", "The Frozen Lake", &camp)).unwrap();
+    w.add_location(&drawn, "lake", None).unwrap();
+    assert_eq!(w.locations["lake"].name, "The Frozen Lake");
+    assert!(w.locations["lake"].exits.iter().any(|e| e.to == camp), "the way back is still there");
+    let (x, y) = w.locations["lake"].spawn;
+    assert!(!w.locations["lake"].blocked(x as i32, y as i32, &w.tiles), "everyone stands on ground that can be walked");
+}

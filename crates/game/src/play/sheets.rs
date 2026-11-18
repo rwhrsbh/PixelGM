@@ -430,6 +430,7 @@ pub fn overlay(
                     ui.horizontal_wrapped(|ui| {
                         tool(ui, t(T::ToModel).into(), Tool::ToModel, &mut pressed.borrow_mut());
                         tool(ui, t(T::Narrate).into(), Tool::Narrate, &mut pressed.borrow_mut());
+                        tool(ui, t(T::RedrawHere).into(), Tool::Redraw, &mut pressed.borrow_mut());
                         let target = if view.target.is_empty() { "—" } else { view.target.as_str() };
                         tool(ui, format!("{} {target}", t(T::WhisperTo)), Tool::Whisper, &mut pressed.borrow_mut());
                         tool(ui, t(T::NextPlayer).into(), Tool::NextTarget, &mut pressed.borrow_mut());

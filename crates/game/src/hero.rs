@@ -379,6 +379,12 @@ fn hero_screen(
     }
     *clock += time.delta_secs();
     let step = (*clock / 0.14) as usize % crate::doll::STEPS;
+    // The one chosen in the lobby to run the game makes no hero: straight to the table.
+    let me = crate::coop::player_name(&settings);
+    if game.as_deref().is_some_and(|g| g.world.gm.as_deref() == Some(me.as_str())) {
+        next.set(Screen::Play);
+        return;
+    }
     let Ok(ctx) = egui.ctx_mut() else { return };
     let Some(mut ui) = kit::screen_ui(ctx, "hero") else { return };
     let mut acts: Vec<Action> = Vec::new();

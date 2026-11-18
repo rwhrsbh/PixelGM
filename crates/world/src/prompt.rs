@@ -858,6 +858,11 @@ pub fn new_location_sized(world: &World, id: &str, from: &str, large: bool) -> S
         let _ = writeln!(text, "- {place_id} (not drawn yet): {} — {}", stub.name, stub.description);
     }
     let _ = write!(text, "{}", place_context(world, id, from));
+    // The human master draws this place again, as they want it.
+    if !world.redraw_wish.trim().is_empty() {
+        let ways: Vec<String> = world.locations.get(id).map(|l| l.exits.iter().map(|e| format!("{} ({})", e.to, world.place_name(&e.to))).collect()).unwrap_or_default();
+        let _ = write!(text, "\nTHE GAME MASTER HAS THIS PLACE DRAWN AGAIN, AS THEY WANT IT: {}\nKeep the same id and its ways out leading where they lead now: {}.\n", world.redraw_wish.trim(), if ways.is_empty() { "none".to_string() } else { ways.join(", ") });
+    }
     let (name, description) = world.stubs.get(id).map(|s| (s.name.as_str(), s.description.as_str())).unwrap_or((id, ""));
     let _ = write!(
         text,

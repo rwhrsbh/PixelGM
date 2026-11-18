@@ -492,6 +492,12 @@ texts! {
     LastSpent: "Последний ответ", "Last answer";
     Earlier: "Ранее", "Earlier";
     WaitingChoice: "Ждём выбора:", "Waiting for the choice of:";
+    LobbyMaster: "мастер игры", "the game master";
+    RedrawHere: "Перерисовать место", "Redraw the place";
+    BeMaster: "Буду мастером", "I'll be the master";
+    PlayAHero: "Играть героем", "Play a hero";
+    MasterTaken: "Место мастера уже занято", "The master's seat is taken";
+    BeMasterHint: "Мастер не создаёт героя: он ведёт игру — читает и правит ответы ИИ, рисует карту кистью, ставит существ, говорит за них. Пока место свободно, игру ведёт ИИ.", "The master makes no hero: they run the game — read and correct the AI's answers, paint the map with the brush, place creatures, speak for them. While the seat is free, the AI runs the game.";
     SpentIn: "запрос", "prompt";
     SpentCached: "из кеша", "from the cache";
     SpentOut: "ответ", "answer";

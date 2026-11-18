@@ -751,6 +751,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         acting: None,
         actors: Vec::new(),
         table_languages: Vec::new(),
+        redraw_wish: String::new(),
         quest: draft.quest.quest(),
         clock: crate::model::morning(),
         rested: crate::model::morning(),

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 14;
+pub const PROTOCOL: u32 = 15;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -108,6 +108,8 @@ pub enum GmAct {
     Invent(String),
     /// Someone in the master's place says something aloud, as a bubble.
     Say { who: String, text: String },
+    /// The place the master is in is drawn again by the model, as the master wants it.
+    Redraw(String),
 }
 
 /// A draft of the model's as the master sees it.
@@ -159,6 +161,8 @@ pub enum Up {
     },
     /// Ready to begin, or no longer.
     Ready(bool),
+    /// To run the game as its master instead of playing a hero, or no longer.
+    Role(bool),
     /// The world as this guest has it went wrong: the whole of it again, please.
     Resync,
     /// The language this player reads, by its English name: the master may write the story
@@ -259,6 +263,9 @@ pub struct Seat {
     pub hero: String,
     pub ready: bool,
     pub host: bool,
+    /// Runs the game instead of playing a hero in it.
+    #[serde(default)]
+    pub master: bool,
 }
 
 /// Who sits at the table and how it is reached, as the host tells it.
@@ -372,6 +379,8 @@ const POSITIONS_EVERY: f32 = 0.05;
 pub const SEATS: usize = 5;
 
 pub struct Hosting {
+    /// The player chosen in the lobby to run the game, by name: the host or a guest.
+    master: Option<String>,
     net: Host<Up, Down>,
     /// Who each guest is, whatever the name.
     ids: HashMap<PeerId, u64>,
@@ -628,6 +637,8 @@ pub struct Table {
     /// The players this one's deed waits for before the master is asked: offered something
     /// too, they have not chosen yet.
     pub waiting_for: Vec<String>,
+    /// The place the master asked to have drawn again, while it is being drawn.
+    pub redrawing: Option<String>,
     /// What each guest was last told it waits for.
     pub told_waiting: HashMap<String, Vec<String>>,
     /// The outcome of a choice, shown while the master works out what follows it.
@@ -809,7 +820,7 @@ pub fn invite_friends(link: &SteamLink, session: &Session) {
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 
 fn fresh_hosting(net: Host<Up, Down>, beacon: Option<net::beacon::Beacon>) -> Session {
-    Session::Host(Mutex::new(Hosting { net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, parts: HashMap::new(), feeds: HashMap::new(), host_last: (0.0, 0.0), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new(), languages: HashMap::new() }))
+    Session::Host(Mutex::new(Hosting { master: None, net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, parts: HashMap::new(), feeds: HashMap::new(), host_last: (0.0, 0.0), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new(), languages: HashMap::new() }))
 }
 
 /// Joins a friend's Steam lobby.
@@ -963,6 +974,44 @@ fn pass_on(hosting: &mut Hosting, relay: &Relay, id: u64, last: Trouble) {
     }
 }
 
+/// One player takes the master's seat, if nobody else holds it, or gives it up.
+fn choose_master(hosting: &mut Hosting, name: &str, master: bool) {
+    match (master, hosting.master.as_deref()) {
+        (true, None) => hosting.master = Some(name.to_string()),
+        (false, Some(holder)) if holder == name => hosting.master = None,
+        _ => {}
+    }
+}
+
+impl Session {
+    /// The player at this machine asks for the master's seat, or gives it up: the host
+    /// decides at once, a guest asks the host.
+    pub fn want_master(&self, me: &str, master: bool) {
+        match self {
+            Session::Host(hosting) => choose_master(&mut hosting.lock().unwrap(), me, master),
+            Session::Client(_) => self.send(Up::Role(master)),
+            Session::Solo => {}
+        }
+    }
+
+    /// Who was chosen in the lobby to run the game, if anyone.
+    pub fn chosen_master(&self) -> Option<String> {
+        match self {
+            Session::Host(hosting) => hosting.lock().unwrap().master.clone(),
+            _ => None,
+        }
+    }
+}
+
+/// The player chosen in the lobby takes the master's seat in the world, once there is one
+/// and the seat is empty.
+fn seat_master(session: Res<Session>, game: Option<ResMut<Game>>) {
+    let (Some(master), Some(mut game)) = (session.chosen_master(), game) else { return };
+    if game.world.gm.is_none() {
+        game.world.gm = Some(master);
+    }
+}
+
 /// The host's side of the wire: who joined, who left, what they sent.
 #[allow(clippy::too_many_arguments)]
 fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, master: Res<Master>, mut table: ResMut<Table>, mut game: Option<ResMut<Game>>, screen: Res<State<Screen>>, mut fx: ResMut<crate::fx::Fx>) {
@@ -1033,6 +1082,11 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                     hosting.net.send(peer, &message);
                 }
                 // The world itself follows from the pump below, as seen from this guest's place.
+            }
+            HostEvent::Message(peer, Up::Role(master)) => {
+                if let Some(name) = hosting.names.get(&peer).cloned() {
+                    choose_master(&mut hosting, &name, master);
+                }
             }
             HostEvent::Message(peer, Up::Ready(ready)) => {
                 hosting.ready.insert(peer, ready);
@@ -1235,10 +1289,11 @@ fn roster(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, game:
     let hosting = hosting.lock().unwrap();
     let hero_of = |name: &str| game.as_ref().and_then(|g| g.world.owners.iter().position(|o| o == name).and_then(|i| g.world.party.get(i)).map(|h| format!("{} {}", h.name, h.level))).unwrap_or_default();
     let me = player_name(&settings);
-    let mut seats = vec![Seat { name: me.clone(), hero: hero_of(&me), ready: true, host: true }];
+    let is_master = |name: &str| hosting.master.as_deref() == Some(name);
+    let mut seats = vec![Seat { name: me.clone(), hero: hero_of(&me), ready: true, host: true, master: is_master(&me) }];
     let mut guests: Vec<(&PeerId, &String)> = hosting.names.iter().collect();
     guests.sort_by(|a, b| a.1.cmp(b.1));
-    seats.extend(guests.into_iter().map(|(peer, name)| Seat { name: name.clone(), hero: hero_of(name), ready: hosting.ready.get(peer) == Some(&true), host: false }));
+    seats.extend(guests.into_iter().map(|(peer, name)| Seat { name: name.clone(), hero: hero_of(name), ready: hosting.ready.get(peer) == Some(&true), host: false, master: is_master(name) }));
     let port = hosting.net.port();
     let world = game.as_ref().map(|g| g.world.title.clone()).unwrap_or_default();
     let mut codes = if port == 0 { Vec::new() } else { table_codes(port, settings.lang) };
@@ -1617,7 +1672,7 @@ impl Plugin for CoopPlugin {
             .init_resource::<Table>()
             .init_resource::<SteamLink>()
             .add_plugins(lobby::LobbyPlugin)
-            .add_systems(PreUpdate, (host_pump, client_pump, rejoin, presence, roster).chain())
+            .add_systems(PreUpdate, (host_pump, client_pump, rejoin, presence, roster, seat_master).chain())
             .add_systems(Startup, steam_start)
             .add_systems(Update, steam_invites)
             .add_systems(bevy_egui::EguiPrimaryContextPass, keys_vote.in_set(crate::ui::UiSet::Screens))

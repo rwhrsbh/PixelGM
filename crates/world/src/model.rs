@@ -428,6 +428,9 @@ pub struct World {
     /// master writes the story in them too.
     #[serde(skip)]
     pub table_languages: Vec<String>,
+    /// What the human master wants of the place being drawn again, in their words.
+    #[serde(skip)]
+    pub redraw_wish: String,
     /// The main quest and the side tasks.
     #[serde(default)]
     pub quest: Quest,

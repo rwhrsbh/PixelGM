@@ -167,7 +167,7 @@ fn seat(ui: &mut Ui, seat: Option<&Seat>, me: &str, host: bool, lang: Lang) -> (
                 col.spacing_mut().item_spacing.y = 1.0;
                 let crown = if seat.host { "★ " } else { "" };
                 col.label(RichText::new(format!("{crown}{}", seat.name)).color(c(ink)));
-                let hero = if seat.hero.is_empty() { t(T::LobbyNoHero).to_string() } else { seat.hero.clone() };
+                let hero = if seat.master { t(T::LobbyMaster).to_string() } else if seat.hero.is_empty() { t(T::LobbyNoHero).to_string() } else { seat.hero.clone() };
                 col.label(RichText::new(hero).color(c(if mine { WAX_DARK } else { TALLOW })));
             });
             inner.with_layout(Layout::right_to_left(Align::Center), |row| {
@@ -217,6 +217,7 @@ fn screen(
     let mut back = false;
     let mut begin = false;
     let mut ready_pressed = false;
+    let mut role_pressed: Option<bool> = None;
     let mut reopen = false;
     let title = match roster.seats.first() {
         Some(host) => format!("{} {}", t(T::TableOf), host.name),
@@ -348,6 +349,16 @@ fn screen(
             if guest && footer.add(button(t(T::LeaveTable))).clicked() {
                 leave = true;
             }
+            // Anyone at a shared table may run the game instead of playing a hero, while the
+            // master's seat is free.
+            let mine_master = roster.seats.iter().any(|s| s.master && s.name == me);
+            let taken = roster.seats.iter().any(|s| s.master && s.name != me);
+            if (guest || hosting) && roster.seats.len() > 1 || mine_master {
+                let label = if mine_master { t(T::PlayAHero) } else { t(T::BeMaster) };
+                if footer.add(button(label).enabled(!taken, t(T::MasterTaken))).on_hover_text(t(T::BeMasterHint)).clicked() {
+                    role_pressed = Some(!mine_master);
+                }
+            }
             if guest {
                 let label = if lobby.ready { t(T::NotReadyAction) } else { t(T::ReadyAction) };
                 if kit::right(footer, |r| r.add(button(label).primary())).clicked() {
@@ -444,6 +455,9 @@ fn screen(
     if say {
         let text = std::mem::take(&mut lobby.talk);
         session.chat(&mut table, &me, text.trim());
+    }
+    if let Some(master) = role_pressed {
+        session.want_master(&me, master);
     }
     if ready_pressed {
         lobby.ready = !lobby.ready;

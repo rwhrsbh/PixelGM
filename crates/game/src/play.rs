@@ -449,6 +449,8 @@ struct Veil;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tool {
     ToModel,
+    /// The place drawn again by the model, as the field says.
+    Redraw,
     Narrate,
     Whisper,
     NextTarget,
@@ -2140,6 +2142,32 @@ fn receive(
                     autosave(&store, &game);
                 }
             }
+            Answer::Location { id, from, ahead, draft } if table.redrawing.as_deref() == Some(id.as_str()) => {
+                table.redrawing = None;
+                // The master's place drawn again: it takes the old one's place, and everyone
+                // in it stands at its start, on ground that can be walked.
+                match draft.and_then(|d| game.world.add_location(&d, &id, None).map_err(Trouble::Unreadable)) {
+                    Ok(_) => {
+                        let _ = (ahead, from);
+                        let (x, y) = game.world.locations[&id].spawn;
+                        if game.world.current == id {
+                            game.world.player = world::Player::in_cell(x, y);
+                        }
+                        for player in session.players().into_iter().filter(|p| game.world.place_of(p) == id) {
+                            session.send_to(&player, &Down::MoveTo { x, y });
+                        }
+                        redraw.0 = true;
+                        autosave(&store, &game);
+                    }
+                    Err(trouble) => {
+                        let why = trouble_text(&trouble, gm.dispatcher.now(), settings.lang);
+                        table.master_note = why.clone();
+                        if let Some(master) = seated(&game.world) {
+                            session.send_to(master, &Down::Card(Err(why)));
+                        }
+                    }
+                }
+            }
             Answer::Location { id, from, ahead, draft } => {
                 let waited_for = *phase == (Phase::Drawing { to: id.clone() });
                 if waited_for && ahead && draft.is_err() {
@@ -3810,6 +3838,19 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             desk.table.busy = Some(said);
         }
         GmAct::Apply(draft) => finish(desk, "", &draft),
+        GmAct::Redraw(wish) => {
+            // The place the master stands in, as walked into from one of its ways out; its
+            // stub keeps its name and description for the model, its exits where they lead.
+            let world = &desk.game.world;
+            let id = world.place_of(player).to_string();
+            let Some(place) = world.locations.get(&id) else { return };
+            let from = place.exits.iter().map(|e| e.to.clone()).find(|to| world.locations.contains_key(to)).or_else(|| place.exits.first().map(|e| e.to.clone())).unwrap_or_else(|| id.clone());
+            let mut seen = world.clone();
+            seen.stubs.insert(id.clone(), world::Stub { name: place.name.clone(), description: place.description.clone() });
+            seen.redraw_wish = wish;
+            desk.table.redrawing = Some(id.clone());
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Location { world: Box::new(seen), id, from, ahead: false });
+        }
         GmAct::Whisper { to, text } => whisper(desk, &[Whisper { to, text }]),
         GmAct::Say { who, text } => {
             let place = desk.game.world.current.clone();
@@ -3831,7 +3872,7 @@ fn tool_act(tool: Tool, typed: &str, world: &World, panel: &mut Panel, table: &m
     let (x, y) = world.player.cell();
     let (x, y) = (x.max(0) as usize, y.max(0) as usize);
     let apply = |effects: serde_json::Value| GmAct::Apply(Box::new(TurnDraft { effects: effects.as_array().cloned().unwrap_or_default(), ..TurnDraft::default() }));
-    let needs_text = matches!(tool, Tool::ToModel | Tool::Narrate | Tool::Whisper | Tool::Creature | Tool::Tile | Tool::Damage | Tool::Heal | Tool::Give | Tool::Invent | Tool::Gold | Tool::Hours | Tool::Sky | Tool::Say) || (tool == Tool::Brush && panel.brush.is_none());
+    let needs_text = matches!(tool, Tool::ToModel | Tool::Redraw | Tool::Narrate | Tool::Whisper | Tool::Creature | Tool::Tile | Tool::Damage | Tool::Heal | Tool::Give | Tool::Invent | Tool::Gold | Tool::Hours | Tool::Sky | Tool::Say) || (tool == Tool::Brush && panel.brush.is_none());
     if needs_text && typed.is_empty() {
         table.master_note = T::NeedText.text(lang).to_string();
         return None;
@@ -3839,6 +3880,7 @@ fn tool_act(tool: Tool, typed: &str, world: &World, panel: &mut Panel, table: &m
     table.master_note.clear();
     let act = match tool {
         Tool::ToModel => GmAct::Direct(typed.to_string()),
+        Tool::Redraw => GmAct::Redraw(typed.to_string()),
         Tool::Narrate => GmAct::Apply(Box::new(TurnDraft { narration: typed.to_string(), ..TurnDraft::default() })),
         Tool::Whisper => {
             let others = others_at_table(world, me);
