@@ -31,7 +31,7 @@ fn main() {
     };
     println!("ok   Steam answers; the player is {}", steam.name());
 
-    let host: Host<String, String> = Host::listen_steam(&steam);
+    let host: Host<String, String> = Host::listen_steam(&steam, "TEST1");
     let lobby = wait_for("the lobby opens", 15, || host.lobby()).unwrap_or_else(|e| {
         println!("FAIL Steam refused the lobby: {e}");
         std::process::exit(1);

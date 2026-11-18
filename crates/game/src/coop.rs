@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 15;
+pub const PROTOCOL: u32 = 16;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -163,6 +163,8 @@ pub enum Up {
     Ready(bool),
     /// To run the game as its master instead of playing a hero, or no longer.
     Role(bool),
+    /// This player's Steam id, for their picture.
+    SteamId(u64),
     /// The world as this guest has it went wrong: the whole of it again, please.
     Resync,
     /// The language this player reads, by its English name: the master may write the story
@@ -266,6 +268,9 @@ pub struct Seat {
     /// Runs the game instead of playing a hero in it.
     #[serde(default)]
     pub master: bool,
+    /// The player's Steam id, when they play through Steam: their picture is shown.
+    #[serde(default)]
+    pub steam: u64,
 }
 
 /// Who sits at the table and how it is reached, as the host tells it.
@@ -379,6 +384,10 @@ const POSITIONS_EVERY: f32 = 0.05;
 pub const SEATS: usize = 5;
 
 pub struct Hosting {
+    /// The table's short code.
+    code: String,
+    /// The guests' Steam ids, as they said.
+    steam_ids: HashMap<PeerId, u64>,
     /// The player chosen in the lobby to run the game, by name: the host or a guest.
     master: Option<String>,
     net: Host<Up, Down>,
@@ -762,12 +771,18 @@ pub fn host(steam: Option<&net::Steam>, name: &str, port: Option<u16>) -> std::i
         None => net::free_listener()?,
     };
     let port = listener.local_addr()?.port();
+    // Five letters name the table, wherever it is found from.
+    let code = net::code::short();
+    info!("the table is open under the code {code}");
     let net = match steam {
-        Some(steam) => Host::listen_both(steam, listener)?,
+        Some(steam) => Host::listen_both(steam, listener, &code)?,
         None => Host::serve(listener)?,
     };
-    let info = net::beacon::TableInfo { protocol: PROTOCOL, name: name.to_string(), port, taken: 1, seats: SEATS as u8, world: String::new(), playing: false };
+    let info = net::beacon::TableInfo { protocol: PROTOCOL, name: name.to_string(), port, taken: 1, seats: SEATS as u8, world: String::new(), playing: false, code: code.clone() };
     let session = fresh_hosting(net, Some(net::beacon::Beacon::start(info)));
+    if let Session::Host(hosting) = &session {
+        hosting.lock().unwrap().code = code;
+    }
     // The router is asked to let friends across the internet in as well.
     if let (Session::Host(hosting), Some(local)) = (&session, net::beacon::networks().into_iter().find(|n| n.kind() == net::beacon::NetworkKind::Local).map(|n| n.address)) {
         hosting.lock().unwrap().upnp = Some(net::upnp::Upnp::open(local, port));
@@ -775,23 +790,6 @@ pub fn host(steam: Option<&net::Steam>, name: &str, port: Option<u16>) -> std::i
     Ok(session)
 }
 
-/// The codes of a table on this port, one for each network this machine is on, named for
-/// the player: the home network, Radmin, ZeroTier.
-pub fn table_codes(port: u16, lang: crate::i18n::Lang) -> Vec<(String, String)> {
-    use net::beacon::NetworkKind;
-    net::beacon::networks()
-        .into_iter()
-        .map(|network| {
-            let name = match network.kind() {
-                NetworkKind::Local => T::NetLocal.text(lang),
-                NetworkKind::Radmin => "Radmin VPN",
-                NetworkKind::ZeroTier => "ZeroTier",
-                NetworkKind::Hamachi => "Hamachi",
-            };
-            (format!("{name} {}", network.address), net::code::encode(std::net::SocketAddrV4::new(network.address, port)))
-        })
-        .collect()
-}
 
 /// Steam, once the multiplayer screen has asked for it. Asking makes Steam show the player
 /// as in a game, so it is not done before the player goes there.
@@ -820,7 +818,7 @@ pub fn invite_friends(link: &SteamLink, session: &Session) {
 const FRIENDS_LOOK_PERIOD: f32 = 3.0;
 
 fn fresh_hosting(net: Host<Up, Down>, beacon: Option<net::beacon::Beacon>) -> Session {
-    Session::Host(Mutex::new(Hosting { master: None, net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, parts: HashMap::new(), feeds: HashMap::new(), host_last: (0.0, 0.0), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new(), languages: HashMap::new() }))
+    Session::Host(Mutex::new(Hosting { steam_ids: HashMap::new(), code: String::new(), master: None, net, ids: HashMap::new(), ready: HashMap::new(), beacon, upnp: None, parts: HashMap::new(), feeds: HashMap::new(), host_last: (0.0, 0.0), names: HashMap::new(), tokens: HashMap::new(), sent: HashMap::new(), since_world: 0.0, since_positions: 0.0, relayed: HashMap::new(), languages: HashMap::new() }))
 }
 
 /// Joins a friend's Steam lobby.
@@ -974,6 +972,19 @@ fn pass_on(hosting: &mut Hosting, relay: &Relay, id: u64, last: Trouble) {
     }
 }
 
+/// A guest playing through Steam tells the host its Steam id, now and then, so its picture
+/// is shown at the table.
+fn tell_steam_id(time: Res<Time>, session: Res<Session>, link: Res<SteamLink>, mut since: Local<f32>) {
+    *since += time.delta_secs();
+    if *since < 5.0 || !session.is_client() {
+        return;
+    }
+    *since = 0.0;
+    if let Some(steam) = &link.steam {
+        session.send(Up::SteamId(steam.my_id()));
+    }
+}
+
 /// One player takes the master's seat, if nobody else holds it, or gives it up.
 fn choose_master(hosting: &mut Hosting, name: &str, master: bool) {
     match (master, hosting.master.as_deref()) {
@@ -1082,6 +1093,9 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
                     hosting.net.send(peer, &message);
                 }
                 // The world itself follows from the pump below, as seen from this guest's place.
+            }
+            HostEvent::Message(peer, Up::SteamId(id)) => {
+                hosting.steam_ids.insert(peer, id);
             }
             HostEvent::Message(peer, Up::Role(master)) => {
                 if let Some(name) = hosting.names.get(&peer).cloned() {
@@ -1274,7 +1288,7 @@ fn host_pump(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, ma
 /// guest is told with the world. Alone, a save from a shared table is played with one's own
 /// hero, and a save in which no hero is one's own with all of them.
 /// The host keeps everyone told who sits at the table.
-fn roster(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, game: Option<Res<Game>>, mut table: ResMut<Table>, mut since: Local<f32>) {
+fn roster(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, game: Option<Res<Game>>, mut table: ResMut<Table>, link: Res<SteamLink>, mut since: Local<f32>) {
     let Session::Host(hosting) = &*session else {
         if matches!(*session, Session::Solo) && table.roster != Roster::default() {
             table.roster = Roster::default();
@@ -1290,16 +1304,18 @@ fn roster(time: Res<Time>, session: Res<Session>, settings: Res<Settings>, game:
     let hero_of = |name: &str| game.as_ref().and_then(|g| g.world.owners.iter().position(|o| o == name).and_then(|i| g.world.party.get(i)).map(|h| format!("{} {}", h.name, h.level))).unwrap_or_default();
     let me = player_name(&settings);
     let is_master = |name: &str| hosting.master.as_deref() == Some(name);
-    let mut seats = vec![Seat { name: me.clone(), hero: hero_of(&me), ready: true, host: true, master: is_master(&me) }];
+    let my_steam = link.steam.as_ref().map_or(0, |s| s.my_id());
+    let mut seats = vec![Seat { name: me.clone(), hero: hero_of(&me), ready: true, host: true, master: is_master(&me), steam: my_steam }];
     let mut guests: Vec<(&PeerId, &String)> = hosting.names.iter().collect();
     guests.sort_by(|a, b| a.1.cmp(b.1));
-    seats.extend(guests.into_iter().map(|(peer, name)| Seat { name: name.clone(), hero: hero_of(name), ready: hosting.ready.get(peer) == Some(&true), host: false, master: is_master(name) }));
+    seats.extend(guests.into_iter().map(|(peer, name)| Seat { name: name.clone(), hero: hero_of(name), ready: hosting.ready.get(peer) == Some(&true), host: false, master: is_master(name), steam: hosting.steam_ids.get(peer).copied().unwrap_or(0) }));
     let port = hosting.net.port();
     let world = game.as_ref().map(|g| g.world.title.clone()).unwrap_or_default();
-    let mut codes = if port == 0 { Vec::new() } else { table_codes(port, settings.lang) };
+    // The five letters, and for the internet without Steam the address the router opened.
+    let mut codes = if hosting.code.is_empty() { Vec::new() } else { vec![(T::CodeShare.text(settings.lang).to_string(), hosting.code.clone())] };
     let opened = hosting.upnp.as_ref().and_then(|u| u.opened.lock().unwrap().clone());
     if let Some(Ok(ip)) = &opened {
-        codes.push((format!("{} {ip}", T::NetInternet.text(settings.lang)), net::code::encode(std::net::SocketAddrV4::new(*ip, port))));
+        codes.push((T::InternetAddress.text(settings.lang).to_string(), format!("{ip}:{port}")));
     }
     let internet = opened.map(|o| o.is_ok());
     let roster = Roster { steam: matches!(hosting.net.lobby(), Some(Ok(_))), codes, world: world.clone(), playing: game.is_some(), internet, turn_timer: settings.turn_timer, seats };
@@ -1610,7 +1626,7 @@ fn direct_name(settings: &mut Settings, steam: Option<&net::Steam>) {
 }
 
 /// The name of this machine, for a table joined by address.
-fn computer_name() -> String {
+pub(crate) fn computer_name() -> String {
     std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "Player".to_string())
 }
 
@@ -1672,7 +1688,7 @@ impl Plugin for CoopPlugin {
             .init_resource::<Table>()
             .init_resource::<SteamLink>()
             .add_plugins(lobby::LobbyPlugin)
-            .add_systems(PreUpdate, (host_pump, client_pump, rejoin, presence, roster, seat_master).chain())
+            .add_systems(PreUpdate, (host_pump, client_pump, rejoin, presence, roster, seat_master, tell_steam_id).chain())
             .add_systems(Startup, steam_start)
             .add_systems(Update, steam_invites)
             .add_systems(bevy_egui::EguiPrimaryContextPass, keys_vote.in_set(crate::ui::UiSet::Screens))

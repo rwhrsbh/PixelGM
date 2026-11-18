@@ -18,6 +18,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use steamworks::networking_types::{NetworkingIdentity, SendFlags};
 use steamworks::{ChatMemberStateChange, FriendFlags, LobbyChatUpdate, LobbyId, LobbyType, SteamId};
+use steamworks::{DistanceFilter, LobbyKey, StringFilter, StringFilterKind};
+
+/// Keys of a table's lobby: that it is this game's, and its short code.
+const GAME_KEY: &str = "pixelgm";
+const CODE_KEY: &str = "pixelgm_code";
 
 /// Spacewar, Valve's test application, which any Steam account may use.
 const APP_ID: u32 = 480;
@@ -147,6 +152,35 @@ impl Steam {
             self.client.friends().get_friends(FriendFlags::IMMEDIATE).into_iter().filter_map(|friend| Some((friend.name(), friend.rich_presence(PRESENCE_KEY)?.parse::<u64>().ok()?))).collect();
         hosting.sort();
         hosting
+    }
+
+    /// The player's own Steam id.
+    pub fn my_id(&self) -> u64 {
+        self.client.user().steam_id().raw()
+    }
+
+    /// A player's Steam picture, 32 by 32 RGBA, if Steam has it: friends' and those met in
+    /// a lobby.
+    pub fn avatar(&self, id: u64) -> Option<Vec<u8>> {
+        self.client.friends().get_friend(SteamId::from_raw(id)).small_avatar()
+    }
+
+    /// Looks for the lobby of the table with this short code, anywhere: the answer arrives
+    /// in what is given back while callbacks run.
+    pub fn find_lobby(&self, code: &str) -> LobbyState {
+        let found: LobbyState = Arc::default();
+        let answer = found.clone();
+        let matchmaking = self.client.matchmaking();
+        matchmaking.add_request_lobby_list_string_filter(StringFilter(LobbyKey::new(GAME_KEY), "1", StringFilterKind::Equal));
+        matchmaking.add_request_lobby_list_string_filter(StringFilter(LobbyKey::new(CODE_KEY), code, StringFilterKind::Equal));
+        matchmaking.set_request_lobby_list_distance_filter(DistanceFilter::Worldwide);
+        matchmaking.request_lobby_list(move |list| {
+            *answer.lock().unwrap() = Some(match list {
+                Ok(lobbies) => lobbies.first().map(|l| l.raw()).ok_or_else(|| "no table with this code".to_string()),
+                Err(e) => Err(e.to_string()),
+            });
+        });
+        found
     }
 
     fn run_callbacks(&self) {
@@ -302,19 +336,21 @@ struct Guest {
 impl<C: DeserializeOwned + Send + 'static, H: Serialize> Host<C, H> {
     /// Opens a friends-only Steam lobby and hosts in it. The lobby is asked for in the
     /// background: `lobby()` says how that went.
-    pub fn listen_steam(steam: &Steam) -> Self {
+    pub fn listen_steam(steam: &Steam, code: &str) -> Self {
+        let code = code.to_string();
         let (to_game, events) = channel();
         let peers: Peers = Arc::default();
         let lobby: LobbyState = Arc::default();
         let alive = Arc::new(());
         let (steam, known, state, weak) = (steam.clone(), peers.clone(), lobby.clone(), Arc::downgrade(&alive));
-        std::thread::spawn(move || host_thread(steam, to_game, known, state, weak));
+        std::thread::spawn(move || host_thread(steam, to_game, known, state, weak, code));
         Self { events, peers, port: 0, lobby, _alive: alive, _sends: PhantomData }
     }
 
     /// Hosts in a friends-only Steam lobby and, at once, on a port: friends come through
     /// Steam, everyone else by the table's code or address.
-    pub fn listen_both(steam: &Steam, listener: std::net::TcpListener) -> std::io::Result<Self> {
+    pub fn listen_both(steam: &Steam, listener: std::net::TcpListener, code: &str) -> std::io::Result<Self> {
+        let code = code.to_string();
         let port = listener.local_addr()?.port();
         let (to_game, events) = channel();
         let peers: Peers = Arc::default();
@@ -322,18 +358,20 @@ impl<C: DeserializeOwned + Send + 'static, H: Serialize> Host<C, H> {
         let alive = Arc::new(());
         let (steam, known, state, weak) = (steam.clone(), peers.clone(), lobby.clone(), Arc::downgrade(&alive));
         let (tcp_to_game, tcp_known, tcp_weak) = (to_game.clone(), peers.clone(), Arc::downgrade(&alive));
-        std::thread::spawn(move || host_thread(steam, to_game, known, state, weak));
+        std::thread::spawn(move || host_thread(steam, to_game, known, state, weak, code));
         std::thread::spawn(move || crate::accept(listener, tcp_to_game, tcp_known, tcp_weak, crate::TCP_PEERS));
         Ok(Self { events, peers, port, lobby, _alive: alive, _sends: PhantomData })
     }
 }
 
-fn host_thread<C: DeserializeOwned>(steam: Steam, to_game: Sender<HostEvent<C>>, known: Peers, state: LobbyState, alive: std::sync::Weak<()>) {
+fn host_thread<C: DeserializeOwned>(steam: Steam, to_game: Sender<HostEvent<C>>, known: Peers, state: LobbyState, alive: std::sync::Weak<()>, code: String) {
     let client = steam.client.clone();
     let (matchmaking, messages, friends) = (client.matchmaking(), client.networking_messages(), client.friends());
     {
         let state = state.clone();
-        matchmaking.create_lobby(LobbyType::FriendsOnly, LOBBY_SEATS, move |made| {
+        // Public, so that whoever has the table's code finds it; nothing but the code
+        // leads to it.
+        matchmaking.create_lobby(LobbyType::Public, LOBBY_SEATS, move |made| {
             *state.lock().unwrap() = Some(made.map(|lobby| lobby.raw()).map_err(|e| e.to_string()));
         });
     }
@@ -363,6 +401,9 @@ fn host_thread<C: DeserializeOwned>(steam: Steam, to_game: Sender<HostEvent<C>>,
         };
         if let (Some(lobby), false) = (lobby, announced) {
             friends.set_rich_presence(PRESENCE_KEY, Some(&lobby.raw().to_string()));
+            // Marked as this game's, with the table's code: found by it from anywhere.
+            matchmaking.set_lobby_data(lobby, GAME_KEY, "1");
+            matchmaking.set_lobby_data(lobby, CODE_KEY, &code);
             announced = true;
         }
         for message in messages.receive_messages_on_channel(TO_HOST, 64) {

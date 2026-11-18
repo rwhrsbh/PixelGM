@@ -149,7 +149,7 @@ texts! {
     FindTable: "Другие столы", "Other tables";
     NoTablesSeen: "Столов в сети не видно. Попроси у хоста код — он у него слева, под партией.", "No table is seen on the network. Ask the host for the code: it is at the left, under the party.";
     OtherVersion: "У этого стола другая версия игры.", "That table runs another version of the game.";
-    CodeHint: "Код стола или адрес (LAN, ZeroTier, Radmin). Ctrl+V — вставить.", "A table's code or address (LAN, ZeroTier, Radmin). Ctrl+V pastes.";
+    CodeHint: "Код стола из 5 знаков (ищется в сети, Radmin, ZeroTier и через Steam) или адрес IP:порт. Ctrl+V — вставить.", "A table's five-letter code (looked for on the network, Radmin, ZeroTier and through Steam) or an IP:port address. Ctrl+V pastes.";
     TalkEmpty: "Здесь пишут за столом: Enter — отправить.", "Talk at the table goes here: Enter sends.";
     TalkTitle: "Разговор за столом", "Talk at the table";
     LobbyBackHint: "В меню; стол остаётся открытым", "To the menu; the table stays open";
@@ -173,9 +173,13 @@ texts! {
     PlayAloneHint: "Продолжить со своей копии мира, без стола", "Go on from your copy of the world, without the table";
     ToMenu: "В меню", "To the menu";
     NetLocal: "Локальная сеть", "Local network";
-    NetInternet: "Интернет", "Internet";
     InternetClosed: "Роутер не открыл порт: из интернета войдут только через Steam, ZeroTier или Radmin.", "The router did not open the port: from the internet only Steam, ZeroTier or Radmin get in.";
     LobbyJoinFailed: "Не удалось подключиться.", "Could not connect.";
+    LobbyFinding: "Ищем стол по коду…", "Looking for the table by its code…";
+    TalkHint: "Написать столу — Enter", "Write to the table — Enter";
+    LobbyCodeNotFound: "Стол с таким кодом не найден: проверьте код, или попросите у хоста адрес.", "No table with this code: check it, or ask the host for the address.";
+    CodeShare: "друзья вводят его справа: найдётся и в сети, и через Steam", "friends type it on the right: it is found on the network and through Steam";
+    InternetAddress: "Адрес для интернета без Steam", "Address for the internet without Steam";
     TableTalk: "Столу", "To the table";
     WritingHintTable: "Enter — мастеру, это тратит ход. «Столу» — только игрокам: мастер не слышит.", "Enter sends it to the game master and spends a turn. \"To the table\" is for the players only: the master does not hear it.";
     FreeHeroes: "Герои без игрока — можно взять:", "Heroes without a player, free to take:";
