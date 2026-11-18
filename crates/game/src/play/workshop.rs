@@ -315,7 +315,7 @@ fn art_pixels(art: &Art) -> crate::art::Pixels {
 
 /// A card of the palette: the picture large, its name under it, outlined when chosen.
 fn card(ui: &mut Ui, picture: egui::TextureId, chosen: bool, name: &str, mark: &str, side: f32) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(side, side + 14.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(side, side + 22.0), Sense::click());
     let painter = ui.painter_at(rect);
     let back = if chosen { BRASS_LIGHT } else if response.hovered() { PARCHMENT_LIGHT } else { PARCHMENT_SHADE };
     painter.rect_filled(rect, 2.0, c(back));
@@ -323,8 +323,10 @@ fn card(ui: &mut Ui, picture: egui::TextureId, chosen: bool, name: &str, mark: &
     painter.rect_filled(face, 0.0, c(WOOD_DEEP));
     painter.image(picture, face, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     painter.rect_stroke(rect, 2.0, egui::Stroke::new(if chosen { 2.0 } else { 1.0 }, c(if chosen { WAX_DARK } else { BRASS_DARK })), egui::StrokeKind::Inside);
-    let short: String = name.chars().take(((side / 6.0) as usize).max(4)).collect();
-    painter.text(egui::pos2(rect.center().x, rect.max.y - 7.0), egui::Align2::CENTER_CENTER, short, egui::FontId::proportional(9.0), c(INK));
+    // The whole name, in as many as two lines under the picture.
+    let galley = painter.layout(name.to_string(), egui::FontId::proportional(8.0), c(INK), side - 2.0);
+    let at = egui::pos2(rect.center().x - galley.size().x / 2.0, face.max.y + 2.0);
+    painter.with_clip_rect(rect).galley(at, galley, c(INK));
     if !mark.is_empty() {
         painter.text(face.right_top() + vec2(-2.0, 2.0), egui::Align2::RIGHT_TOP, mark, egui::FontId::proportional(10.0), c(PARCHMENT_LIGHT));
     }

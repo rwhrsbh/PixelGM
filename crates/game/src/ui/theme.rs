@@ -95,10 +95,12 @@ fn style(style: &mut egui::Style) {
     v.text_cursor.stroke = Stroke::new(1.0, c(INK));
     for (w, fill, text) in [
         (&mut v.widgets.noninteractive, c(PARCHMENT), c(INK)),
-        (&mut v.widgets.inactive, c(WOOD), c(PARCHMENT)),
-        (&mut v.widgets.hovered, c(BRASS), c(INK)),
-        (&mut v.widgets.active, c(BRASS_DARK), c(PARCHMENT_SHADE)),
-        (&mut v.widgets.open, c(WOOD_DARK), c(PARCHMENT)),
+        // Every text is ink (`override_text_color`), so the fields, lists and numbers a
+        // player edits are light: dark wood behind ink could not be read.
+        (&mut v.widgets.inactive, c(PARCHMENT_SHADE), c(INK)),
+        (&mut v.widgets.hovered, c(BRASS_LIGHT), c(INK)),
+        (&mut v.widgets.active, c(BRASS), c(INK)),
+        (&mut v.widgets.open, c(BRASS_LIGHT), c(INK)),
     ] {
         w.bg_fill = fill;
         w.weak_bg_fill = fill;
