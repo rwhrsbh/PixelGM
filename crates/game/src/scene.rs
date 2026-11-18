@@ -1237,21 +1237,39 @@ pub fn darkness_seen(size: (usize, usize), hour: Hour, lights: &[Lamp], beat: u3
                 continue;
             }
             if let Some(t) = fog {
-                // Drifting thicker and thinner, cleared around every light, its grey darkened
-                // by the hour; where the night is darker than the fog, the night shows.
-                // Both veils drift the same way, slowly, and between whole blocks: sliding
-                // block by block, the two against each other, it jerked back and forth.
-                let slide = |xf: f32, y: i32, size: i32| {
-                    let (whole, part) = (xf.floor(), xf.fract());
-                    cloud_noise(whole as i32, y, w, size) * (1.0 - part) + cloud_noise(whole as i32 + 1, y, w, size) * part
+                // Fog in wisps: long soft banks drifting one way, slower ones under quicker,
+                // swelling and thinning as they go, with clear lanes between them; cleared
+                // around every light; its pale grey darkened by the hour, the night showing
+                // where it is darker than the fog.
+                let slide = |xf: f32, yf: f32, size: i32| {
+                    let (gx, gy) = (xf.floor(), yf.floor());
+                    let (fx, fy) = (xf - gx, yf - gy);
+                    let at = |dx: i32, dy: i32| cloud_noise(gx as i32 + dx, gy as i32 + dy, w * 4, size);
+                    let top = at(0, 0) * (1.0 - fx) + at(1, 0) * fx;
+                    let bottom = at(0, 1) * (1.0 - fx) + at(1, 1) * fx;
+                    top * (1.0 - fy) + bottom * fy
                 };
-                let drift = slide(x as f32 + t * 0.6, y, 14) * 0.6 + slide(x as f32 + t * 0.35, y + 7, 6) * 0.4;
-                // A thin veil, cleared well around the hero and every light.
-                let thick = ((0.22 + drift * 0.33) * (1.0 - lit * 1.6)).clamp(0.0, 0.55);
+                let (xf, yf) = (x as f32, y as f32);
+                // Banks stretched along the drift, a slow swell across them.
+                let banks = slide(xf * 0.45 + t * 1.1, yf + (t * 0.21).sin() * 2.0, 10);
+                let curls = slide(xf * 0.8 + t * 2.3, yf * 1.2 + 31.0, 6);
+                let breath = (t * 0.35 + yf * 0.04).sin() * 0.08;
+                let raw = banks * 0.7 + curls * 0.3 + breath;
+                let wisps = ((raw - 0.38) / 0.4).clamp(0.0, 1.0);
+                let wisps = wisps * wisps * (3.0 - 2.0 * wisps);
+                let thick = ((0.06 + wisps * 0.58) * (1.0 - lit * 1.6)).clamp(0.0, 0.62);
                 let night = hour.dark * (1.0 - lit);
-                let shade = 1.0 - hour.dark * 0.8;
-                let colour = if night > thick { hour.tint } else { [(176.0 * shade) as u8, (178.0 * shade) as u8, (188.0 * shade) as u8] };
-                let steps = ((thick.max(night) * 12.0) + dither(x, y) - 0.5).round().clamp(0.0, 12.0) / 12.0;
+                // At night the banks are grey in the moonlight over the dark, not lost in it.
+                let shade = 1.0 - hour.dark * 0.55;
+                // The thick of a bank is lighter than its thin edge.
+                let pale = 190.0 + wisps * 40.0;
+                let fog = [pale * shade, (pale + 4.0) * shade, ((pale + 16.0) * shade).min(255.0)];
+                let alpha = thick.max(night);
+                let share = if alpha > 0.0 { (thick / alpha).clamp(0.0, 1.0) } else { 0.0 };
+                let mix = |k: usize| (hour.tint[k] as f32 * (1.0 - share) + fog[k] * share) as u8;
+                let colour = [mix(0), mix(1), mix(2)];
+                let thick = if hour.dark > 0.0 { thick.max(night * 0.6 + wisps * 0.3 * (1.0 - lit)) } else { thick };
+                let steps = ((thick.max(night) * 16.0) + dither(x, y) - 0.5).round().clamp(0.0, 16.0) / 16.0;
                 if steps > 0.0 {
                     dark.set(x, y, [colour[0], colour[1], colour[2], (steps * 255.0) as u8]);
                 }
