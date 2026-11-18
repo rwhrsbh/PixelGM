@@ -888,7 +888,12 @@ fn draw(
                 (Color::WHITE, Quat::IDENTITY)
             };
             let at = on_screen(x, y).extend(if prop.body.is_some() { 0.9 } else { depth(y) });
-            commands.spawn((InLocation, Sprite { color: glow, custom_size: big(prop.size), ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(at).with_rotation(turned)));
+            // A thing can speak and move too (a talking skull, a rattling chest): it is an
+            // actor like a creature, only one that does not bob. A body stays as it lies.
+            let mut thing = commands.spawn((InLocation, Sprite { color: glow, custom_size: big(prop.size), ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(at).with_rotation(turned)));
+            if prop.body.is_none() {
+                thing.insert(Actor { id: prop.id.clone(), home: at, tint: glow, bob: None });
+            }
         }
     }
     for (n, creature) in here.creatures.iter().enumerate() {
@@ -991,6 +996,9 @@ struct Bubble {
     who: String,
     age: f32,
     size: Vec2,
+    /// How long the speaker has not been seen: a place drawn again takes a frame to bring
+    /// them back, a speaker gone for good takes the bubble with them.
+    lost: f32,
 }
 
 const BUBBLE_SECONDS: f32 = 6.5;
@@ -1102,7 +1110,7 @@ fn bubbles(
         let rows = if letters <= per_row { 1.0 } else { (letters / (per_row - 3.0)).ceil() };
         let size = Vec2::new(width, rows * 20.0 + 10.0);
         commands
-            .spawn((InLocation, Bubble { who, age: 0.0, size }, Sprite { color: color(PARCHMENT), custom_size: Some(size), ..default() }, Transform::from_translation(Vec3::new(at.x, at.y + 46.0 + size.y / 2.0, 1.88))))
+            .spawn((Bubble { who, age: 0.0, size, lost: 0.0 }, Sprite { color: color(PARCHMENT), custom_size: Some(size), ..default() }, Transform::from_translation(Vec3::new(at.x, at.y + 46.0 + size.y / 2.0, 1.88))))
             .with_children(|cloud| {
                 // An edge of ink, and a tail towards the speaker.
                 cloud.spawn((Sprite { color: color(INK), custom_size: Some(size + Vec2::splat(2.0)), ..default() }, Transform::from_xyz(0.0, 0.0, -0.01)));
@@ -1116,6 +1124,18 @@ fn bubbles(
         if bubble.age > BUBBLE_SECONDS {
             commands.entity(entity).try_despawn();
             continue;
+        }
+        // The bubble is not part of the place: a place drawn again (as a guest's is whenever the
+        // world changes) keeps it over its speaker; only a speaker gone takes it down.
+        match head(&bubble.who) {
+            Some(_) => bubble.lost = 0.0,
+            None => {
+                bubble.lost += time.delta_secs();
+                if bubble.lost > 0.5 {
+                    commands.entity(entity).try_despawn();
+                    continue;
+                }
+            }
         }
         if let Some(at) = head(&bubble.who) {
             let wanted = Vec3::new(at.x.round(), (at.y + 46.0 + bubble.size.y / 2.0).round(), 1.88);

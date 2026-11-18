@@ -890,6 +890,14 @@ fn snapshot(world: &World) -> World {
     let mut copy = world.clone();
     copy.others.clear();
     copy.level_ups.clear();
+    // The world's clock and whose line is next are the host's to keep: they change every
+    // second, and sending them would redraw every guest's place as often.
+    copy.played = 0;
+    for place in copy.locations.values_mut() {
+        for creature in &mut place.creatures {
+            creature.said = 0;
+        }
+    }
     copy
 }
 
