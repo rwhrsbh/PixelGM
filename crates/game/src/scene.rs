@@ -1480,7 +1480,7 @@ mod tests {
 
     #[test]
     fn tiles_the_master_made_are_painted_as_what_their_names_say_and_never_against_the_rules() {
-        let tile = |name: &str, walkable: bool| world::TileDef { name: name.into(), walkable, sprite: world::Sprite { rows: vec!["1".repeat(16); 16] } };
+        let tile = |name: &str, walkable: bool| world::TileDef { name: name.into(), walkable, actions: Vec::new(), sprite: world::Sprite { rows: vec!["1".repeat(16); 16] } };
         assert_eq!(classify("wet_cobble", &tile("Мокрая брусчатка", true)), Some((Ground::StoneFloor, None)));
         assert_eq!(classify("pier_wood", &tile("Причал", true)), Some((Ground::WoodFloor, None)));
         assert_eq!(classify("foggy_water", &tile("Туманная вода", false)), Some((Ground::Water, None)));
