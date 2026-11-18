@@ -87,6 +87,31 @@ impl Default for Hit {
 /// Kinds a thing can be, as the game knows them.
 const KINDS: [&str; 10] = ["weapon", "armor", "light", "potion", "food", "throwable", "key", "tool", "junk", "quest"];
 
+/// Something that can be done with a creature or a thing the master makes.
+#[derive(Clone, Default)]
+struct Deed {
+    label: String,
+    outcome: String,
+    needs: String,
+    steps: Vec<serde_json::Value>,
+    form: super::effects_ui::Form,
+    /// The words the AI writes the steps from.
+    words: String,
+}
+
+/// Kinds of objects, each a ready start the master changes as they like.
+const OBJECT_KINDS: [(T, T); 9] = [
+    (T::WsKindChest, T::WsKindChestAbout),
+    (T::WsKindDoor, T::WsKindDoorAbout),
+    (T::WsKindLever, T::WsKindLeverAbout),
+    (T::WsKindTrap, T::WsKindTrapAbout),
+    (T::WsKindSign, T::WsKindSignAbout),
+    (T::WsKindLight, T::WsKindLightAbout),
+    (T::WsKindBed, T::WsKindBedAbout),
+    (T::WsKindPortal, T::WsKindPortalAbout),
+    (T::WsKindOwn, T::WsKindOwnAbout),
+];
+
 /// A cell of the map the master clicked, with what covers it.
 #[derive(Clone, Debug)]
 pub struct Focus {
@@ -149,6 +174,11 @@ pub struct Workshop {
     script_asking: bool,
     /// A creature or thing to be walked to the next cell clicked.
     carry: Option<String>,
+    /// What can be done with what is made: a label, what happens, the steps; each with the
+    /// form that adds its steps.
+    deeds: Vec<Deed>,
+    /// The action of what is made whose steps the AI is writing, if any.
+    script_for: Option<usize>,
     tool: MapTool,
     tile: String,
     /// The library's creature or object put on a cell by a click, by its place in the list.
@@ -240,6 +270,8 @@ impl Default for Workshop {
             script_words: String::new(),
             script_asking: false,
             carry: None,
+            deeds: Vec::new(),
+            script_for: None,
             tool: MapTool::Brush,
             tile: String::new(),
             placing: None,
@@ -348,6 +380,7 @@ impl Workshop {
             }
             MakeKind::Object => {
                 spawn["blocking"] = self.blocking.into();
+                spawn["actions"] = self.deeds.iter().filter(|d| !d.label.trim().is_empty()).map(|d| serde_json::json!({ "label": d.label.trim(), "outcome": d.outcome.trim(), "needs": d.needs.trim(), "effects": d.steps })).collect::<Vec<_>>().into();
                 if self.chest {
                     spawn["contents"] = self.contents.iter().filter(|w| !w.name.trim().is_empty()).map(ware).collect::<Vec<_>>().into();
                     spawn["lock"] = self.lock.into();
@@ -387,6 +420,7 @@ impl Workshop {
         self.chest = s["contents"].is_array();
         self.contents = wares(&s["contents"]);
         self.lock = n(&s["lock"]) as i32;
+        self.deeds = s["actions"].as_array().map(|list| list.iter().map(|a| Deed { label: a["label"].as_str().unwrap_or("").into(), outcome: a["outcome"].as_str().unwrap_or("").into(), needs: a["needs"].as_str().unwrap_or("").into(), steps: a["effects"].as_array().cloned().unwrap_or_default(), ..Deed::default() }).collect()).unwrap_or_default();
         self.key = s["key"].as_str().unwrap_or("").to_string();
         // The picture in the nearest colours of this world.
         let nearest = |color: [u8; 3]| {
@@ -685,16 +719,19 @@ pub(super) fn workshop_ui(
         Mode::Rules => rules_room(ctx, ws, world, &mut table, &mut acts, lang, top, screen),
     }
     // The ring over what was clicked on the map, and the page opened from it.
-    if matches!(ws.mode, Mode::Run | Mode::Map) {
-        if ws.script_asking
-            && let Some(answer) = table.script.take()
-        {
-            ws.script_asking = false;
-            match answer {
-                Ok(effects) => ws.script = effects,
-                Err(trouble) => table.master_note = trouble,
-            }
+    // Steps the AI wrote go where they were asked for: an action of what is made, or the
+    // page of the ring.
+    if ws.script_asking
+        && let Some(answer) = table.script.take()
+    {
+        ws.script_asking = false;
+        match (answer, ws.script_for.take()) {
+            (Ok(effects), Some(n)) if n < ws.deeds.len() => ws.deeds[n].steps = effects,
+            (Ok(effects), _) => ws.script = effects,
+            (Err(trouble), _) => table.master_note = trouble,
         }
+    }
+    if matches!(ws.mode, Mode::Run | Mode::Map) {
         ring(ctx, ws, world, &mut acts, lang, screen);
     }
     // What a player did waits for the master's answer, whatever room they are in.
@@ -975,8 +1012,54 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
         MakeKind::Tile => {}
         MakeKind::Item => item_properties(ui, ws, world, acts, lang),
         MakeKind::Object => {
+            // A ready start: the kind fills what such a thing usually has.
+            egui::CollapsingHeader::new(dark(t(T::WsKindOf))).default_open(true).show(ui, |ui| {
+                ui.horizontal_wrapped(|row| {
+                    for (n, (label, about)) in OBJECT_KINDS.iter().enumerate() {
+                        if row.add(button(t(*label))).on_hover_text(t(*about)).clicked() {
+                            object_kind(ws, n, lang);
+                        }
+                    }
+                });
+                hint(ui, t(T::WsKindHint));
+            });
             egui::CollapsingHeader::new(dark(t(T::WsBehaviour))).default_open(true).show(ui, |ui| {
                 kit::toggle(ui, t(T::WsBlocking), &mut ws.blocking);
+            });
+            // What can be done with it: each a choice the players get when they stand by it.
+            egui::CollapsingHeader::new(dark(t(T::WsDeeds))).default_open(true).show(ui, |ui| {
+                let mut gone = None;
+                let mut asked = None;
+                for (n, deed) in ws.deeds.iter_mut().enumerate() {
+                    frame().fill(c(PARCHMENT_SHADE)).inner_margin(4.0).show(ui, |ui| {
+                        ui.horizontal(|row| {
+                            row.add(egui::TextEdit::singleline(&mut deed.label).desired_width(190.0).hint_text(t(T::WsChoiceLabel)));
+                            if row.add(button("×")).clicked() {
+                                gone = Some(n);
+                            }
+                        });
+                        ui.add(egui::TextEdit::singleline(&mut deed.outcome).desired_width(f32::INFINITY).hint_text(t(T::WsChoiceOutcome)));
+                        ui.add(egui::TextEdit::singleline(&mut deed.needs).desired_width(f32::INFINITY).hint_text(t(T::WsNeedsHint)));
+                        egui::CollapsingHeader::new(format!("{} ({})", t(T::WsDeedSteps), deed.steps.len())).id_salt(("deed_steps", n)).show(ui, |ui| {
+                            let asking = ws.script_asking && ws.script_for == Some(n);
+                            if let Some(words) = super::effects_ui::script_list(ui, &mut deed.steps, &mut deed.form, &mut deed.words, asking, world, lang) {
+                                asked = Some((n, words));
+                            }
+                        });
+                    });
+                }
+                if let Some((n, words)) = asked {
+                    ws.script_asking = true;
+                    ws.script_for = Some(n);
+                    let about = format!("{} «{}», {}", ws.name, ws.deeds[n].label, ws.description);
+                    acts.push(GmAct::AskScript { about, wish: words });
+                }
+                if let Some(n) = gone {
+                    ws.deeds.remove(n);
+                }
+                if ui.add(button(t(T::WsAddDeed))).clicked() {
+                    ws.deeds.push(Deed::default());
+                }
             });
             egui::CollapsingHeader::new(dark(t(T::WsChestPart))).default_open(ws.chest).show(ui, |ui| {
                 kit::toggle(ui, t(T::WsChest), &mut ws.chest);
@@ -1092,6 +1175,50 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
             *ws = Workshop { mode, kind, loaded, arts, made, ..Workshop::default() };
         }
     });
+}
+
+/// Fills what an object of a kind usually is and does; the master changes it after.
+fn object_kind(ws: &mut Workshop, kind: usize, lang: Lang) {
+    let t = |text: T| text.text(lang).to_string();
+    let deed = |label: T, outcome: T, steps: serde_json::Value| Deed { label: t(label), outcome: t(outcome), steps: steps.as_array().cloned().unwrap_or_default(), ..Deed::default() };
+    ws.chest = false;
+    ws.deeds.clear();
+    ws.blocking = true;
+    match kind {
+        0 => {
+            ws.chest = true;
+        }
+        1 => {
+            ws.deeds = vec![
+                deed(T::WsDoorOpen, T::WsDoorOpened, serde_json::json!([{ "op": "remove", "id": "self" }])),
+                deed(T::WsDoorBreak, T::WsDoorBreaking, serde_json::json!([{ "op": "check", "ability": "str", "skill": "athletics", "dc": 15, "success": { "narration": t(T::WsDoorBroken), "effects": [{ "op": "remove", "id": "self" }, { "op": "shake", "seconds": 0.6 }] }, "failure": { "narration": t(T::WsDoorHolds), "effects": [] } }])),
+            ];
+        }
+        2 => {
+            ws.deeds = vec![deed(T::WsLeverPull, T::WsLeverPulled, serde_json::json!([{ "op": "shake", "seconds": 0.8 }, { "op": "add", "var": "lever", "value": 1 }]))];
+        }
+        3 => {
+            ws.blocking = false;
+            ws.deeds = vec![deed(T::WsTrapLook, T::WsTrapLooked, serde_json::json!([{ "op": "check", "ability": "wis", "skill": "perception", "dc": 13, "success": { "narration": t(T::WsTrapSeen), "effects": [] }, "failure": { "narration": t(T::WsTrapSprung), "effects": [{ "op": "damage", "amount": "1d6" }] } }]))];
+        }
+        4 => {
+            ws.deeds = vec![deed(T::WsSignRead, T::WsSignText, serde_json::json!([]))];
+        }
+        5 => {
+            ws.deeds = vec![deed(T::WsLightOn, T::WsLightLit, serde_json::json!([{ "op": "light", "light": "day" }]))];
+        }
+        6 => {
+            ws.blocking = false;
+            ws.deeds = vec![deed(T::WsBedRest, T::WsBedRested, serde_json::json!([{ "op": "time", "hours": 8 }, { "op": "heal", "amount": "2d8" }]))];
+        }
+        7 => {
+            ws.blocking = false;
+            ws.deeds = vec![deed(T::WsPortalEnter, T::WsPortalEntered, serde_json::json!([{ "op": "shake", "seconds": 0.5 }, { "op": "travel", "to": "new_place", "name": t(T::WsPortalPlace), "description": t(T::WsPortalPlaceAbout) }]))];
+        }
+        _ => {
+            ws.deeds = vec![Deed::default()];
+        }
+    }
 }
 
 /// A thing for the bag: what it is and its numbers, and where it goes — to a hero now, or
