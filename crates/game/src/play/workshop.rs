@@ -182,6 +182,8 @@ pub struct Workshop {
     script_asking: bool,
     /// A creature or thing to be walked to the next cell clicked.
     carry: Option<String>,
+    /// The workshop was opened from the main menu, with no game.
+    rehearsing: bool,
     /// A card being dragged from a palette or the library onto the map, with its picture.
     pub dragging: Option<(Dragged, egui::TextureId)>,
     /// What can be done with what is made: a label, what happens, the steps; each with the
@@ -281,6 +283,7 @@ impl Default for Workshop {
             script_asking: false,
             carry: None,
             dragging: None,
+            rehearsing: false,
             deeds: Vec::new(),
             script_for: None,
             tool: MapTool::Brush,
@@ -677,8 +680,16 @@ pub(super) fn workshop_ui(
     (mut phase, game, session, settings, store): (ResMut<Phase>, Res<Game>, Res<Session>, Res<Settings>, Res<Store>),
     (mut ws, mut table, mut images, mut panel): (ResMut<Workshop>, ResMut<Table>, ResMut<Assets<Image>>, ResMut<Panel>),
     mut cache: Local<HashMap<String, egui::TextureId>>,
+    mut next: ResMut<NextState<Screen>>,
 ) {
+    let mut leave_to_menu = false;
     ws.panels.clear();
+    // The workshop from the main menu opens on making things.
+    let rehearsal = game.world_id == super::REHEARSAL;
+    if rehearsal && !ws.rehearsing {
+        ws.rehearsing = true;
+        ws.mode = Mode::Make;
+    }
     let judging = table.judging.clone();
     if *phase != Phase::Master && !(*phase == Phase::Judging && judging.is_some()) {
         if panel.workshop {
@@ -735,11 +746,20 @@ pub(super) fn workshop_ui(
         frame().inner_margin(4.0).show(ui, |ui| {
             ui.horizontal(|row| {
                 for (mode, label, about) in rooms {
+                    // With no game, there is no game to run.
+                    if rehearsal && mode == Mode::Run {
+                        continue;
+                    }
                     if lit(row, t(label), ws.mode == mode, t(about)) {
                         ws.mode = mode;
                         ws.rect_from = None;
                         ws.moving = None;
                     }
+                }
+                if rehearsal && row.add(button(t(T::WsBackToMenu))).on_hover_text(t(T::WsBackToMenuHint)).clicked() {
+                    ws.rehearsing = false;
+                    ws.mode = Mode::Run;
+                    leave_to_menu = true;
                 }
             });
         });
@@ -795,6 +815,9 @@ pub(super) fn workshop_ui(
     }
     for act in acts {
         send(act, &session, &settings, &mut table);
+    }
+    if leave_to_menu {
+        next.set(Screen::Main);
     }
 }
 

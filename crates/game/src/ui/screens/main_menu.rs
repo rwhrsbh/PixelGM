@@ -20,6 +20,8 @@ pub struct MainView {
 pub enum MainAct {
     Go(Screen),
     Continue,
+    /// The master's workshop, with no game.
+    Workshop,
     Quit,
 }
 
@@ -34,7 +36,7 @@ pub fn main_menu(ui: &mut Ui, view: &MainView) -> Option<MainAct> {
         ui.label(egui::RichText::new(t(T::Tagline)).color(c(crate::theme::PARCHMENT_SHADE)));
     });
     let no_saves = t(T::NoSavesYet);
-    let sheet = Sheet { id: "main", title: "", about: "", max: vec2(200.0, 260.0), top: 64.0, fixed: false };
+    let sheet = Sheet { id: "main", title: "", about: "", max: vec2(200.0, 290.0), top: 64.0, fixed: false };
     kit::bare_sheet(
         ui,
         sheet,
@@ -45,6 +47,7 @@ pub fn main_menu(ui: &mut Ui, view: &MainView) -> Option<MainAct> {
                 (t(T::Continue), MainAct::Continue, view.has_saves),
                 (t(T::LoadGame), MainAct::Go(Screen::Load), view.has_saves),
                 (t(T::Multiplayer), MainAct::Go(Screen::Lobby), true),
+                (t(T::WsMenuWorkshop), MainAct::Workshop, true),
                 (t(view.master), MainAct::Go(view.master_screen), true),
                 (t(T::Settings), MainAct::Go(Screen::Settings), true),
                 (t(T::Quit), MainAct::Quit, true),
@@ -99,6 +102,7 @@ mod tests {
         assert_eq!(press("Multiplayer", true), Some(MainAct::Go(Screen::Lobby)));
         assert_eq!(press("Master: Gemini", true), Some(MainAct::Go(Screen::Keys)));
         assert_eq!(press("Settings", true), Some(MainAct::Go(Screen::Settings)));
+        assert_eq!(press("Master's workshop", true), Some(MainAct::Workshop));
         assert_eq!(press("Quit", true), Some(MainAct::Quit));
     }
 

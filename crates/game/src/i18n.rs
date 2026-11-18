@@ -500,6 +500,10 @@ texts! {
     RedrawHere: "Перерисовать место", "Redraw the place";
     ArtSaved: "Готово, можно ставить:", "Done, ready to use:";
     WsRun: "Ведение игры", "Running the game";
+    WsMenuWorkshop: "Мастерская мастера", "Master's workshop";
+    WsTitleRehearsal: "Мастерская", "Workshop";
+    WsBackToMenu: "В главное меню", "To the main menu";
+    WsBackToMenuHint: "Всё сделанное уже в библиотеке; этот пробный мир не сохраняется", "Everything made is in the library already; this trial world is not saved";
     WsDropHere: "Вещь на землю", "A thing here";
     FxRest: "Отдых отряда", "The party rests";
     FxRestKind: "Какой", "Which";

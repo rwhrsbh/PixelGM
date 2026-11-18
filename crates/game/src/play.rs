@@ -636,7 +636,29 @@ pub fn begin(commands: &mut Commands, next: &mut NextState<Screen>, world: World
     next.set(screen);
 }
 
+/// The world of the workshop opened from the main menu: made to try things in, never saved.
+pub const REHEARSAL: &str = "__workshop";
+
+/// The workshop from the main menu: the master's editor over a world of its own, with no
+/// game to run, to make tiles, creatures, things and scripts ahead of time. What is made
+/// goes into the library as always; the world itself is thrown away.
+pub fn rehearse(commands: &mut Commands, next: &mut NextState<Screen>, settings: &Settings) {
+    let draft: world::WorldDraft = serde_json::from_str(&world::fake::world("workshop")).expect("the demonstration world is valid");
+    let language = if settings.lang == Lang::Ru { "Russian" } else { "English" };
+    let Ok((mut world, _)) = world::build_world(&draft, "workshop", language) else { return };
+    world.title = T::WsTitleRehearsal.text(settings.lang).to_string();
+    world.gm = Some(player_name(settings));
+    use_rules_of(&world);
+    commands.insert_resource(Phase::Master);
+    commands.insert_resource(Game { world, world_id: REHEARSAL.to_string() });
+    commands.insert_resource(Background::default());
+    next.set(Screen::Play);
+}
+
 fn autosave(store: &Store, game: &Game) {
+    if game.world_id == REHEARSAL {
+        return;
+    }
     if let Err(e) = store.save_game(&game.world_id, &game.world, false) {
         error!("could not save the game: {e}");
     }
