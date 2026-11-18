@@ -1367,7 +1367,10 @@ fn lighting(time: Res<Time>, mut game: ResMut<Game>, settings: Res<Settings>, ca
     if let Some(mut image) = images.get_mut(&cache.dark) {
         let seen = exploring.then(|| world.here().seen.as_slice());
         // Fog hides in grey what darkness hides in black.
-        let hour = if foggy && hour.dark < 0.8 { crate::scene::Hour { dark: if settings.gfx.night { hour.dark } else { 0.0 }, tint: [150, 152, 162] } } else { hour };
+        // By day the grey of fog hides what is unseen; at night the night's own colour does,
+        // and the dark between the patches of fog stays the night's, not the fog's grey.
+        let dark = if settings.gfx.night { hour.dark } else { 0.0 };
+        let hour = if foggy && dark < 0.5 { crate::scene::Hour { dark, tint: [150, 152, 162] } } else { crate::scene::Hour { dark, ..hour } };
         *image = crate::scene::darkness_seen(world.here().size(), hour, &lights, beat, seen, foggy.then(|| time.elapsed_secs())).into_image();
     }
 }
