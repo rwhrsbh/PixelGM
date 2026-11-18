@@ -197,6 +197,10 @@ fn languages(settings: Res<Settings>, session: Res<Session>, mut game: ResMut<Ga
     if table.reads != mine {
         table.reads = mine.to_string();
     }
+    let me = player_name(&settings);
+    if table.me != me {
+        table.me = me;
+    }
     if session.is_client() {
         return;
     }
@@ -1661,6 +1665,7 @@ pub fn show(turn: Turn, phase: &mut Phase, table: &mut Table) {
                 reading.language.clear();
             }
             reading.narration = format!("{}\n\n{}", reading.narration.trim_end(), turn.narration.trim());
+            reading.acts.extend(turn.acts.iter().cloned());
             if !turn.options.is_empty() {
                 reading.options = turn.options;
             }
@@ -1961,13 +1966,20 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     let where_ = game.world.place_name(&place).to_string();
     // Whose deed it answers: they read it at once, the others there find it added folded.
     // What answers nobody (an event, an arrival) concerns everyone there.
+    // What it answers is shown above it, to everyone who reads it.
+    turn.acts = std::mem::take(&mut table.answering);
     let authors: Vec<String> = game.world.actors.iter().filter_map(|&hero| game.world.owners.get(hero).cloned()).collect();
-    let theirs = |player: &str| !authors.is_empty() && !authors.iter().any(|a| a == player);
+    let hero_of_player = |player: &str| hero_of(&game.world, player).map(str::to_string);
+    // A player with a part of their own is concerned, whoever acted: it opens for them.
+    let own_part = |hero: &Option<String>| hero.as_deref().is_some_and(|h| turn.parts.iter().any(|p| p.to.iter().any(|t| t.trim().eq_ignore_ascii_case(h.trim()))));
+    let theirs = |player: &str, hero: &Option<String>| !authors.is_empty() && !authors.iter().any(|a| a == player) && !own_part(hero);
     for player in session.players() {
         if game.world.place_of(&player) == place {
-            // In the reader's language, when the master wrote it in that one too.
-            let mut seen = turn.read_in(&session.language_of(&player).unwrap_or_default());
-            seen.theirs = theirs(&player);
+            // Each is sent the view that is theirs: their own part and their own choices, in
+            // their language when the master wrote it in that one too.
+            let hero = hero_of_player(&player);
+            let mut seen = turn.view_for(hero.as_deref()).read_in(&session.language_of(&player).unwrap_or_default());
+            seen.theirs = theirs(&player, &hero);
             session.tell(&player, Down::Told(seen));
         } else if !gist.is_empty() {
             session.tell(&player, Down::News { place: where_.clone(), text: gist.clone() });
@@ -1979,10 +1991,16 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     }
     // The outcome of a chest opened or a die rolled offers nothing, and takes nothing
     // away: the choices of the telling before it stand.
-    if !turn.options.is_empty() {
-        table.options.insert(place, turn.options.clone());
+    let every = turn.every_option();
+    if !every.is_empty() {
+        table.options.insert(place, every);
     }
-    Phase::Reading { turn: turn.read_in(&table.reads) }
+    // The host's own view: alone, everything; at a table, the host's hero's part.
+    let me = table.me.clone();
+    let hero = if matches!(session, Session::Solo) { None } else { hero_of_player(&me) };
+    let mut own = turn.view_for(if matches!(session, Session::Solo) { None } else { Some(hero.as_deref().unwrap_or("")) }).read_in(&table.reads);
+    own.theirs = !matches!(session, Session::Solo) && theirs(&me, &hero);
+    Phase::Reading { turn: own }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2228,6 +2246,7 @@ fn receive(
                         desk.game.world.acting = desk.game.world.owners.iter().position(|o| *o == lead).or_else(|| my_hero(&desk.game.world, &lead, solo));
                         // "The party" in the answer is those it answers, not the table.
                         desk.game.world.actors = if solo { Vec::new() } else { here.iter().filter_map(|a| desk.game.world.owners.iter().position(|o| *o == a.player)).collect() };
+                        desk.table.answering = here.iter().map(|a| shown_act(&desk.game.world, a, solo)).collect();
                         finish(&mut desk, &said, &draft);
                         desk.game.world.actors.clear();
                         leave_scene(desk.game, desk.table, home);
@@ -2260,6 +2279,9 @@ fn receive(
                         let acting_player = scene.clone().unwrap_or_else(|| player_name(&settings));
                         desk.game.world.acting = desk.game.world.owners.iter().position(|o| *o == acting_player).or_else(|| my_hero(&desk.game.world, &acting_player, matches!(*desk.session, Session::Solo)));
                         let home = scene.as_deref().map(|player| enter_scene(desk.game, desk.table, player));
+                        let solo = matches!(*desk.session, Session::Solo);
+                        let hero = hero_of(&desk.game.world, &acting_player).map(str::to_string);
+                        desk.table.answering = vec![match hero { Some(hero) if !solo => format!("{hero}: {said}"), _ => said.clone() }];
                         finish(&mut desk, &said, &draft);
                         leave_scene(desk.game, desk.table, home);
                     }
@@ -2656,6 +2678,15 @@ fn clock_ms() -> u64 {
 }
 
 /// How a thing done is put to the master: by whom, and whether it goes on from a choice.
+/// A deed as the players read it above the telling that answers it: the hero and the
+/// words, or only the words when one plays alone.
+fn shown_act(world: &World, act: &table::Act, solo: bool) -> String {
+    match hero_of(world, &act.player) {
+        Some(hero) if !solo => format!("{hero}: {}", act.said),
+        _ => act.said.clone(),
+    }
+}
+
 fn act_line(world: &World, act: &table::Act, named: bool) -> String {
     let said = if act.follows { format!("{} {}", act.said, world::prompt::GO_ON) } else { act.said.clone() };
     if named { format!("{}: {said}", hero_of(world, &act.player).unwrap_or(&act.player)) } else { said }
@@ -3588,11 +3619,9 @@ fn finish(desk: &mut Desk, said: &str, draft: &TurnDraft) {
     }
     let waiting = matches!(*desk.phase, Phase::Asking { .. } | Phase::Judging);
     // Whether it answers another player's deed and not the host's own.
-    let me = player_name(desk.settings);
-    let world = &desk.game.world;
-    let theirs = !world.actors.is_empty() && !world.actors.iter().any(|&hero| world.owners.get(hero).is_some_and(|o| *o == me));
-    match carry_out(desk, said, draft).map(|turn| Turn { theirs, ..turn }) {
-        Some(turn) if waiting && !theirs => {
+    // Whether it is another player's, told says: their deed, and no part for the host.
+    match carry_out(desk, said, draft) {
+        Some(turn) if waiting && !turn.theirs => {
             desk.table.fold_next = Some(false);
             *desk.phase = Phase::Reading { turn };
         }

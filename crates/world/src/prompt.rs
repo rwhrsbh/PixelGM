@@ -456,8 +456,10 @@ const TURN_SHAPE: &str = r##"{
   "sprites": [{"id": "…", "rows": ["…"]}],
   "palette": {"g": "#rrggbb"},
   "tiles": [{"id": "…", "name": "…", "walkable": true, "rows": ["16 characters", "… 16 rows"]}],
-  "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": [], "near": "", "for": ""}]
+  "options": [{"label": "something the party might do next", "outcome": "what happens if they do, written now", "effects": [], "near": "", "for": ""}],
+  "parts": [{"to": ["a hero's name"], "narration": "…", "options": []}]
 }
+"narration" and "options" are for whoever acted. When another hero in this place must see or decide something of their own — a thing handed to them, a choice offered to them, what only they notice — give them a "part": "to" names them (or ["all"] for everyone here), "narration" is written for them alone — what the others just did and how it looks and sounds from where they stand, then what it means for them — so that they understand it without the rest, and "options" are their own choices. When several heroes acted together, give each of them a part. Each player is shown only their own part and their own choices; leave "parts" empty when nobody else is concerned.
 An option that needs the party beside someone or something (talk to them, take it, open it) gives that thing's id — or another hero's name — as "near": the game lets the party choose it only once they have walked up to it, and keeps it on the thing to be found there. Every other option must be something the party can do from where it stands now."##;
 
 /// With several players at the table one of them can be told something alone.

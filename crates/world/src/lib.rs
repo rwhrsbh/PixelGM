@@ -26,4 +26,4 @@ pub use model::{Chest, Cue, FeatOffer, Lying, Mark, Secret, TableRules, Token};
 pub use party::{Checked, FightIntent, FightSummary, PendingCheck, Stats};
 pub use story::{Action, Effect, Item, Line, Speaker, Story};
 pub use party::{Stunt, StuntDraft};
-pub use turn::{ChapterDraft, CreatureCard, FeatsDraft, PortraitDraft, TranslationDraft, Turn, TurnDraft, Whisper, portrait_id};
+pub use turn::{Part, PartDraft, ChapterDraft, CreatureCard, FeatsDraft, PortraitDraft, TranslationDraft, Turn, TurnDraft, Whisper, portrait_id};

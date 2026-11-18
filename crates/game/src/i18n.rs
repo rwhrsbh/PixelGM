@@ -490,6 +490,7 @@ texts! {
     ContextSmallestHint: "Так история влезет, какая бы модель ни ответила. Выключите, чтобы считать по первой модели очереди: длинная история тогда может не влезть в модель поменьше, и игра будет ждать сжатия.", "So the story fits whichever model answers. Off, it is counted by the first model of the queue: a long story may then not fit a smaller one, and the game waits while it is written up.";
     ContextCompacts: "При 85% контекста старая часть истории пишется в главы, кусками, которые влезают в модель.", "At 85% of the context the older story is written up into chapters, in pieces the model can read.";
     LastSpent: "Последний ответ", "Last answer";
+    Earlier: "Ранее", "Earlier";
     SpentIn: "запрос", "prompt";
     SpentCached: "из кеша", "from the cache";
     SpentOut: "ответ", "answer";

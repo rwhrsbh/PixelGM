@@ -33,6 +33,28 @@ pub struct TurnDraft {
     pub told_in: std::collections::BTreeMap<String, String>,
     /// Pictures of things that had none, drawn along with the turn.
     pub pictures: Vec<crate::bag::ThingPicture>,
+    /// What other heroes here see of it, written for them, with their own choices.
+    pub parts: Vec<PartDraft>,
+}
+
+/// A part of an answer for some heroes: what they see, with what they need to understand it,
+/// and the choices that are theirs.
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct PartDraft {
+    /// Heroes by name, or "all" for everyone here.
+    pub to: Vec<String>,
+    pub narration: String,
+    pub options: Vec<ActionDraft>,
+}
+
+/// A part of a telling for some heroes.
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct Part {
+    pub to: Vec<String>,
+    pub narration: String,
+    pub options: Vec<Action>,
 }
 
 /// Every effect in an answer, however deep: the turn's own, those of its choices, and those
@@ -254,11 +276,56 @@ pub struct Turn {
     /// there, opens.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub theirs: bool,
+    /// What the players did that it answers, a line each ("Bora: I tip the bin over"), shown
+    /// above it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acts: Vec<String>,
+    /// Parts of it written for other heroes; each player is sent only the view that is theirs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Part>,
 }
 
 impl Turn {
     pub fn of(narration: impl Into<String>) -> Self {
         Self { narration: narration.into(), ..Self::default() }
+    }
+
+    /// The turn as the player of `hero` gets it: the part written for that hero when there
+    /// is one (its words, then its choices), otherwise the telling itself; and of the choices
+    /// only those that are that hero's or everyone's. `None` for a game played alone, where
+    /// every hero is the player's.
+    pub fn view_for(&self, hero: Option<&str>) -> Turn {
+        let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+        let mut view = self.clone();
+        view.parts.clear();
+        let Some(hero) = hero else {
+            // Alone: the telling, and every part after it.
+            for part in &self.parts {
+                if !part.narration.trim().is_empty() {
+                    view.narration = format!("{}\n\n{}", view.narration.trim_end(), part.narration.trim());
+                }
+                view.options.extend(part.options.iter().cloned());
+            }
+            return view;
+        };
+        let mine: Vec<&Part> = self.parts.iter().filter(|p| p.to.iter().any(|t| same(t, hero) || same(t, "all"))).collect();
+        if let Some(own) = mine.iter().find(|p| p.to.iter().any(|t| same(t, hero))).or(mine.first()) {
+            if !own.narration.trim().is_empty() {
+                view.narration = own.narration.trim().to_string();
+                // Written in the world's language: any translation of the telling is not of it.
+                view.told_in.clear();
+            }
+        }
+        view.options.retain(|o| o.for_hero.as_deref().is_none_or(|h| same(h, hero)));
+        for part in mine {
+            view.options.extend(part.options.iter().cloned());
+        }
+        view
+    }
+
+    /// Every choice offered with the turn, the parts' too: what may be taken by somebody.
+    pub fn every_option(&self) -> Vec<Action> {
+        self.options.iter().chain(self.parts.iter().flat_map(|p| p.options.iter())).cloned().collect()
     }
 
     /// The turn as a reader of `language` gets it: in that language when the master wrote
@@ -349,12 +416,43 @@ impl World {
         if self.fight_here() {
             options.clear();
         }
-        // A choice that needs the party beside something is also kept on that thing, to be
-        // found there when the party walks up; one naming nothing here needs nobody.
+        self.keep_near(&mut options);
+        // What other heroes here see, written for them, with choices that are theirs.
+        let mut parts = Vec::new();
+        for part in &draft.parts {
+            let to: Vec<String> = part.to.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+            if to.is_empty() || (part.narration.trim().is_empty() && part.options.is_empty()) {
+                continue;
+            }
+            let mut options = read_actions(&part.options, &mut notes);
+            if self.fight_here() {
+                options.clear();
+            }
+            // Written for one hero, its choices are that hero's unless the master said.
+            if let [one] = to.as_slice()
+                && !one.eq_ignore_ascii_case("all")
+            {
+                for option in options.iter_mut().filter(|o| o.for_hero.is_none()) {
+                    option.for_hero = Some(one.clone());
+                }
+            }
+            self.keep_near(&mut options);
+            if !part.narration.trim().is_empty() {
+                self.story.say(Speaker::Master, &format!("({}) {}", to.join(", "), part.narration.trim()));
+            }
+            parts.push(Part { to, narration: part.narration.trim().to_string(), options });
+        }
+        let told_in = draft.told_in.iter().filter(|(language, text)| **language != self.language && !text.trim().is_empty()).map(|(l, t)| (l.clone(), t.trim().to_string())).collect();
+        (Turn { narration: draft.narration.trim().to_string(), options, told_in, parts, ..Turn::default() }, notes)
+    }
+
+    /// A choice that needs the party beside something is also kept on that thing, to be
+    /// found there when the party walks up; one naming nothing here needs nobody.
+    fn keep_near(&mut self, options: &mut [Action]) {
         let here = self.current.clone();
         let heroes: Vec<String> = self.party.iter().map(|h| crate::build::slug(&h.name)).collect();
         if let Some(location) = self.locations.get_mut(&here) {
-            for option in &mut options {
+            for option in options.iter_mut() {
                 let Some(id) = option.near.clone() else { continue };
                 // Beside another hero: the one who takes it walks up to that hero.
                 if heroes.contains(&id) {
@@ -373,8 +471,6 @@ impl World {
                 }
             }
         }
-        let told_in = draft.told_in.iter().filter(|(language, text)| **language != self.language && !text.trim().is_empty()).map(|(l, t)| (l.clone(), t.trim().to_string())).collect();
-        (Turn { narration: draft.narration.trim().to_string(), options, told_in, ..Turn::default() }, notes)
     }
 
     /// Carries out one of the choices the master offered with a turn.

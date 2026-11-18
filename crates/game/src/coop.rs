@@ -616,6 +616,10 @@ pub struct Table {
     pub fold_next: Option<bool>,
     /// The language the player at this machine reads, by English name.
     pub reads: String,
+    /// The name the player at this machine goes by at the table.
+    pub me: String,
+    /// What the players did that the telling being carried out answers, a line each.
+    pub answering: Vec<String>,
     /// The outcome of a choice, shown while the master works out what follows it.
     pub going_on: Option<String>,
     /// The keys are spent and the table is deciding what to do.

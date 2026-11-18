@@ -511,3 +511,37 @@ fn things_without_a_picture_are_drawn_with_the_next_turn_with_the_palette_at_han
     assert!(!map.rows.is_empty() && map.size() == (2, 2));
     assert!(!crate::prompt::turn(&w, "x", None).contains("\"Old Map\""), "asked for no more once drawn");
 }
+
+#[test]
+fn each_hero_reads_the_part_written_for_it_and_only_its_own_choices() {
+    let mut w = three_at_the_lake();
+    w.places.insert("Carl".into(), "lake".into());
+    w.acting = Some(1);
+    w.actors = vec![1];
+    let (turn, notes) = answer(&mut w, "Bob's hero: I tip the bin over and leave a mess in it", serde_json::json!({
+        "narration": "You tip the bin; the stink rises.",
+        "options": [{ "label": "Run off", "outcome": "You run.", "effects": [] }],
+        "parts": [
+            { "to": ["Brak"], "narration": "Bob's hero tips the bin over beside you and fouls it; the stink hits you.", "options": [{ "label": "Shout at Bob", "outcome": "You shout.", "effects": [] }] },
+            { "to": ["Carl's hero"], "narration": "From the reeds you see Bob's hero tip a bin and foul it.", "options": [] }
+        ]
+    }));
+    assert!(notes.iter().all(|n| !n.contains("could not")), "{notes:?}");
+    // The one who acted: the telling and the choices that are not another's.
+    let bob = turn.view_for(Some("Bob's hero"));
+    assert_eq!(bob.narration, "You tip the bin; the stink rises.");
+    assert_eq!(bob.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Run off"]);
+    // Brak: what happened as it looks to him, and his own choice, which only he may take.
+    let brak = turn.view_for(Some("Brak"));
+    assert!(brak.narration.contains("Bob's hero tips the bin"));
+    assert!(brak.options.iter().any(|o| o.label == "Shout at Bob" && o.for_hero.as_deref() == Some("Brak")));
+    // Carl: his part, no choices of anyone else's.
+    let carl = turn.view_for(Some("Carl's hero"));
+    assert!(carl.narration.contains("From the reeds") && !carl.options.iter().any(|o| o.label == "Shout at Bob"));
+    // Alone, a player reads it all; the parts are in the story for the master to remember.
+    let all = turn.view_for(None);
+    assert!(all.narration.contains("the stink rises") && all.narration.contains("From the reeds"));
+    assert!(w.story.log.iter().any(|l| l.text.starts_with("(Brak) ")));
+    assert!(turn.every_option().len() == 2, "every choice can be found to be taken");
+    assert!(crate::prompt::turn(&w, "x", None).contains("\"parts\""), "the master is told how to write parts");
+}
