@@ -27,6 +27,9 @@ pub const CHAT_BASE: &str = "https://opencode.ai/inference/go/openai/v1";
 pub struct Model {
     pub id: String,
     pub base: String,
+    /// The levels of thinking the model takes, as the catalog lists them ("low", "high",
+    /// "max"…); empty when it does not say.
+    pub efforts: Vec<String>,
 }
 
 /// The models of OpenCode Go in a catalog that take the OpenAI shape of chat. Those that
@@ -43,7 +46,8 @@ pub fn read_catalog(json: &str) -> Result<Vec<Model>, String> {
             if let Some(tokens) = crate::context::read(model) {
                 crate::context::remember(id, tokens);
             }
-            (!base.is_empty()).then(|| Model { id: id.clone(), base: base.to_string() })
+            let efforts = model["capabilities"]["reasoning"]["effort"].as_array().map(|list| list.iter().filter_map(|e| e.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            (!base.is_empty()).then(|| Model { id: id.clone(), base: base.to_string(), efforts })
         })
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -75,6 +79,12 @@ pub fn models() -> Result<Vec<Model>, String> {
             None => Err(why),
         },
     }
+}
+
+/// The level of thinking to ask a model of OpenCode Go for, by what its catalog says it takes.
+pub fn effort_for(model: &str, wanted: &str) -> String {
+    let takes = models().ok().and_then(|models| models.into_iter().find(|m| m.id == model)).map(|m| m.efforts).unwrap_or_default();
+    crate::effort::level_among(&takes, wanted)
 }
 
 /// Where a model is asked: as the catalog says, or the usual address.
@@ -178,6 +188,19 @@ mod tests {
         assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["deepseek-v4-pro", "kimi-k3"]);
         assert_eq!(models[1].base, "https://opencode.ai/inference/go/openai/v1");
         assert!(read_catalog("{}").is_err());
+    }
+
+    #[test]
+    fn a_model_is_asked_for_the_nearest_level_of_thinking_it_takes() {
+        let flash: Vec<String> = ["low", "high", "max"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(crate::effort::level_among(&flash, "medium"), "high", "no medium: the higher of the two as near");
+        assert_eq!(crate::effort::level_among(&flash, "max"), "max");
+        assert_eq!(crate::effort::level_among(&flash, ""), "low", "it cannot stop thinking: the least it takes");
+        let pro: Vec<String> = ["high", "max"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(crate::effort::level_among(&pro, "low"), "high");
+        assert_eq!(crate::effort::level_among(&[], "max"), "max", "a model that does not say is asked as wanted");
+        let json = r#"{"opencode-go": {"models": {"deepseek-v4.1-flash": {"capabilities": {"reasoning": {"supported": true, "effort": ["low", "high", "max"]}}, "api": {"chat-completions": {"base_url": "https://x/v1"}}}}}}"#;
+        assert_eq!(read_catalog(json).unwrap()[0].efforts, flash);
     }
 
     #[test]

@@ -48,7 +48,47 @@ impl Art {
     }
 }
 
+/// A creature or an object the master made, with everything the game lets it be: what the
+/// `spawn` of it says (all but where), and its picture.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct Entity {
+    pub id: String,
+    pub name: String,
+    pub creature: bool,
+    /// The spawn effect without its cell: kind, name, description, attitude, monster or
+    /// stats, count, faction, shop; or blocking, contents, lock, key, actions.
+    pub spawn: serde_json::Value,
+    pub art: Art,
+}
+
+impl Entity {
+    /// The effect that puts it on a cell; its picture must be in the world already.
+    pub fn spawn_at(&self, x: usize, y: usize) -> serde_json::Value {
+        let mut spawn = self.spawn.clone();
+        spawn["op"] = "spawn".into();
+        spawn["kind"] = if self.creature { "creature" } else { "prop" }.into();
+        spawn["id"] = crate::build::slug(&self.id).into();
+        spawn["sprite"] = crate::build::slug(&self.art.id).into();
+        spawn["x"] = x.into();
+        spawn["y"] = y.into();
+        spawn
+    }
+}
+
 impl World {
+    /// Puts a creature or object of the library on a cell, its picture brought in first.
+    /// Gives what went wrong, if anything.
+    pub fn place_entity(&mut self, entity: &Entity, x: usize, y: usize) -> Vec<String> {
+        if !self.import_art(&entity.art) {
+            return vec![format!("the picture of '{}' could not be read", entity.id)];
+        }
+        let mut notes = Vec::new();
+        let effects = crate::story::read_effects(&[entity.spawn_at(x, y)], &mut notes);
+        notes.extend(self.apply(&effects, None));
+        notes
+    }
+
     /// The palette index of a colour: the same colour where the world has it, a new one
     /// while there is room, otherwise the nearest.
     fn index_for(&mut self, color: [u8; 3]) -> u8 {
@@ -115,6 +155,34 @@ mod tests {
         // Through the library's file and back.
         let back: Art = serde_json::from_str(&serde_json::to_string(&art).unwrap()).unwrap();
         assert_eq!(back, art);
+    }
+
+    #[test]
+    fn a_creature_made_with_every_setting_is_placed_as_made() {
+        let mut maker = world("maker");
+        let rows: Vec<String> = (0..16).map(|y| (0..16).map(|x| if x > 3 && x < 12 && y > 2 { '2' } else { '0' }).collect()).collect();
+        assert!(maker.add_drawn_sprite("bog_merchant", &rows));
+        let entity = Entity {
+            id: "bog_merchant".into(),
+            name: "Bog merchant".into(),
+            creature: true,
+            spawn: serde_json::json!({
+                "name": "Bog merchant", "description": "Sells what the bog gives.", "attitude": "friendly",
+                "stats": { "ac": 12, "hp": 18, "speed": 25, "xp": 50, "attacks": [{ "name": "Staff", "bonus": 3, "damage": "1d6+1", "range": 5 }] },
+                "count": 1, "shop": [{ "name": "Dried eel", "kind": "food", "price": 3 }]
+            }),
+            art: Art::of_sprite(&maker, "bog_merchant").unwrap(),
+        };
+        let back: Entity = serde_json::from_str(&serde_json::to_string(&entity).unwrap()).unwrap();
+        let mut w = world("other");
+        let (x, y) = w.here().spawn;
+        let notes = w.place_entity(&back, x + 2, y);
+        assert!(notes.is_empty(), "{notes:?}");
+        let made = w.here().creatures.iter().find(|c| c.id == "bog_merchant").expect("it stands there");
+        assert_eq!(made.attitude, crate::Attitude::Friendly);
+        assert!(made.x.abs_diff(x + 2) + made.y.abs_diff(y) <= 2, "on the cell asked or the nearest free one");
+        assert!(made.stock.iter().any(|i| i.name == "Dried eel") || made.wares.iter().any(|i| i.name == "Dried eel"), "it sells what it was given");
+        assert!(w.sprites.contains_key("bog_merchant"));
     }
 
     #[test]

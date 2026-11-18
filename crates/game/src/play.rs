@@ -3892,6 +3892,29 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             tell_master(desk, player, note);
             desk.redraw.0 = true;
         }
+        GmAct::SaveEntity(entity) => {
+            let lang = desk.settings.lang;
+            let note = if desk.game.world.import_art(&entity.art) {
+                if let Err(e) = desk.store.save_entity(&entity) {
+                    warn!("could not keep {} in the library: {e}", entity.id);
+                }
+                desk.session.broadcast(&Down::LibraryEntity(entity.clone()));
+                format!("{} {}", T::ArtSaved.text(lang), entity.name)
+            } else {
+                T::ArtUnreadable.text(lang).to_string()
+            };
+            tell_master(desk, player, note);
+        }
+        GmAct::Place { entity, x, y } => {
+            // On the master's own place, wherever the host is.
+            let home = enter_scene(desk.game, desk.table, player);
+            let notes = desk.game.world.place_entity(&entity, x, y);
+            leave_scene(desk.game, desk.table, Some(home));
+            if !notes.is_empty() {
+                tell_master(desk, player, notes.join("; "));
+            }
+            desk.redraw.0 = true;
+        }
         GmAct::SetWalkable { tile, walkable } => {
             if desk.game.world.set_walkable(&tile, walkable) {
                 share_art(desk.store, desk.session, world::library::Art::of_tile(&desk.game.world, &tile));

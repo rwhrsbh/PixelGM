@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 17;
+pub const PROTOCOL: u32 = 18;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -118,6 +118,10 @@ pub enum GmAct {
     ImportArt(world::library::Art),
     /// Whether a tile of the world can be walked on.
     SetWalkable { tile: String, walkable: bool },
+    /// A creature or an object the master made, kept in the library and the world.
+    SaveEntity(Box<world::library::Entity>),
+    /// A creature or an object of the library put on a cell of the master's place.
+    Place { entity: Box<world::library::Entity>, x: usize, y: usize },
 }
 
 /// A draft of the model's as the master sees it.
@@ -237,6 +241,7 @@ pub enum Down {
     /// Something the master made, for everyone's library: kept for good.
     LibraryArt(world::library::Art),
     LibraryCard(world::CreatureCard),
+    LibraryEntity(Box<world::library::Entity>),
     /// Who the guest's deed waits for, by player name: empty when it waits for nobody.
     WaitingFor(Vec<String>),
     /// What happened in the fight of a place: only the players there watch it.
@@ -1517,6 +1522,11 @@ fn client_pump(
             ClientEvent::Message(Down::LibraryArt(art)) => {
                 if let Err(e) = store.save_art(&art) {
                     warn!("could not keep {} in the library: {e}", art.id);
+                }
+            }
+            ClientEvent::Message(Down::LibraryEntity(entity)) => {
+                if let Err(e) = store.save_entity(&entity) {
+                    warn!("could not keep {} in the library: {e}", entity.id);
                 }
             }
             ClientEvent::Message(Down::LibraryCard(card)) => {

@@ -630,6 +630,8 @@ texts! {
     ThinkingLow: "Короткие", "Short";
     ThinkingMedium: "Средние", "Medium";
     ThinkingHigh: "Долгие", "Long";
+    ThinkingXHigh: "Очень долгие", "Very long";
+    ThinkingMax: "Максимум", "The most";
     ThinkingHint: "Дольше думает — умнее ответ и дольше ожидание.", "Longer thinking: smarter answers, longer waits.";
     SetFirstToken: "Ждать первый токен", "Wait for the first token";
     FirstTokenHint: "Сколько секунд терпеть молчание модели, прежде чем спросить следующую. От 10 до 300.", "How many seconds of a model's silence to bear before asking the next one. From 10 to 300.";

@@ -139,6 +139,8 @@ impl ProviderSetting {
             ThinkingSetting::Low => "low",
             ThinkingSetting::Medium => "medium",
             ThinkingSetting::High => "high",
+            ThinkingSetting::XHigh => "xhigh",
+            ThinkingSetting::Max => "max",
         };
         llm::providers::Provider { kind: self.kind, keys: self.plain_keys(), models: self.models.clone(), account: self.account.clone(), url: self.url.clone(), effort: effort.to_string(), voices: self.voices.clone(), voice: self.voice.clone(), session: String::new() }
     }
@@ -431,6 +433,19 @@ impl Store {
         let name: String = art.id.chars().map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
         let kind = if art.tile { "tile" } else { "sprite" };
         write_whole(&self.library_dir().join("art").join(format!("{kind}-{name}.json")), serde_json::to_string(art)?.as_bytes())
+    }
+
+    /// Keeps a creature or an object the master made, with all it was made to be.
+    pub fn save_entity(&self, entity: &world::library::Entity) -> io::Result<()> {
+        let name: String = entity.id.chars().map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+        write_whole(&self.library_dir().join("made").join(format!("{name}.json")), serde_json::to_string(entity)?.as_bytes())
+    }
+
+    /// The creatures and objects of the library, creatures first, by name.
+    pub fn load_entities(&self) -> Vec<world::library::Entity> {
+        let mut made: Vec<world::library::Entity> = fs::read_dir(self.library_dir().join("made")).into_iter().flatten().flatten().filter_map(|f| fs::read_to_string(f.path()).ok()).filter_map(|s| serde_json::from_str(&s).ok()).collect();
+        made.sort_by(|a, b| b.creature.cmp(&a.creature).then(a.name.cmp(&b.name)));
+        made
     }
 
     /// The tiles and sprites of the library, tiles first, by name.
