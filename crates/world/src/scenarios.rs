@@ -443,13 +443,15 @@ fn chapters_that_pile_up_are_written_up_into_one() {
     let mut w = three_at_the_lake();
     let base = crate::prompt::tokens(&crate::prompt::play_prompt(&w)) + crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
     let room = base * 2 + 2_000;
-    for n in 0..80 {
+    // Enough chapters to fill the room whatever the length of the rules.
+    for n in 0..base / 30 {
         w.story.chapters.push(format!("Chapter {n}: {}", "a long road walked and many people met on it. ".repeat(6)));
     }
+    let many = w.story.chapters.len();
     let (what, _) = crate::prompt::compaction(&w, room).expect("too many chapters");
     assert!(matches!(what, crate::prompt::Compaction::Merge { .. }), "{what:?}");
     write_up(&mut w, room);
-    assert!(w.story.chapters.len() < 80);
+    assert!(w.story.chapters.len() < many);
 }
 
 #[test]
@@ -634,7 +636,7 @@ fn a_creature_says_its_lines_in_turn() {
     let mut said = Vec::new();
     for _ in 0..10 {
         w.tick_second();
-        said.extend(w.bubbles.drain(..).map(|(_, text)| text));
+        said.extend(w.bubbles.drain(..).map(|(_, text, _)| text));
     }
     assert_eq!(said, vec!["Halt!".to_string(), "Who goes there?".to_string()]);
     w.apply(&steps(serde_json::json!([{ "op": "say", "id": "guard", "text": "Move along." }])), None);
@@ -686,4 +688,20 @@ fn a_thing_drawn_by_the_master_waits_in_a_chest_or_on_a_merchants_shelf() {
     assert_eq!(chest.items[0].rows.len(), 48);
     let peddler = here.creatures.iter().find(|c| c.id == "peddler").unwrap();
     assert!(peddler.stock.iter().any(|i| i.name == "Lamp" && i.price == 12));
+}
+
+/// A blast in the far corner is felt only by the hero near it; a wink is seen by one alone.
+#[test]
+fn a_sight_is_for_those_it_is_meant_for() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([{ "op": "shake", "seconds": 1, "x": 28, "y": 14, "radius": 3 }])), None);
+    assert!(w.cues.iter().all(|c| !c.motion.starts_with("quake")), "nobody is near the blast: nothing is shown");
+    w.apply(&steps(serde_json::json!([{ "op": "shake", "seconds": 1, "x": 3, "y": 2, "radius": 3 }])), None);
+    assert_eq!(w.cues.last().map(|c| c.who.clone()), Some(vec!["Brak".to_string()]));
+    w.apply(&steps(serde_json::json!([{ "op": "animate", "id": "party", "motion": "nod", "who": ["Brak"] }, { "op": "say", "id": "party", "text": "psst", "who": ["Brak"] }])), None);
+    assert_eq!(w.cues.last().map(|c| c.who.clone()), Some(vec!["Brak".to_string()]));
+    assert_eq!(w.bubbles.last().map(|b| b.2.clone()), Some(vec!["Brak".to_string()]));
+    // With nobody named and no cell, everyone in the place sees it.
+    w.apply(&steps(serde_json::json!([{ "op": "shake", "seconds": 1 }])), None);
+    assert!(w.cues.last().is_some_and(|c| c.who.is_empty()));
 }

@@ -161,6 +161,8 @@ pub enum Effect {
     Shake {
         #[serde(default)]
         seconds: Value,
+        #[serde(flatten)]
+        audience: Audience,
     },
     /// Something new appears. `kind` is `prop` or `creature`.
     Spawn {
@@ -279,6 +281,8 @@ pub enum Effect {
         #[serde(default)]
         id: String,
         motion: String,
+        #[serde(flatten)]
+        audience: Audience,
     },
     /// The outcome is uncertain: the party rolls, and one of two prepared branches follows.
     Check {
@@ -380,6 +384,8 @@ pub enum Effect {
         #[serde(default)]
         id: String,
         text: String,
+        #[serde(flatten)]
+        audience: Audience,
     },
     /// What a creature or a thing says by itself, over and over: every so many seconds, in
     /// turn or at random. An empty list makes it quiet.
@@ -478,6 +484,20 @@ impl Effect {
     fn steers(&self) -> bool {
         matches!(self, Effect::Wait { .. } | Effect::Set { .. } | Effect::Add { .. } | Effect::If { .. } | Effect::Random { .. } | Effect::Repeat { .. } | Effect::Script { .. } | Effect::Define { .. })
     }
+}
+
+/// Who sees or feels a sight: the heroes named, or those within `radius` cells of a cell;
+/// everyone in the place when neither is given.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct Audience {
+    pub who: Vec<String>,
+    #[serde(deserialize_with = "lenient_opt")]
+    pub x: Option<i64>,
+    #[serde(deserialize_with = "lenient_opt")]
+    pub y: Option<i64>,
+    #[serde(deserialize_with = "lenient_int")]
+    pub radius: i64,
 }
 
 /// A script of the world: a list of effects with a name, and what sets it off.
@@ -1061,6 +1081,26 @@ impl World {
             let (x, y) = self.player.cell();
             clamp_cell(x as i64, y as i64)
         };
+        // Who sees a sight: the heroes named, or those near its cell; `None` when it was
+        // meant for some and none of them is there; empty for everyone in the place.
+        let hero_names: Vec<String> = self.party.iter().map(|h| h.name.clone()).collect();
+        let watchers = |audience: &Audience| -> Option<Vec<String>> {
+            let named: Vec<String> = audience.who.iter().flat_map(|w| heroes_named(&slug(w))).filter_map(|h| hero_names.get(h).cloned()).collect();
+            if !audience.who.is_empty() {
+                return (!named.is_empty()).then_some(named);
+            }
+            match (audience.x, audience.y, audience.radius) {
+                (Some(x), Some(y), r) if r > 0 => {
+                    // Only those near enough: a blast in the cellar is not felt across the field.
+                    let near: Vec<String> = present.iter().filter(|h| {
+                        let (hx, hy) = hero_cells[**h];
+                        (hx as i64 - x).abs().max((hy as i64 - y).abs()) <= r
+                    }).filter_map(|h| hero_names.get(*h).cloned()).collect();
+                    (!near.is_empty()).then_some(near)
+                }
+                _ => Some(Vec::new()),
+            }
+        };
         for (n, effect) in effects.iter().enumerate() {
             // Effects on the party itself come first: they need the whole world, not just
             // the place.
@@ -1379,7 +1419,8 @@ impl World {
                     let extra = location.marks.len().saturating_sub(40);
                     location.marks.drain(..extra);
                 }
-                Effect::Animate { id, motion } => {
+                Effect::Animate { id, motion, audience } => {
+                    let Some(feel) = watchers(audience) else { continue };
                     let id = if id.trim().is_empty() { "party".to_string() } else { resolve(id) };
                     // Someone who is not here cannot move: the cue is dropped.
                     let known = matches!(id.as_str(), "party" | "hero" | "heroes" | "player" | "players" | "everyone" | "all") || !heroes_named(&id).is_empty() || location.creatures.iter().any(|c| c.id == id) || location.props.iter().any(|p| p.id == id);
@@ -1387,7 +1428,7 @@ impl World {
                         continue;
                     }
                     self.cue_seq += 1;
-                    self.cues.push(crate::model::Cue { seq: self.cue_seq, place: here.clone(), id, motion: motion.trim().to_lowercase() });
+                    self.cues.push(crate::model::Cue { seq: self.cue_seq, place: here.clone(), id, motion: motion.trim().to_lowercase(), who: feel });
                     let extra = self.cues.len().saturating_sub(16);
                     self.cues.drain(..extra);
                 }
@@ -1433,11 +1474,12 @@ impl World {
                         }
                     }
                 }
-                Effect::Shake { seconds } => {
-                    // Shown like a movement: once, to everyone in the place.
+                Effect::Shake { seconds, audience } => {
+                    // Shown like a movement: once, to those in the place who feel it.
                     let seconds = seconds.as_f64().filter(|s| *s > 0.0).map_or(1.2, |s| s.clamp(0.3, 6.0)) as f32;
+                    let Some(feel) = watchers(audience) else { continue };
                     self.cue_seq += 1;
-                    self.cues.push(crate::model::Cue { seq: self.cue_seq, place: here.clone(), id: "screen".to_string(), motion: format!("quake {seconds}") });
+                    self.cues.push(crate::model::Cue { seq: self.cue_seq, place: here.clone(), id: "screen".to_string(), motion: format!("quake {seconds}"), who: feel });
                 }
                 Effect::Weather { weather } => location.weather = weather.trim().to_lowercase(),
                 Effect::Music { mood } => location.mood = mood.trim().to_lowercase(),
@@ -1524,10 +1566,11 @@ impl World {
                         notes.push(format!("stash: nothing called '{id}' is here"));
                     }
                 }
-                Effect::Say { id, text } => {
+                Effect::Say { id, text, audience } => {
                     let who = if id.trim().is_empty() { "party".to_string() } else { resolve(id) };
+                    let Some(hear) = watchers(audience) else { continue };
                     if !text.trim().is_empty() {
-                        self.bubbles.push((who, text.trim().to_string()));
+                        self.bubbles.push((who, text.trim().to_string(), hear));
                     }
                 }
                 Effect::Lines { id, lines, every, order } => {
@@ -1998,6 +2041,11 @@ impl World {
                     None => notes.push(format!("script: there is no script '{id}'")),
                 },
                 Effect::Define { id, on, place, of, var, at, effects: inner } => {
+                    // A script written with nothing to do is struck out.
+                    if inner.is_empty() {
+                        self.scripts.remove(id.trim());
+                        continue;
+                    }
                     let script = Script { on: on.trim().to_lowercase(), place: place.clone(), of: of.clone(), var: var.clone(), at: *at, effects: inner.clone(), fired: false };
                     self.scripts.insert(id.trim().to_string(), script);
                 }
@@ -2054,7 +2102,7 @@ impl World {
                 if played.is_multiple_of(every) {
                     let n = if creature.random_lines { (played as usize / every as usize * 7 + creature.id.len()) % creature.lines.len() } else { creature.said % creature.lines.len() };
                     creature.said = n + 1;
-                    self.bubbles.push((creature.id.clone(), creature.lines[n].clone()));
+                    self.bubbles.push((creature.id.clone(), creature.lines[n].clone(), Vec::new()));
                 }
             }
         }

@@ -1367,20 +1367,34 @@ fn bag_work(
     }
 }
 
+/// Lines said in the world go up in bubbles for those meant to hear them: everyone when no
+/// hero is named; the host sees them too when it has no hero of its own named (a master).
+fn say_aloud(world: &World, bubbles: Vec<(String, String, Vec<String>)>, session: &Session, settings: &Settings, table: &mut Table) {
+    let place = world.current.clone();
+    let hears = |player: &str, who: &[String]| who.is_empty() || hero_of(world, player).is_none_or(|hero| who.iter().any(|w| w.eq_ignore_ascii_case(hero)));
+    for (id, text, who) in bubbles {
+        for guest in session.players() {
+            if hears(&guest, &who) {
+                session.send_to(&guest, &Down::Bubble { place: place.clone(), who: id.clone(), text: text.clone() });
+            }
+        }
+        if hears(&player_name(settings), &who) {
+            table.bubbles.push((id, text));
+        }
+    }
+}
+
 /// The world's own clock on the host: what waits put off comes due, scripts set off by the
 /// hour, a variable or an event go, and creatures say their lines. Lines go up in bubbles
 /// here and at every guest's table.
-fn scripts(time: Res<Time>, mut game: ResMut<Game>, session: Res<Session>, mut table: ResMut<Table>, mut redraw: ResMut<Redraw>, store: Res<Store>, mut second: Local<f32>) {
+fn scripts(time: Res<Time>, mut game: ResMut<Game>, session: Res<Session>, mut table: ResMut<Table>, mut redraw: ResMut<Redraw>, store: Res<Store>, settings: Res<Settings>, mut second: Local<f32>) {
     if session.is_client() {
         return;
     }
     // Lines said by effects go up at once, whatever the clock.
     if !game.world.bubbles.is_empty() {
-        let place = game.world.current.clone();
-        for (who, text) in std::mem::take(&mut game.world.bubbles) {
-            session.broadcast(&Down::Bubble { place: place.clone(), who: who.clone(), text: text.clone() });
-            table.bubbles.push((who, text));
-        }
+        let bubbles = std::mem::take(&mut game.world.bubbles);
+        say_aloud(&game.world, bubbles, &session, &settings, &mut table);
     }
     *second += time.delta_secs();
     if *second < 1.0 {
@@ -1394,11 +1408,8 @@ fn scripts(time: Res<Time>, mut game: ResMut<Game>, session: Res<Session>, mut t
     }
     let waited = world.later.len();
     let notes = game.world.tick_second();
-    let place = game.world.current.clone();
-    for (who, text) in std::mem::take(&mut game.world.bubbles) {
-        session.broadcast(&Down::Bubble { place: place.clone(), who: who.clone(), text: text.clone() });
-        table.bubbles.push((who, text));
-    }
+    let bubbles = std::mem::take(&mut game.world.bubbles);
+    say_aloud(&game.world, bubbles, &session, &settings, &mut table);
     for note in &notes {
         info!("script: {note}");
     }

@@ -22,6 +22,8 @@ pub enum Kind {
     /// A creature, a thing, a hero or the whole party.
     Someone,
     Hero,
+    /// Some of the heroes, ticked one by one.
+    Heroes,
     /// The ground under a cell: x and y.
     Cell,
     Tile,
@@ -31,6 +33,8 @@ pub enum Kind {
     Pick(&'static [&'static str]),
     /// A list of words, one a line.
     Lines,
+    /// Steps of their own, one under another: what an "if", a "repeat" or a script does.
+    Steps,
 }
 
 pub struct Field {
@@ -64,6 +68,7 @@ const WEATHERS: &[&str] = &["clear", "sun", "rain", "storm", "snow", "fog"];
 const ABILITIES: &[&str] = &["str", "dex", "con", "int", "wis", "cha"];
 const DONE: &[&str] = &["", "won", "lost"];
 const ORDER: &[&str] = &["in_turn", "random"];
+const TRIGGERS: &[&str] = &["", "enter", "death", "hour", "var"];
 
 /// The groups of the list, in order.
 pub const GROUPS: [(&str, &str); 7] = [("Отряд", "The party"), ("Существа и вещи", "Creatures and things"), ("Карта", "The map"), ("Мир и время", "World and time"), ("История", "The story"), ("Зрелище", "Spectacle"), ("Сценарии", "Scripts")];
@@ -73,6 +78,7 @@ pub const OPS: &[Op] = &[
     Op { op: "heal", ru: "Лечение", en: "Healing", group: 0, fields: &[f("amount", "Сколько", "Amount", Kind::Dice), f("id", "Кому (пусто — отряду)", "To whom (empty: the party)", Kind::Someone)] },
     Op { op: "give", ru: "Выдать вещь", en: "Give a thing", group: 0, fields: &[f("name", "Название", "Name", Kind::Text), f("description", "Описание", "Description", Kind::Text), f("kind", "Вид", "Kind", Kind::Pick(KINDS)), f("heal", "Лечит", "Heals", Kind::Dice), f("damage", "Урон", "Damage", Kind::Dice), f("to", "Кому", "To whom", Kind::Hero)] },
     Op { op: "stash", ru: "Положить вещь внутрь", en: "Put a thing inside", group: 1, fields: &[f("id", "Куда (сундук, торговец)", "Into (a chest, a merchant)", Kind::Thing), f("name", "Название", "Name", Kind::Text), f("description", "Описание", "Description", Kind::Text), f("kind", "Вид", "Kind", Kind::Pick(KINDS)), f("heal", "Лечит", "Heals", Kind::Dice), f("damage", "Урон", "Damage", Kind::Dice), f("price", "Цена", "Price", Kind::Number)] },
+    Op { op: "hand", ru: "Передать вещь герою", en: "Hand a thing to a hero", group: 0, fields: &[f("name", "Вещь", "Thing", Kind::Text), f("to", "Кому", "To whom", Kind::Hero)] },
     Op { op: "take", ru: "Забрать вещь", en: "Take a thing", group: 0, fields: &[f("name", "Название", "Name", Kind::Text)] },
     Op { op: "gold", ru: "Золото", en: "Gold", group: 0, fields: &[f("amount", "Сколько (минус — отнять)", "Amount (minus takes)", Kind::Number), f("to", "Кому", "To whom", Kind::Hero)] },
     Op { op: "xp", ru: "Опыт", en: "Experience", group: 0, fields: &[f("amount", "Сколько", "Amount", Kind::Number)] },
@@ -111,13 +117,17 @@ pub const OPS: &[Op] = &[
     Op { op: "thread_done", ru: "Нить закрыта", en: "A thread closed", group: 4, fields: &[f("text", "Какая", "Which", Kind::Text)] },
     Op { op: "threat", ru: "Угроза по часам", en: "A threat on the clock", group: 4, fields: &[f("name", "Имя", "Name", Kind::Text), f("what", "Что случится", "What happens", Kind::Long), f("rumour", "Слухи", "Rumour", Kind::Text), f("hours", "Через часов", "In hours", Kind::Number)] },
     Op { op: "threat_end", ru: "Угроза снята", en: "A threat ended", group: 4, fields: &[f("name", "Имя", "Name", Kind::Text)] },
-    Op { op: "shake", ru: "Тряска экрана", en: "Shake the screen", group: 5, fields: &[f("seconds", "Секунд", "Seconds", Kind::Number)] },
-    Op { op: "animate", ru: "Движение", en: "A motion", group: 5, fields: &[f("id", "Кто", "Who", Kind::Someone), f("motion", "Движение", "Motion", Kind::Pick(MOTIONS))] },
-    Op { op: "say", ru: "Реплика облачком", en: "A line in a bubble", group: 5, fields: &[f("id", "Кто", "Who", Kind::Someone), f("text", "Что говорит", "What they say", Kind::Text)] },
+    Op { op: "shake", ru: "Тряска экрана", en: "Shake the screen", group: 5, fields: &[f("seconds", "Секунд", "Seconds", Kind::Number), f("who", "Кому видно (никто не отмечен — всем здесь)", "Who sees it (none ticked: everyone here)", Kind::Heroes), f("cell", "Или рядом с клеткой", "Or near a cell", Kind::Cell), f("radius", "в радиусе клеток", "within cells", Kind::Number)] },
+    Op { op: "animate", ru: "Движение", en: "A motion", group: 5, fields: &[f("id", "Кто", "Who", Kind::Someone), f("motion", "Движение", "Motion", Kind::Pick(MOTIONS)), f("who", "Кому видно (никто не отмечен — всем здесь)", "Who sees it (none ticked: everyone here)", Kind::Heroes), f("cell", "Или рядом с клеткой", "Or near a cell", Kind::Cell), f("radius", "в радиусе клеток", "within cells", Kind::Number)] },
+    Op { op: "say", ru: "Реплика облачком", en: "A line in a bubble", group: 5, fields: &[f("id", "Кто", "Who", Kind::Someone), f("text", "Что говорит", "What they say", Kind::Text), f("who", "Кому видно (никто не отмечен — всем здесь)", "Who sees it (none ticked: everyone here)", Kind::Heroes), f("cell", "Или рядом с клеткой", "Or near a cell", Kind::Cell), f("radius", "в радиусе клеток", "within cells", Kind::Number)] },
     Op { op: "wait", ru: "Пауза (дальше — позже)", en: "Wait (the rest later)", group: 6, fields: &[f("seconds", "Секунд", "Seconds", Kind::Number)] },
     Op { op: "set", ru: "Переменная = значение", en: "Variable = value", group: 6, fields: &[f("var", "Переменная", "Variable", Kind::Text), f("value", "Значение", "Value", Kind::Number)] },
     Op { op: "add", ru: "Переменная + число", en: "Variable + number", group: 6, fields: &[f("var", "Переменная", "Variable", Kind::Text), f("value", "Сколько", "By", Kind::Number)] },
     Op { op: "script", ru: "Запустить сценарий", en: "Run a script", group: 6, fields: &[f("id", "Сценарий (id)", "Script (id)", Kind::Text)] },
+    Op { op: "if", ru: "Если переменная…", en: "If a variable…", group: 6, fields: &[f("var", "Переменная", "Variable", Kind::Text), f("is", "равна", "is", Kind::Number), f("at_least", "или не меньше", "or at least", Kind::Number), f("then", "То", "Then", Kind::Steps), f("else", "Иначе", "Else", Kind::Steps)] },
+    Op { op: "random", ru: "Наугад одно из", en: "One at random", group: 6, fields: &[f("choices.0", "Вариант 1", "Way 1", Kind::Steps), f("choices.1", "Вариант 2", "Way 2", Kind::Steps), f("choices.2", "Вариант 3", "Way 3", Kind::Steps)] },
+    Op { op: "repeat", ru: "Повторить", en: "Repeat", group: 6, fields: &[f("times", "Сколько раз", "How many times", Kind::Number), f("effects", "Что повторять", "What to repeat", Kind::Steps)] },
+    Op { op: "define", ru: "Сценарий с запуском", en: "A script with a trigger", group: 6, fields: &[f("id", "Имя сценария (id)", "Script name (id)", Kind::Text), f("on", "Когда сам запускается", "When it goes off", Kind::Pick(TRIGGERS)), f("place", "Место (вход в него)", "Place (walking in)", Kind::Place), f("of", "Чья смерть", "Whose death", Kind::Thing), f("var", "Переменная", "Variable", Kind::Text), f("at", "Час или значение", "Hour or value", Kind::Number), f("effects", "Что делает", "What it does", Kind::Steps)] },
 ];
 
 /// The op's entry, when the game knows it.
@@ -165,6 +175,8 @@ pub struct Form {
     pub open: bool,
     /// Only the fields: the effect is chosen by the caller, who also has the buttons.
     pub fixed: bool,
+    /// The forms of the steps inside, by field.
+    pub subs: std::collections::HashMap<&'static str, Form>,
 }
 
 /// The form for one effect; returns the effect once "Add" is pressed.
@@ -230,6 +242,22 @@ pub fn builder(ui: &mut Ui, form: &mut Form, world: &World, lang: Lang) -> Optio
                             }
                         });
                     }
+                    Kind::Heroes => {
+                        let mut ticked: Vec<String> = value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+                        row.vertical(|col| {
+                            for hero in &heroes {
+                                let mut on = ticked.contains(hero);
+                                if col.checkbox(&mut on, hero.as_str()).changed() {
+                                    if on {
+                                        ticked.push(hero.clone());
+                                    } else {
+                                        ticked.retain(|h| h != hero);
+                                    }
+                                }
+                            }
+                        });
+                        *value = ticked.join(", ");
+                    }
                     Kind::Tile => {
                         let mut tiles: Vec<(&String, &String)> = world.tiles.iter().map(|(id, t)| (id, &t.name)).collect();
                         tiles.sort_by(|a, b| a.1.cmp(b.1));
@@ -269,6 +297,17 @@ pub fn builder(ui: &mut Ui, form: &mut Form, world: &World, lang: Lang) -> Optio
                         row.add(egui::TextEdit::singleline(value).desired_width(70.0).hint_text("x, y"));
                         hint(row, if ru { "сейчас: где герой" } else { "now: where the hero is" });
                     }
+                    Kind::Steps => {
+                        let mut list: Vec<Value> = serde_json::from_str(value).unwrap_or_default();
+                        let sub = form.subs.entry(field.key).or_default();
+                        row.vertical(|col| {
+                            egui::CollapsingHeader::new(format!("{} ({})", if ru { "шаги" } else { "steps" }, list.len())).id_salt(("steps", field.key, col.id())).show(col, |col| {
+                                let mut words = String::new();
+                                steps_only(col, &mut list, sub, &mut words, world, lang);
+                            });
+                        });
+                        *value = serde_json::to_string(&list).unwrap_or_default();
+                    }
                     _ => {
                         row.add(egui::TextEdit::singleline(value).desired_width(200.0));
                     }
@@ -303,7 +342,15 @@ pub fn build(op: &Op, values: &std::collections::HashMap<&'static str, String>) 
         let value = match field.kind {
             Kind::Number => text.replace(',', ".").parse::<f64>().map(|n| if n.fract() == 0.0 { json!(n as i64) } else { json!(n) }).unwrap_or(json!(text)),
             Kind::Bool => json!(text == "true"),
+            Kind::Heroes => json!(text.split(',').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>()),
             Kind::Lines => json!(text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>()),
+            Kind::Steps => {
+                let list: Vec<Value> = serde_json::from_str(text).unwrap_or_default();
+                if list.is_empty() && !field.key.starts_with("choices.") {
+                    continue;
+                }
+                json!(list)
+            }
             Kind::Cell => {
                 let numbers: Vec<i64> = text.split([',', ' ', ';']).filter_map(|s| s.trim().parse().ok()).collect();
                 if let [x, y, ..] = numbers[..] {
@@ -317,6 +364,13 @@ pub fn build(op: &Op, values: &std::collections::HashMap<&'static str, String>) 
         // "with" of a fight is a list; "success.narration" goes inside its branch.
         if field.key == "with" {
             effect["with"] = json!([value]);
+        } else if let Some(n) = field.key.strip_prefix("choices.") {
+            // The ways of a "random", in order; an empty one is left out.
+            let _ = n;
+            if value.as_array().is_some_and(|a| !a.is_empty()) {
+                let choices = effect["choices"].as_array().cloned().unwrap_or_default();
+                effect["choices"] = json!(choices.into_iter().chain(std::iter::once(value)).collect::<Vec<_>>());
+            }
         } else if let Some((branch, key)) = field.key.split_once('.') {
             effect[branch] = json!({ key: value, "effects": [] });
         } else {
@@ -324,6 +378,31 @@ pub fn build(op: &Op, values: &std::collections::HashMap<&'static str, String>) 
         }
     }
     effect
+}
+
+/// Steps inside an "if", a "repeat" or a script: the list and the form to add to it.
+fn steps_only(ui: &mut Ui, list: &mut Vec<Value>, form: &mut Form, _words: &mut String, world: &World, lang: Lang) {
+    let (mut up, mut gone) = (None, None);
+    for (n, effect) in list.iter().enumerate() {
+        ui.horizontal(|row| {
+            row.label(format!("{}. {}", n + 1, describe(effect, world, lang)));
+            if n > 0 && row.add(button("▲")).clicked() {
+                up = Some(n);
+            }
+            if row.add(button("×")).clicked() {
+                gone = Some(n);
+            }
+        });
+    }
+    if let Some(n) = up {
+        list.swap(n, n - 1);
+    }
+    if let Some(n) = gone {
+        list.remove(n);
+    }
+    if let Some(effect) = builder(ui, form, world, lang) {
+        list.push(effect);
+    }
 }
 
 /// A script being put together: effects one under another, in the order they happen, each
@@ -387,6 +466,28 @@ mod tests {
         let lines = op("lines").unwrap();
         let values = [("id", "guard".to_string()), ("lines", "Halt!\nWho goes there?".to_string())].into_iter().collect();
         assert_eq!(build(lines, &values)["lines"], json!(["Halt!", "Who goes there?"]));
+    }
+
+    #[test]
+    fn every_effect_the_game_knows_is_in_the_masters_form() {
+        // The tags of every effect, read from the game's own source, must all be offered.
+        let source = include_str!("../../../world/src/story.rs");
+        let start = source.find("pub enum Effect {").unwrap();
+        let end = start + source[start..].find("\n}\n").unwrap();
+        let mut missing = Vec::new();
+        for line in source[start..end].lines() {
+            let line = line.trim_start();
+            let Some(name) = line.strip_suffix(" {").or_else(|| line.strip_suffix(" { id: String },")).or_else(|| line.strip_suffix(",")) else { continue };
+            let name = name.split([' ', '{', '(']).next().unwrap_or("");
+            if name.is_empty() || !name.chars().next().unwrap().is_ascii_uppercase() || line.starts_with("///") || line.starts_with('#') {
+                continue;
+            }
+            let snake: String = name.chars().enumerate().flat_map(|(i, c)| if c.is_ascii_uppercase() && i > 0 { vec!['_', c.to_ascii_lowercase()] } else { vec![c.to_ascii_lowercase()] }).collect();
+            if op(&snake).is_none() {
+                missing.push(snake);
+            }
+        }
+        assert!(missing.is_empty(), "not offered to the human master: {missing:?}");
     }
 
     #[test]

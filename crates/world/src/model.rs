@@ -303,6 +303,9 @@ pub struct Cue {
     /// A creature or prop id, a hero's name, or "party".
     pub id: String,
     pub motion: String,
+    /// The heroes who feel it, by name; everyone in the place when empty.
+    #[serde(default)]
+    pub who: Vec<String>,
 }
 
 impl Location {
@@ -447,7 +450,7 @@ pub struct World {
     pub played: u64,
     /// Lines to be shown in bubbles, by who says them: taken by the game each frame.
     #[serde(skip)]
-    pub bubbles: Vec<(String, String)>,
+    pub bubbles: Vec<(String, String, Vec<String>)>,
     /// What happened that scripts may be set off by: ("enter", place), ("death", id).
     #[serde(skip)]
     pub happened: Vec<(String, String)>,

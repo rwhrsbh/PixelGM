@@ -1528,7 +1528,7 @@ fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<Gm
             }
             Press::Form(op, values) => {
                 if let Some(n) = super::effects_ui::OPS.iter().position(|o| o.op == op) {
-                    ws.ring_form = super::effects_ui::Form { op: n, values: values.into_iter().collect(), open: true, fixed: true };
+                    ws.ring_form = super::effects_ui::Form { op: n, values: values.into_iter().collect(), open: true, fixed: true, subs: Default::default() };
                     ws.script.clear();
                     ws.menu_page = Some((op, format!("{title}: {label}")));
                 }
@@ -1586,7 +1586,7 @@ fn run_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, table: &mut T
     let size = vec2(440.0_f32.min(screen.width() - 40.0), 300.0);
     window(ctx, &mut panels, "run", t(T::WsRun), egui::pos2(8.0, (screen.height() - size.y - 60.0).max(top)), size, |ui| {
         ui.horizontal(|row| {
-            for (n, (label, about)) in [(T::WsTell, T::WsTellAbout), (T::WsChange, T::WsChangeAbout), (T::WsAi, T::WsAiAbout), (T::WsSeat, T::WsSeatAbout)].into_iter().enumerate() {
+            for (n, (label, about)) in [(T::WsTell, T::WsTellAbout), (T::WsChange, T::WsChangeAbout), (T::WsScripts, T::WsScriptsAbout), (T::WsAi, T::WsAiAbout), (T::WsSeat, T::WsSeatAbout)].into_iter().enumerate() {
                 if lit(row, t(label), ws.page == n, t(about)) {
                     ws.page = n;
                 }
@@ -1658,6 +1658,48 @@ fn run_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, table: &mut T
                 });
             }
             2 => {
+                // The world's scripts: what sets each off, run now or struck out; a new one
+                // is put together below, or written by the AI from words.
+                egui::ScrollArea::vertical().max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
+                    if world.scripts.is_empty() {
+                        hint(ui, t(T::WsNoScripts));
+                    }
+                    for (id, script) in &world.scripts {
+                        ui.horizontal(|row| {
+                            let when = match script.on.as_str() {
+                                "enter" => format!("{} {}", t(T::WsOnEnter), script.place),
+                                "death" => format!("{} {}", t(T::WsOnDeath), script.of),
+                                "hour" => format!("{} {}:00", t(T::WsOnHour), script.at),
+                                "var" => format!("{} ≥ {}", script.var, script.at),
+                                _ => t(T::WsOnCall).to_string(),
+                            };
+                            row.label(egui::RichText::new(format!("{id} — {when} — {} {}", script.effects.len(), t(T::WsStepsCount))).color(c(INK)));
+                            if row.add(button(t(T::WsRunNow))).clicked() {
+                                acts.push(GmAct::Apply(Box::new(TurnDraft { effects: vec![serde_json::json!({ "op": "script", "id": id })], ..TurnDraft::default() })));
+                            }
+                            if row.add(button("×")).on_hover_text(t(T::WsStrike)).clicked() {
+                                acts.push(GmAct::Apply(Box::new(TurnDraft { effects: vec![serde_json::json!({ "op": "define", "id": id, "effects": [] })], ..TurnDraft::default() })));
+                            }
+                        });
+                    }
+                    if !world.vars.is_empty() {
+                        heading(ui, t(T::WsVars));
+                        hint(ui, &world.vars.iter().map(|(k, v)| format!("{k} = {v}")).collect::<Vec<_>>().join(" · "));
+                    }
+                    if !world.later.is_empty() {
+                        hint(ui, &format!("{}: {}", t(T::WsWaiting), world.later.len()));
+                    }
+                    heading(ui, t(T::WsNewScript));
+                    if !ws.effect.open || super::effects_ui::OPS.get(ws.effect.op).is_none_or(|o| o.op != "define") {
+                        if ui.add(button(t(T::WsNewScript))).clicked() {
+                            ws.effect = super::effects_ui::Form { op: super::effects_ui::OPS.iter().position(|o| o.op == "define").unwrap_or(0), open: true, ..Default::default() };
+                        }
+                    } else if let Some(effect) = super::effects_ui::builder(ui, &mut ws.effect, world, lang) {
+                        acts.push(GmAct::Apply(Box::new(TurnDraft { effects: vec![effect], ..TurnDraft::default() })));
+                    }
+                });
+            }
+            3 => {
                 hint(ui, t(T::WsAiHint));
                 ui.add(egui::TextEdit::multiline(&mut ws.order).desired_rows(3).desired_width(f32::INFINITY).hint_text(t(T::WsOrderHint)));
                 let ready = !ws.order.trim().is_empty();
