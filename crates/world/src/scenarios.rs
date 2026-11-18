@@ -705,3 +705,22 @@ fn a_sight_is_for_those_it_is_meant_for() {
     w.apply(&steps(serde_json::json!([{ "op": "shake", "seconds": 1 }])), None);
     assert!(w.cues.last().is_some_and(|c| c.who.is_empty()));
 }
+
+/// A boss three cells across set down by a wall stands where all its cells are free.
+#[test]
+fn a_boss_is_set_down_where_all_its_cells_are_free() {
+    let mut map = lake();
+    map[6] = "....rrrr......................";
+    let mut w = world_in(&map, (2, 2), serde_json::json!([]));
+    w.apply(&steps(serde_json::json!([{ "op": "spawn", "kind": "creature", "id": "ogre", "name": "Ogre", "x": 4, "y": 4, "monster": "ogre", "attitude": "neutral", "count": 1, "size": 3 }])), None);
+    let place = &w.locations["lake"];
+    let ogre = place.creatures.iter().find(|c| c.id == "ogre").unwrap();
+    let tiles = &w.tiles;
+    for dx in 0..3 {
+        for dy in 0..3 {
+            let (x, y) = (ogre.x + dx, ogre.y + dy);
+            let id = place.tile_id(x, y).unwrap_or("");
+            assert!(tiles.get(id).is_some_and(|t| t.walkable), "({x}, {y}) under the ogre is {id}");
+        }
+    }
+}

@@ -1350,7 +1350,9 @@ impl World {
                     let wanted = clamp_cell(*x, *y);
                     let name = if name.trim().is_empty() { id.clone() } else { name.trim().to_string() };
                     if kind.trim().eq_ignore_ascii_case("creature") {
-                        let free = |(cx, cy): (usize, usize)| !location.blocked(cx as i32, cy as i32, tiles) && location.exit_at(cx, cy).is_none();
+                        // Something large needs every one of its cells free, not only its own.
+                        let side = (*size).clamp(1, 3) as usize;
+                        let free = |(cx, cy): (usize, usize)| (0..side).all(|dx| (0..side).all(|dy| !location.blocked((cx + dx) as i32, (cy + dy) as i32, tiles) && location.exit_at(cx + dx, cy + dy).is_none()));
                         if let Some((cx, cy)) = nearest(wanted, free) {
                             location.creatures.push(Creature { id, name, description: description.trim().to_string(), x: cx, y: cy, sprite, attitude: *attitude, actions: prepared, monster: monster.as_deref().map(|m| m.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty()), stats: stats.clone(), count: (*count).clamp(0, 8) as u8, mustered: false, stock: crate::build::stock_of(shop), wares: Vec::new(), shop_day: 0, haggle: 0, haggled: false, lines: Vec::new(), every: 0, random_lines: false, said: 0, size: (*size).clamp(1, 3) as u8, faction: slug(faction), hurt: 0 });
                         }
