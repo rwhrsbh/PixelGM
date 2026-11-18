@@ -1231,12 +1231,11 @@ fn save(ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>) {
 
 /// Where a shelf of the library comes from.
 fn source_name(n: usize, saves: &[(String, String, std::path::PathBuf)], lang: Lang) -> String {
-    let ru = lang == Lang::Ru;
     match n {
-        0 => (if ru { "Эта игра" } else { "This game" }).to_string(),
-        1 => (if ru { "Моя библиотека" } else { "My library" }).to_string(),
-        2 => (if ru { "Стартовый набор" } else { "Starter pack" }).to_string(),
-        3 => (if ru { "★ Избранное" } else { "★ Favourites" }).to_string(),
+        0 => (T::WsThisGame.text(lang)).to_string(),
+        1 => (T::WsMyLibrary.text(lang)).to_string(),
+        2 => (T::WsStarterPack.text(lang)).to_string(),
+        3 => (T::WsFavourites2.text(lang)).to_string(),
         n => saves.get(n - 4).map_or_else(String::new, |(title, place, _)| format!("{title} · {place}")),
     }
 }
@@ -1255,7 +1254,6 @@ fn shelf_of(n: usize, ws: &Workshop, world: &World, store: &Store) -> (Vec<Art>,
 #[allow(clippy::too_many_arguments)]
 fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures: &ShelfPictures, acts: &mut Vec<GmAct>, store: &Store, lang: Lang, top: f32, screen: Rect) {
     let t = |text: T| text.text(lang);
-    let ru = lang == Lang::Ru;
     let mut panels = std::mem::take(&mut ws.panels);
     let size = vec2(640.0_f32.min(screen.width() - 40.0), (screen.height() - top - 60.0).min(480.0));
     window(ctx, &mut panels, "library", t(T::WsLibrary), egui::pos2((screen.width() - size.x) / 2.0, top), size, |ui| {
@@ -1267,7 +1265,7 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
                 egui::ScrollArea::vertical().id_salt("sources").max_height(size.y - 40.0).show(col, |col| {
                     for n in 0..4 + ws.saves.len() {
                         if n == 4 {
-                            col.label(egui::RichText::new(if ru { "Сохранения:" } else { "Saves:" }).strong());
+                            col.label(egui::RichText::new(T::WsSaves.text(lang)).strong());
                         }
                         let name = source_name(n, &ws.saves, lang);
                         if col.add_sized([165.0, 20.0], egui::Button::selectable(ws.source == n, name)).clicked() {
@@ -1340,7 +1338,7 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
                             facts.push(format!("{} {} · {} {}", t(T::WsAc), s["stats"]["ac"], t(T::WsHp), s["stats"]["hp"]));
                         }
                         if let Some(n) = s["actions"].as_array().filter(|a| !a.is_empty()) {
-                            facts.push(format!("{}: {}", if ru { "действий" } else { "actions" }, n.len()));
+                            facts.push(format!("{}: {}", T::WsActions.text(lang), n.len()));
                         }
                         hint(col, &facts.join(" · "));
                         col.horizontal(|row| {
@@ -1429,7 +1427,6 @@ enum Press {
 /// The ring of what the master can do with what they clicked, around it, as in a life
 /// simulation game, in the parchment of the game; and the page opened from it.
 fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>, lang: Lang, screen: Rect) {
-    let ru = lang == Lang::Ru;
     let Some(focus) = ws.focus.clone() else { return };
     let here = world.here();
     let cell = format!("{}, {}", focus.cell.0, focus.cell.1);
@@ -1437,61 +1434,60 @@ fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<Gm
     let prop = focus.id.as_ref().and_then(|id| here.props.iter().find(|p| p.id == *id));
     let tile = here.tile_id(focus.cell.0, focus.cell.1).unwrap_or("").to_string();
     let tile_name = world.tiles.get(&tile).map_or(tile.clone(), |t| t.name.clone());
-    let l = |r: &'static str, e: &'static str| if ru { r } else { e };
     let mut items: Vec<(&'static str, Press)> = Vec::new();
     let title;
     if let Some(hero) = focus.id.as_ref().and_then(|id| id.strip_prefix("hero:")).map(str::to_string) {
         title = hero.clone();
-        items.push((l("Телепорт", "Teleport"), Press::Carry));
-        items.push((l("Урон", "Damage"), Press::Form("damage", vec![("id", hero.clone()), ("amount", "1d6".into())])));
-        items.push((l("Лечение", "Heal"), Press::Form("heal", vec![("id", hero.clone()), ("amount", "1d8".into())])));
-        items.push((l("Выдать вещь", "Give a thing"), Press::Form("give", vec![("to", hero.clone())])));
-        items.push((l("Золото", "Gold"), Press::Form("gold", vec![("to", hero.clone()), ("amount", "10".into())])));
-        items.push((l("Опыт", "Experience"), Press::Form("xp", vec![("amount", "50".into())])));
-        items.push((l("Движение", "Motion"), Press::Form("animate", vec![("id", hero.clone()), ("who", String::new())])));
-        items.push((l("Шепнуть", "Whisper"), Press::Form("say", vec![("id", hero.clone()), ("who", hero.clone())])));
-        items.push((l("Подвиг", "Deed"), Press::Now(serde_json::json!({ "op": "deed", "hero": hero.clone() }))));
-        items.push((l("Воскресить", "Revive"), Press::Now(serde_json::json!({ "op": "revive", "hero": hero }))));
+        items.push((T::WsTeleport.text(lang), Press::Carry));
+        items.push((T::WsDamage2.text(lang), Press::Form("damage", vec![("id", hero.clone()), ("amount", "1d6".into())])));
+        items.push((T::WsHeal2.text(lang), Press::Form("heal", vec![("id", hero.clone()), ("amount", "1d8".into())])));
+        items.push((T::WsGiveAThing.text(lang), Press::Form("give", vec![("to", hero.clone())])));
+        items.push((T::WsGold.text(lang), Press::Form("gold", vec![("to", hero.clone()), ("amount", "10".into())])));
+        items.push((T::WsExperience.text(lang), Press::Form("xp", vec![("amount", "50".into())])));
+        items.push((T::WsMotion.text(lang), Press::Form("animate", vec![("id", hero.clone()), ("who", String::new())])));
+        items.push((T::WsWhisper.text(lang), Press::Form("say", vec![("id", hero.clone()), ("who", hero.clone())])));
+        items.push((T::WsDeed.text(lang), Press::Now(serde_json::json!({ "op": "deed", "hero": hero.clone() }))));
+        items.push((T::WsRevive.text(lang), Press::Now(serde_json::json!({ "op": "revive", "hero": hero }))));
     } else if let Some(c) = creature {
         title = c.name.clone();
         let id = c.id.clone();
         let stats = c.stats.clone();
-        items.push((l("Реплики", "Lines"), Press::Form("lines", vec![("id", id.clone()), ("lines", c.lines.join("\n")), ("every", if c.every > 0 { c.every.to_string() } else { "20".into() }), ("order", if c.random_lines { "random".into() } else { "in_turn".into() })])));
-        items.push((l("Сказать", "Say"), Press::Form("say", vec![("id", id.clone())])));
-        items.push((l("Характеристики", "Numbers"), Press::Form("edit", vec![("id", id.clone()), ("name", c.name.clone()), ("size", c.size.to_string()), ("ac", stats.as_ref().map_or(String::new(), |s| s.ac.to_string())), ("hp", stats.as_ref().map_or(String::new(), |s| s.hp.to_string())), ("speed", stats.as_ref().map_or(String::new(), |s| s.speed.to_string())), ("monster", c.monster.clone().unwrap_or_default())])));
+        items.push((T::WsLines.text(lang), Press::Form("lines", vec![("id", id.clone()), ("lines", c.lines.join("\n")), ("every", if c.every > 0 { c.every.to_string() } else { "20".into() }), ("order", if c.random_lines { "random".into() } else { "in_turn".into() })])));
+        items.push((T::WsSay2.text(lang), Press::Form("say", vec![("id", id.clone())])));
+        items.push((T::WsNumbers2.text(lang), Press::Form("edit", vec![("id", id.clone()), ("name", c.name.clone()), ("size", c.size.to_string()), ("ac", stats.as_ref().map_or(String::new(), |s| s.ac.to_string())), ("hp", stats.as_ref().map_or(String::new(), |s| s.hp.to_string())), ("speed", stats.as_ref().map_or(String::new(), |s| s.speed.to_string())), ("monster", c.monster.clone().unwrap_or_default())])));
         let attitude = match c.attitude {
             world::Attitude::Hostile => "hostile",
             world::Attitude::Neutral => "neutral",
             _ => "friendly",
         };
-        items.push((l("Отношение", "Attitude"), Press::Form("attitude", vec![("id", id.clone()), ("attitude", attitude.into())])));
-        items.push((l("Действие", "Action"), Press::Form("action", vec![("id", id.clone())])));
-        items.push((l("Урон", "Damage"), Press::Form("damage", vec![("id", id.clone()), ("amount", "1d6".into())])));
-        items.push((l("Бой", "Fight"), Press::Now(serde_json::json!({ "op": "fight", "with": [id.clone()] }))));
-        items.push((l("Убить", "Kill"), Press::Now(serde_json::json!({ "op": "kill", "id": id.clone() }))));
-        items.push((l("В отряд", "Join"), Press::Now(serde_json::json!({ "op": "join", "id": id.clone() }))));
-        items.push((l("Описание", "Description"), Press::Form("describe", vec![("id", id.clone()), ("description", c.description.clone())])));
-        items.push((l("Двигать", "Move"), Press::Carry));
-        items.push((l("Убрать", "Remove"), Press::Now(serde_json::json!({ "op": "remove", "id": id }))));
+        items.push((T::WsAttitude2.text(lang), Press::Form("attitude", vec![("id", id.clone()), ("attitude", attitude.into())])));
+        items.push((T::WsAction.text(lang), Press::Form("action", vec![("id", id.clone())])));
+        items.push((T::WsDamage2.text(lang), Press::Form("damage", vec![("id", id.clone()), ("amount", "1d6".into())])));
+        items.push((T::WsFight2.text(lang), Press::Now(serde_json::json!({ "op": "fight", "with": [id.clone()] }))));
+        items.push((T::WsKill.text(lang), Press::Now(serde_json::json!({ "op": "kill", "id": id.clone() }))));
+        items.push((T::WsJoin.text(lang), Press::Now(serde_json::json!({ "op": "join", "id": id.clone() }))));
+        items.push((T::WsDescription2.text(lang), Press::Form("describe", vec![("id", id.clone()), ("description", c.description.clone())])));
+        items.push((T::WsMove2.text(lang), Press::Carry));
+        items.push((T::WsRemove.text(lang), Press::Now(serde_json::json!({ "op": "remove", "id": id }))));
     } else if let Some(p) = prop {
         title = p.name.clone();
         let id = p.id.clone();
-        items.push((l("Действие", "Action"), Press::Form("action", vec![("id", id.clone())])));
-        items.push((l("Изменить", "Change"), Press::Form("edit", vec![("id", id.clone()), ("name", p.name.clone()), ("size", p.size.to_string()), ("blocking", p.blocking.to_string())])));
-        items.push((l("Описание", "Description"), Press::Form("describe", vec![("id", id.clone()), ("description", p.description.clone())])));
-        items.push((l("Сказать", "Say"), Press::Form("say", vec![("id", id.clone())])));
-        items.push((l("Двигать", "Move"), Press::Carry));
-        items.push((l("Убрать", "Remove"), Press::Now(serde_json::json!({ "op": "remove", "id": id }))));
+        items.push((T::WsAction.text(lang), Press::Form("action", vec![("id", id.clone())])));
+        items.push((T::WsChange2.text(lang), Press::Form("edit", vec![("id", id.clone()), ("name", p.name.clone()), ("size", p.size.to_string()), ("blocking", p.blocking.to_string())])));
+        items.push((T::WsDescription2.text(lang), Press::Form("describe", vec![("id", id.clone()), ("description", p.description.clone())])));
+        items.push((T::WsSay2.text(lang), Press::Form("say", vec![("id", id.clone())])));
+        items.push((T::WsMove2.text(lang), Press::Carry));
+        items.push((T::WsRemove.text(lang), Press::Now(serde_json::json!({ "op": "remove", "id": id }))));
     } else {
         title = format!("{tile_name} ({cell})");
-        items.push((l("Сменить землю", "Ground"), Press::Form("tile", vec![("cell", cell.clone()), ("tile", tile.clone())])));
-        items.push((l("Плита", "Plate"), Press::Form("secret", vec![("cell", cell.clone()), ("kind", "plate".into()), ("dc", "0".into())])));
-        items.push((l("Ловушка", "Trap"), Press::Form("secret", vec![("cell", cell.clone()), ("kind", "trap".into()), ("dc", "13".into())])));
-        items.push((l("Тайник", "Cache"), Press::Form("secret", vec![("cell", cell.clone()), ("kind", "hidden".into()), ("dc", "14".into())])));
-        items.push((l("Выход", "Way out"), Press::Form("exit", vec![("cell", cell.clone())])));
-        items.push((l("Создать", "Spawn"), Press::Form("spawn", vec![("cell", cell.clone())])));
-        items.push((l("Из библиотеки", "From library"), Press::Place));
-        items.push((l("След", "Mark"), Press::Form("mark", vec![("cell", cell.clone())])));
+        items.push((T::WsGround.text(lang), Press::Form("tile", vec![("cell", cell.clone()), ("tile", tile.clone())])));
+        items.push((T::WsPlate.text(lang), Press::Form("secret", vec![("cell", cell.clone()), ("kind", "plate".into()), ("dc", "0".into())])));
+        items.push((T::WsTrap.text(lang), Press::Form("secret", vec![("cell", cell.clone()), ("kind", "trap".into()), ("dc", "13".into())])));
+        items.push((T::WsCache.text(lang), Press::Form("secret", vec![("cell", cell.clone()), ("kind", "hidden".into()), ("dc", "14".into())])));
+        items.push((T::WsWayOut.text(lang), Press::Form("exit", vec![("cell", cell.clone())])));
+        items.push((T::WsSpawn.text(lang), Press::Form("spawn", vec![("cell", cell.clone())])));
+        items.push((T::WsFromLibrary.text(lang), Press::Place));
+        items.push((T::WsMark.text(lang), Press::Form("mark", vec![("cell", cell.clone())])));
     }
     // The ring: the name in the middle, the presses around it.
     let radius = 78.0 + items.len() as f32 * 2.0;
@@ -1563,7 +1559,7 @@ fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<Gm
             super::effects_ui::builder(ui, &mut ws.ring_form, world, lang);
             if with_steps {
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(if ru { "Что при этом происходит — шаги по порядку:" } else { "What happens then, step by step:" }).strong().color(c(WAX_DARK)));
+                ui.label(egui::RichText::new(T::WsWhatHappensThenStep.text(lang)).strong().color(c(WAX_DARK)));
                 let about = format!("{page_title} (id {})", focus.id.clone().unwrap_or_else(|| cell.clone()));
                 if let Some(words) = super::effects_ui::script_list(ui, &mut ws.script, &mut ws.script_form, &mut ws.script_words, ws.script_asking, world, lang) {
                     ws.script_asking = true;
@@ -1573,10 +1569,10 @@ fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<Gm
         });
         ui.separator();
         ui.horizontal(|row| {
-            if row.add(button(if ru { "Отмена" } else { "Cancel" })).clicked() {
+            if row.add(button(T::WsCancel.text(lang))).clicked() {
                 done = true;
             }
-            if kit::right(row, |r| r.add(button(if ru { "Применить" } else { "Apply" }).primary())).clicked() {
+            if kit::right(row, |r| r.add(button(T::WsApply.text(lang)).primary())).clicked() {
                 let mut effect = super::effects_ui::build(&super::effects_ui::OPS[ws.ring_form.op], &ws.ring_form.values);
                 if with_steps {
                     effect["effects"] = serde_json::Value::Array(ws.script.clone());
@@ -1650,7 +1646,7 @@ fn run_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, table: &mut T
                 ui.horizontal_wrapped(|row| {
                     for op in ["damage", "heal", "give", "gold", "xp", "check", "spawn", "fight", "time", "weather", "light", "shake"] {
                         if let Some((n, entry)) = super::effects_ui::OPS.iter().enumerate().find(|(_, o)| o.op == op)
-                            && row.add(button(if lang == Lang::Ru { entry.ru } else { entry.en })).clicked()
+                            && row.add(button(entry.label.text(lang))).clicked()
                         {
                             ws.effect.op = n;
                             ws.effect.values.clear();
