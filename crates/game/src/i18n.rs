@@ -491,6 +491,7 @@ texts! {
     ContextCompacts: "При 85% контекста старая часть истории пишется в главы, кусками, которые влезают в модель.", "At 85% of the context the older story is written up into chapters, in pieces the model can read.";
     LastSpent: "Последний ответ", "Last answer";
     Earlier: "Ранее", "Earlier";
+    WaitingChoice: "Ждём выбора:", "Waiting for the choice of:";
     SpentIn: "запрос", "prompt";
     SpentCached: "из кеша", "from the cache";
     SpentOut: "ответ", "answer";

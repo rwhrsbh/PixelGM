@@ -1973,12 +1973,17 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     // A player with a part of their own is concerned, whoever acted: it opens for them.
     let own_part = |hero: &Option<String>| hero.as_deref().is_some_and(|h| turn.parts.iter().any(|p| p.to.iter().any(|t| t.trim().eq_ignore_ascii_case(h.trim()))));
     let theirs = |player: &str, hero: &Option<String>| !authors.is_empty() && !authors.iter().any(|a| a == player) && !own_part(hero);
+    // Who is offered something here: what is done next waits for each of them.
+    let mut expected: Vec<String> = Vec::new();
     for player in session.players() {
         if game.world.place_of(&player) == place {
             // Each is sent the view that is theirs: their own part and their own choices, in
             // their language when the master wrote it in that one too.
             let hero = hero_of_player(&player);
             let mut seen = turn.view_for(hero.as_deref()).read_in(&session.language_of(&player).unwrap_or_default());
+            if !seen.options.is_empty() {
+                expected.push(player.clone());
+            }
             seen.theirs = theirs(&player, &hero);
             session.tell(&player, Down::Told(seen));
         } else if !gist.is_empty() {
@@ -1993,13 +1998,20 @@ fn told(mut turn: Turn, notes: Vec<String>, game: &mut Game, store: &Store, redr
     // away: the choices of the telling before it stand.
     let every = turn.every_option();
     if !every.is_empty() {
-        table.options.insert(place, every);
+        table.options.insert(place.clone(), every);
     }
     // The host's own view: alone, everything; at a table, the host's hero's part.
     let me = table.me.clone();
     let hero = if matches!(session, Session::Solo) { None } else { hero_of_player(&me) };
     let mut own = turn.view_for(if matches!(session, Session::Solo) { None } else { Some(hero.as_deref().unwrap_or("")) }).read_in(&table.reads);
     own.theirs = !matches!(session, Session::Solo) && theirs(&me, &hero);
+    if !own.options.is_empty() && !table.elsewhere && hero.is_some() {
+        expected.push(me.clone());
+    }
+    // Waiting is for a table: one player alone is never kept waiting for themselves.
+    if expected.len() >= 2 {
+        table.queues.expect(&place, &expected);
+    }
     Phase::Reading { turn: own }
 }
 
@@ -2654,7 +2666,7 @@ fn send(said: String, near: Option<String>, game: &Game, gm: &Gm, store: &Store,
     }
     // It is never refused: it waits its turn in the master's queues.
     let _ = (game, gm, store, master);
-    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: said.clone(), near: near.clone(), follows: false });
+    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: said.clone(), near: near.clone(), follows: false, passed: false });
     Phase::Asking { said, near }
 }
 
@@ -2667,7 +2679,7 @@ fn follow(label: &str, outcome: &str, game: &Game, settings: &Settings, session:
             session.tell(&player, Down::Told(told.clone()));
         }
     }
-    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: label.to_string(), near: None, follows: true });
+    table.wants.lock().unwrap().push(Want { player: player_name(settings), said: label.to_string(), near: None, follows: true, passed: false });
     Phase::Asking { said: label.to_string(), near: None }
 }
 
@@ -2681,6 +2693,9 @@ fn clock_ms() -> u64 {
 /// A deed as the players read it above the telling that answers it: the hero and the
 /// words, or only the words when one plays alone.
 fn shown_act(world: &World, act: &table::Act, solo: bool) -> String {
+    if act.passed {
+        return format!("{}: —", hero_of(world, &act.player).unwrap_or(&act.player));
+    }
     match hero_of(world, &act.player) {
         Some(hero) if !solo => format!("{hero}: {}", act.said),
         _ => act.said.clone(),
@@ -2688,6 +2703,9 @@ fn shown_act(world: &World, act: &table::Act, solo: bool) -> String {
 }
 
 fn act_line(world: &World, act: &table::Act, named: bool) -> String {
+    if act.passed {
+        return format!("{}: (lets it be and does nothing for now)", hero_of(world, &act.player).unwrap_or(&act.player));
+    }
     let said = if act.follows { format!("{} {}", act.said, world::prompt::GO_ON) } else { act.said.clone() };
     if named { format!("{}: {said}", hero_of(world, &act.player).unwrap_or(&act.player)) } else { said }
 }
@@ -2733,6 +2751,25 @@ fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: Res
     if session.is_client() {
         return;
     }
+    // Who each player's deed waits for: the host sees it, each guest is told when it changes.
+    let waits = |place: &str, player: &str| -> Vec<String> {
+        if table.queues.pending_of(player).is_some() { table.queues.expecting(place).into_iter().filter(|p| p != player).collect() } else { Vec::new() }
+    };
+    let me_now = player_name(&settings);
+    let mine = waits(&game.world.current, &me_now);
+    let told: Vec<(String, Vec<String>)> = session.players().into_iter().map(|g| {
+        let w = waits(game.world.place_of(&g), &g);
+        (g, w)
+    }).collect();
+    for (guest, theirs) in told {
+        if table.told_waiting.get(&guest) != Some(&theirs) {
+            session.send_to(&guest, &Down::WaitingFor(theirs.clone()));
+            table.told_waiting.insert(guest, theirs);
+        }
+    }
+    if table.waiting_for != mine {
+        table.waiting_for = mine;
+    }
     let wants = std::mem::take(&mut *table.wants.lock().unwrap());
     if wants.is_empty() && table.queues.idle() {
         return;
@@ -2744,6 +2781,10 @@ fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: Res
     let mut outs = Vec::new();
     for want in wants {
         let place = if want.player == me || solo { game.world.current.clone() } else { game.world.place_of(&want.player).to_string() };
+        if want.passed {
+            outs.extend(table.queues.pass(&place, &want.player, now));
+            continue;
+        }
         let there = usize::from(game.world.current == place) + guests.iter().filter(|g| game.world.place_of(g) == place).count();
         outs.extend(table.queues.submit(&place, &want.player, &want.said, want.near, want.follows, there <= 1, now).1);
     }
@@ -2837,6 +2878,14 @@ fn on_activate(
     }
     // A guest does not change the world: it asks the host, and reads the answer with
     // everyone else when it comes.
+    // A telling with choices closed without one: the others there are not kept waiting.
+    if matches!(*action, PlayAction::Close) && matches!(&*phase, Phase::Reading { turn } if !turn.options.is_empty()) {
+        if session.is_client() {
+            session.intend(Intent::Pass);
+        } else {
+            table.wants.lock().unwrap().push(Want { player: player_name(&settings), said: String::new(), near: None, follows: false, passed: true });
+        }
+    }
     if session.is_client() {
         let asked = match (*action, phase.clone()) {
             (PlayAction::Do(index), Phase::Looking { thing }) => Some(Intent::Do { thing, index }),
@@ -3258,7 +3307,7 @@ fn guests(
                     Some(option) => {
                         let outcome = game.world.choose(&option);
                         // And what follows it is asked of the master: always, in its turn.
-                        table.wants.lock().unwrap().push(Want { player: player.clone(), said: option.label.clone(), near: None, follows: true });
+                        table.wants.lock().unwrap().push(Want { player: player.clone(), said: option.label.clone(), near: None, follows: true, passed: false });
                         Some(outcome_of(outcome))
                     }
                     // Told in words: a press that does nothing looks like a game that hangs.
@@ -3284,7 +3333,7 @@ fn guests(
             Intent::Say { text, near } => {
                 // Never refused: it waits its turn in the queue of the place it was done in.
                 if !text.trim().is_empty() {
-                    table.wants.lock().unwrap().push(Want { player: player.clone(), said: text.trim().to_string(), near, follows: false });
+                    table.wants.lock().unwrap().push(Want { player: player.clone(), said: text.trim().to_string(), near, follows: false, passed: false });
                 }
                 None
             }
@@ -3464,6 +3513,10 @@ fn guests(
             Intent::OpenChest { prop, how } => {
                 let hero = game.world.owners.iter().position(|o| *o == player).unwrap_or(0);
                 game.world.open_chest(hero, &prop, how, &mut Rng::from_clock()).map(|result| outcome_of(chest_words(&result, settings.lang)))
+            }
+            Intent::Pass => {
+                table.wants.lock().unwrap().push(Want { player: player.clone(), said: String::new(), near: None, follows: false, passed: true });
+                None
             }
             Intent::Turn { index, name } => {
                 if let Some(hero) = game.world.owners.iter().position(|o| *o == player) {

@@ -50,6 +50,10 @@ pub struct Act {
     pub at: Millis,
     /// Sent back once already because the place had changed under it.
     returned: bool,
+    /// The player let what was offered pass: closed it or skipped it. Told to the master
+    /// with what the others did; asked of it on its own, never.
+    #[serde(default)]
+    pub passed: bool,
 }
 
 /// Where something done stands. Every change of it is told, so nothing done is ever lost
@@ -96,6 +100,9 @@ struct Scene {
     window_from: Millis,
     typing_until: Millis,
     asked: Option<RequestId>,
+    /// Players who were offered something here and have not answered it yet: what is done
+    /// here waits for each of them to choose, write, close it or skip it.
+    expecting: Vec<String>,
 }
 
 #[derive(Default, Debug)]
@@ -130,15 +137,50 @@ impl Queues {
             let state = Out::State { act: scene.waiting[ahead].id, player: player.to_string(), state: ActState::Queued { ahead } };
             return (scene.waiting[ahead].id, vec![state]);
         }
+        // Where players were offered something, they are waited for instead of a window.
+        let waited = !scene.expecting.is_empty();
         if scene.waiting.is_empty() {
             scene.window_from = now;
-            scene.window_until = Some(if batch && !alone { now + window } else { now });
+            scene.window_until = Some(if batch && !alone && !waited { now + window } else { now });
         }
-        scene.waiting.push(Act { id, player: player.to_string(), said: said.trim().to_string(), near, follows, at: now, returned: false });
+        scene.waiting.push(Act { id, player: player.to_string(), said: said.trim().to_string(), near, follows, at: now, returned: false, passed: false });
+        scene.expecting.retain(|p| p != player);
+        if waited {
+            scene.window_until = Some(now);
+        }
         let ahead = scene.waiting.len() - 1;
         let mut out = vec![Out::State { act: id, player: player.to_string(), state: ActState::Queued { ahead } }];
         out.extend(self.tick(now));
         (id, out)
+    }
+
+    /// These players were offered something here: what is done here is asked only once each
+    /// of them has done something, or let it pass.
+    pub fn expect(&mut self, place: &str, players: &[String]) {
+        let scene = self.scenes.entry(place.to_string()).or_default();
+        scene.expecting = players.to_vec();
+    }
+
+    /// A player let what was offered pass. When others did something meanwhile, the master is
+    /// told it with theirs; alone it asks nothing.
+    pub fn pass(&mut self, place: &str, player: &str, now: Millis) -> Vec<Out> {
+        let Some(scene) = self.scenes.get_mut(place) else { return Vec::new() };
+        if !scene.expecting.iter().any(|p| p == player) {
+            return Vec::new();
+        }
+        scene.expecting.retain(|p| p != player);
+        if !scene.waiting.is_empty() {
+            let id = ActId(self.next + 1);
+            self.next += 1;
+            let scene = self.scenes.get_mut(place).expect("just found");
+            scene.waiting.push(Act { id, player: player.to_string(), said: String::new(), near: None, follows: false, at: now, returned: false, passed: true });
+        }
+        self.tick(now)
+    }
+
+    /// Who the place is still waiting for.
+    pub fn expecting(&self, place: &str) -> Vec<String> {
+        self.scenes.get(place).map(|s| s.expecting.clone()).unwrap_or_default()
     }
 
     /// Somebody in the place is typing: what waits there waits a little longer for them.
@@ -201,6 +243,14 @@ impl Queues {
                 .iter()
                 .filter(|(_, s)| s.asked.is_none() && !s.waiting.is_empty())
                 .filter(|(_, s)| {
+                    // Those offered something are waited for, however long they take; once
+                    // all have answered it goes at once.
+                    if !s.expecting.is_empty() {
+                        return false;
+                    }
+                    if s.waiting.iter().any(|a| a.passed) {
+                        return true;
+                    }
                     let until = s.window_until.unwrap_or(now);
                     // Someone still typing holds the window open, but never past the cap.
                     let held = s.typing_until > now && now < s.window_from + cap;
@@ -212,6 +262,11 @@ impl Queues {
             let id = RequestId(self.id());
             let scene = self.scenes.get_mut(&place).expect("just found");
             let acts: Vec<Act> = if self.rules.batch { std::mem::take(&mut scene.waiting) } else { vec![scene.waiting.remove(0)] };
+            // Nothing but letting it pass: nothing to ask.
+            if acts.iter().all(|a| a.passed) {
+                scene.window_until = None;
+                continue;
+            }
             scene.asked = Some(id);
             scene.window_until = None;
             for act in &acts {
@@ -287,6 +342,12 @@ impl Queues {
     pub fn gone_from(&mut self, place: &str, player: &str, why: &str) -> Vec<Out> {
         let Some(scene) = self.scenes.get_mut(place) else { return Vec::new() };
         let mut out = Vec::new();
+        // One who left is not waited for: with nobody else to wait for, what waits goes.
+        let was = scene.expecting.len();
+        scene.expecting.retain(|p| p != player);
+        if was > 0 && scene.expecting.is_empty() && !scene.waiting.is_empty() {
+            scene.window_until = Some(0);
+        }
         scene.waiting.retain(|a| {
             let theirs = a.player == player;
             if theirs {
@@ -513,5 +574,35 @@ mod tests {
         q.tick(1_500);
         assert_eq!(q.pending_of("Ann"), Some((act, ActState::Asked)));
         assert!(q.asking("market") && !q.asking("harbour"));
+    }
+
+    #[test]
+    fn those_offered_something_are_waited_for_however_long_and_who_let_it_pass_is_told() {
+        let mut q = Queues::default();
+        q.expect("camp", &["Ann".to_string(), "Bob".to_string()]);
+        // Ann chooses at once: nothing goes while Bob has not answered, not even a minute on.
+        let (_, out) = say(&mut q, "camp", "Ann", "I light the torch", 0);
+        assert!(asks(&out).is_empty());
+        assert!(asks(&q.tick(60_000)).is_empty(), "no window closes on one who has not answered");
+        assert_eq!(q.expecting("camp"), ["Bob"]);
+        // Bob closes it: Ann's deed goes, and the master is told Bob let it pass.
+        let out = q.pass("camp", "Bob", 61_000);
+        let asked: Vec<_> = out.iter().filter_map(|o| match o { Out::Ask { acts, .. } => Some(acts.clone()), _ => None }).collect();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].iter().map(|a| (a.player.as_str(), a.passed)).collect::<Vec<_>>(), [("Ann", false), ("Bob", true)]);
+    }
+
+    #[test]
+    fn when_everyone_lets_it_pass_nothing_is_asked_and_one_who_leaves_is_not_waited_for() {
+        let mut q = Queues::default();
+        q.expect("camp", &["Ann".to_string(), "Bob".to_string()]);
+        assert!(asks(&q.pass("camp", "Ann", 0)).is_empty());
+        assert!(asks(&q.pass("camp", "Bob", 1)).is_empty());
+        assert!(q.idle(), "nothing to ask");
+        // Ann acts; Bob, who was expected, walks off: Ann's deed goes.
+        q.expect("camp", &["Ann".to_string(), "Bob".to_string()]);
+        say(&mut q, "camp", "Ann", "I sit down", 10);
+        q.gone_from("camp", "Bob", "left");
+        assert_eq!(asks(&q.tick(20)).len(), 1);
     }
 }

@@ -272,7 +272,12 @@ pub fn overlay(
                 ui.label(quoted);
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(9.0).color(c(crate::theme::BRASS_DARK)));
-                    ui.label(t(T::TestRunning));
+                    // Others offered something here choose first; then the master is asked.
+                    if table.waiting_for.is_empty() {
+                        ui.label(t(T::TestRunning));
+                    } else {
+                        ui.label(format!("{} {}", t(T::WaitingChoice), table.waiting_for.join(", ")));
+                    }
                 });
                 hint(ui, t(T::AskingAbout));
             }, |_| {});

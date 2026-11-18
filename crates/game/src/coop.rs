@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 13;
+pub const PROTOCOL: u32 = 14;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -78,6 +78,9 @@ pub enum Intent {
     /// One of a thing in the bag thrown on the ground of a cell.
     /// Known by its name too: the master may have taken something from the bag meanwhile.
     Drop { index: usize, cell: (usize, usize), name: String },
+    /// What was offered was closed or skipped without a choice: the others are not kept
+    /// waiting for this player.
+    Pass,
     /// A thing of the bag laid on its side or stood up, known by its name too.
     Turn { index: usize, name: String },
     /// What lies on the ground picked up: the n-th as this guest saw it, known by its name
@@ -217,6 +220,8 @@ pub enum Down {
     Thinking(String),
     /// The game master could not answer.
     Trouble(String),
+    /// Who the guest's deed waits for, by player name: empty when it waits for nobody.
+    WaitingFor(Vec<String>),
     /// What happened in the fight of a place: only the players there watch it.
     FightEvents(String, Vec<Event>),
     FightOver(String, FightSummary),
@@ -620,6 +625,11 @@ pub struct Table {
     pub me: String,
     /// What the players did that the telling being carried out answers, a line each.
     pub answering: Vec<String>,
+    /// The players this one's deed waits for before the master is asked: offered something
+    /// too, they have not chosen yet.
+    pub waiting_for: Vec<String>,
+    /// What each guest was last told it waits for.
+    pub told_waiting: HashMap<String, Vec<String>>,
     /// The outcome of a choice, shown while the master works out what follows it.
     pub going_on: Option<String>,
     /// The keys are spent and the table is deciding what to do.
@@ -675,6 +685,8 @@ pub struct Want {
     pub near: Option<String>,
     /// A choice whose outcome is already told: the master is asked what follows.
     pub follows: bool,
+    /// The player let what was offered pass: nothing to ask on its own.
+    pub passed: bool,
 }
 
 pub struct ChatLine {
@@ -1419,6 +1431,7 @@ fn client_pump(
                 redraw.0 = true;
             }
             ClientEvent::Message(Down::Roster(roster)) => table.roster = roster,
+            ClientEvent::Message(Down::WaitingFor(names)) => table.waiting_for = names,
             ClientEvent::Message(Down::News { place, text }) => table.notices.push(format!("{place}: {text}")),
             // Unwrapped above: a feed in a feed is nothing.
             ClientEvent::Message(Down::Feed { .. }) => {}
