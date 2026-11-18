@@ -325,7 +325,15 @@ impl Location {
         }
         let (x, y) = (x as usize, y as usize);
         let solid = self.tile_id(x, y).and_then(|id| tiles.get(id)).is_none_or(|t| !t.walkable);
-        solid || self.props.iter().any(|p| p.blocking && p.x == x && p.y == y) || self.creatures.iter().any(|c| c.x == x && c.y == y)
+        // Something large covers its own cell and those to the right and below it.
+        let covers = |cx: usize, cy: usize, size: u8| (cx..cx + size.max(1) as usize).contains(&x) && (cy..cy + size.max(1) as usize).contains(&y);
+        solid || self.props.iter().any(|p| p.blocking && covers(p.x, p.y, p.size)) || self.creatures.iter().any(|c| covers(c.x, c.y, c.size))
+    }
+
+    /// The creature or thing that covers a cell, by id: creatures first.
+    pub fn thing_covering(&self, x: usize, y: usize) -> Option<&str> {
+        let covers = |cx: usize, cy: usize, size: u8| (cx..cx + size.max(1) as usize).contains(&x) && (cy..cy + size.max(1) as usize).contains(&y);
+        self.creatures.iter().find(|c| covers(c.x, c.y, c.size)).map(|c| c.id.as_str()).or_else(|| self.props.iter().find(|p| covers(p.x, p.y, p.size)).map(|p| p.id.as_str()))
     }
 
     pub fn exit_at(&self, x: usize, y: usize) -> Option<&Exit> {

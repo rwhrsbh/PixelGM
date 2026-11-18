@@ -870,8 +870,14 @@ fn draw(
     let mut picture = |id: &str| world.sprites.get(id).or_else(|| world.sprites.get(MARKER_SPRITE)).map(|s| images.add(crate::scene::sprite(s, &world.palette).into_image()));
     // Everything stands on the bottom edge of its cell, centred.
     let foot = |x: usize, y: usize| ((x as f32 + 0.5) * TILE as f32, (y as f32 + 1.0) * TILE as f32);
+    // Something large stands on the bottom edge of its block, centred, drawn that big.
+    let big = |size: u8| (size > 1).then(|| Vec2::splat((TILE as i32 * crate::scene::PX) as f32 * size as f32));
+    let foot_of = |x: usize, y: usize, size: u8| {
+        let s = size.max(1) as f32;
+        ((x as f32 + s / 2.0) * TILE as f32, (y as f32 + s) * TILE as f32)
+    };
     for prop in &here.props {
-        let (x, y) = foot(prop.x, prop.y);
+        let (x, y) = foot_of(prop.x, prop.y, prop.size);
         if let Some(image) = picture(&prop.sprite) {
             // What burns is drawn brighter than white, so that it glows; a body lies on its side, grey.
             let (glow, turned) = if prop.body.is_some() {
@@ -882,7 +888,7 @@ fn draw(
                 (Color::WHITE, Quat::IDENTITY)
             };
             let at = on_screen(x, y).extend(if prop.body.is_some() { 0.9 } else { depth(y) });
-            commands.spawn((InLocation, Sprite { color: glow, ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(at).with_rotation(turned)));
+            commands.spawn((InLocation, Sprite { color: glow, custom_size: big(prop.size), ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(at).with_rotation(turned)));
         }
     }
     for (n, creature) in here.creatures.iter().enumerate() {
@@ -892,11 +898,11 @@ fn draw(
             continue;
         }
         let (cx, cy) = fighter.map_or((creature.x, creature.y), |c| (c.x.max(0) as usize, c.y.max(0) as usize));
-        let (x, y) = foot(cx, cy);
+        let (x, y) = foot_of(cx, cy, creature.size);
         if let Some(image) = picture(&creature.sprite) {
             let home = on_screen(x, y).extend(depth(y));
             commands
-                .spawn((InLocation, Actor { id: creature.id.clone(), home, tint: Color::WHITE, bob: Some(n as f32 * 0.37) }, Sprite::from_image(image), Anchor::BOTTOM_CENTER, Transform::from_translation(home)))
+                .spawn((InLocation, Actor { id: creature.id.clone(), home, tint: Color::WHITE, bob: Some(n as f32 * 0.37) }, Sprite { custom_size: big(creature.size), ..Sprite::from_image(image) }, Anchor::BOTTOM_CENTER, Transform::from_translation(home)))
                 .with_children(|me| shadow_under(me, &cache.shadow));
         }
     }

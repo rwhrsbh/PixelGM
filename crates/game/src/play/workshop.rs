@@ -1420,7 +1420,7 @@ pub(super) fn workshop_map(
     if let (Some(from), MapTool::Rect) = (ws.rect_from, ws.tool) {
         ws.hovered.push_str(&format!("  [{}×{}]", from.0.abs_diff(cell.0) + 1, from.1.abs_diff(cell.1) + 1));
     }
-    let thing_at = |cell: (usize, usize)| here.creatures.iter().find(|c| (c.x, c.y) == cell).map(|c| c.id.clone()).or_else(|| here.props.iter().find(|p| (p.x, p.y) == cell).map(|p| p.id.clone()));
+    let thing_at = |cell: (usize, usize)| here.thing_covering(cell.0, cell.1).map(str::to_string);
     let apply = |effects: Vec<serde_json::Value>| GmAct::Apply(Box::new(TurnDraft { effects, ..TurnDraft::default() }));
     let mut act = None;
     match ws.tool {
