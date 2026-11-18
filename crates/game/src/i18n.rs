@@ -500,6 +500,9 @@ texts! {
     RedrawHere: "Перерисовать место", "Redraw the place";
     ArtSaved: "Готово, можно ставить:", "Done, ready to use:";
     WsRun: "Ведение игры", "Running the game";
+    WsThings: "Вещи", "Things";
+    WsNeedItemName: "Нужно имя и рисунок", "A name and a picture are needed";
+    WsSaveItemHint: "Сохранить вещь в библиотеку навсегда: выдавать и класть в сундуки в любом мире", "Keep the thing in the library for good: give it or put it in chests in any world";
     WsKindOf: "Тип объекта", "Kind of object";
     WsKindHint: "Тип заполняет обычное для такой вещи — дальше меняй как хочешь.", "A kind fills in what such a thing usually has; change anything after.";
     WsKindChest: "Сундук", "Chest";

@@ -395,6 +395,31 @@ impl Workshop {
     /// The form filled again from a creature or object of the library.
     fn edit(&mut self, entity: &Entity, world: &World) {
         let s = &entity.spawn;
+        if entity.item {
+            // A thing for the bag: its numbers, its size, and its picture as drawn.
+            self.kind = MakeKind::Item;
+            self.name = entity.name.clone();
+            self.description = s["description"].as_str().unwrap_or("").to_string();
+            self.item_kind = s["kind"].as_str().filter(|k| !k.is_empty()).unwrap_or("junk").to_string();
+            self.gear = s["gear"].as_str().unwrap_or("").to_string();
+            self.heal = s["heal"].as_str().unwrap_or("").to_string();
+            self.damage = s["damage"].as_str().unwrap_or("").to_string();
+            self.price = s["price"].as_u64().unwrap_or(0) as u32;
+            self.rarity = s["rarity"].as_str().unwrap_or("").to_string();
+            self.light = s["light"].as_u64().unwrap_or(0) as u8;
+            self.bonus = s["bonus"].as_i64().unwrap_or(0) as i32;
+            let rows = &entity.art.rows;
+            self.cells = ((rows.first().map_or(16, |r| r.chars().count()) / SIDE).clamp(1, 4), (rows.len() / SIDE).clamp(1, 4));
+        }
+        if entity.item {
+            let nearest = |color: [u8; 3]| {
+                let distance = |c: &[u8; 3]| (0..3).map(|k| (c[k] as i32 - color[k] as i32).pow(2)).sum::<i32>();
+                world.palette.colors.iter().enumerate().min_by_key(|(_, c)| distance(c)).map_or(1, |(i, _)| i as u8 + 1)
+            };
+            let rows: Vec<String> = entity.art.rows.iter().map(|r| r.chars().map(|ch| entity.art.colors.iter().find(|(c, _)| *c == ch).map_or(ch, |(_, color)| world::model::char_of(nearest(*color)))).collect()).collect();
+            self.take(&rows);
+            return;
+        }
         self.kind = if entity.creature { MakeKind::Creature } else { MakeKind::Object };
         self.id = entity.id.clone();
         self.name = entity.name.clone();
@@ -772,7 +797,7 @@ fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, eg
             if !ws.favorites.arts.is_empty() || !ws.favorites.entities.is_empty() {
                 heading(ui, t(T::WsFavourites));
                 ui.horizontal_wrapped(|row| {
-                    for (n, entity) in ws.favorites.entities.clone().iter().enumerate() {
+                    for (n, entity) in ws.favorites.entities.clone().iter().enumerate().filter(|(_, e)| !e.item) {
                         let chosen = ws.placing.as_ref().is_some_and(|p| p.id == entity.id) && ws.tool == MapTool::Place;
                         if card(row, favourite.entities[n], chosen, &entity.name, if entity.creature { "☺" } else { "▣" }, 48.0) {
                             ws.placing = Some(entity.clone());
@@ -817,7 +842,7 @@ fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, eg
                 hint(ui, t(T::WsNothingMade));
             }
             ui.horizontal_wrapped(|row| {
-                for (n, entity) in ws.made.iter().enumerate() {
+                for (n, entity) in ws.made.iter().enumerate().filter(|(_, e)| !e.item) {
                     let mark = if entity.creature { "☺" } else { "▣" };
                     if card(row, made[n], ws.placing.as_ref().is_some_and(|p| p.id == entity.id) && ws.tool == MapTool::Place, &entity.name, mark, 48.0) {
                         ws.placing = Some(entity.clone());
@@ -1323,6 +1348,17 @@ fn item_properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec
             }
         });
     });
+    // Kept for good, like a creature: to be given or put away in any world later.
+    if ui.add(button(t(T::WsSave)).primary().enabled(ready, t(T::WsNeedItemName))).on_hover_text(t(T::WsSaveItemHint)).clicked() {
+        let id = format!("item_{}", world::build::slug(ws.name.trim()));
+        let art = Art::of_rows(world, &id, ws.name.trim(), &ws.rows());
+        let entity = Entity { id: id.clone(), name: ws.name.trim().to_string(), creature: false, item: true, spawn: thing.clone(), art };
+        match ws.made.iter().position(|e| e.id == id) {
+            Some(n) => ws.made[n] = entity.clone(),
+            None => ws.made.push(entity.clone()),
+        }
+        acts.push(GmAct::SaveEntity(Box::new(entity)));
+    }
 }
 
 /// What was made, sent to be kept for good: a tile into the world and the library, a
@@ -1346,7 +1382,7 @@ fn save(ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>) {
             let art = Art { id: id.clone(), name: name.clone(), tile: false, walkable: false, rows, colors };
             let mut spawn = ws.spawn();
             spawn["name"] = name.clone().into();
-            let entity = Entity { id: id.clone(), name, creature: kind == MakeKind::Creature, spawn, art };
+            let entity = Entity { id: id.clone(), name, creature: kind == MakeKind::Creature, item: false, spawn, art };
             match ws.made.iter().position(|e| e.id == id) {
                 Some(n) => ws.made[n] = entity.clone(),
                 None => ws.made.push(entity.clone()),
@@ -1412,7 +1448,7 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
             });
             row.separator();
             row.vertical(|col| {
-                let filters = [T::WsAll, T::WsCreatures, T::WsObjects, T::WsTilesAndArt];
+                let filters = [T::WsAll, T::WsCreatures, T::WsObjects, T::WsTilesAndArt, T::WsThings];
                 col.horizontal(|row| {
                     for (n, label) in filters.iter().enumerate() {
                         if lit(row, t(*label), ws.filter == n, "") {
@@ -1424,11 +1460,18 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
                 egui::ScrollArea::vertical().id_salt("shelf").max_height(size.y - 140.0).auto_shrink([false, true]).show(col, |col| {
                     col.horizontal_wrapped(|row| {
                         for (n, entity) in entities.iter().enumerate() {
-                            if ws.filter == 3 || (ws.filter == 1 && !entity.creature) || (ws.filter == 2 && entity.creature) {
+                            let shown = match ws.filter {
+                                0 => true,
+                                1 => entity.creature,
+                                2 => !entity.creature && !entity.item,
+                                4 => entity.item,
+                                _ => false,
+                            };
+                            if !shown {
                                 continue;
                             }
                             let star = ws.favorites.entities.iter().any(|e| e.id == entity.id);
-                            let mark = format!("{}{}", if star { "★" } else { "" }, if entity.creature { "☺" } else { "▣" });
+                            let mark = format!("{}{}", if star { "★" } else { "" }, if entity.creature { "☺" } else if entity.item { "♦" } else { "▣" });
                             if card(row, pictures.entities[n], ws.picked == Some((true, n)), &entity.name, &mark, 60.0) {
                                 ws.picked = Some((true, n));
                             }
@@ -1451,7 +1494,7 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
                 match ws.picked {
                     Some((true, n)) if n < entities.len() => {
                         let entity = entities[n].clone();
-                        let kind = if entity.creature { t(T::WsCreature) } else { t(T::WsObject) };
+                        let kind = if entity.creature { t(T::WsCreature) } else if entity.item { t(T::WsItem) } else { t(T::WsObject) };
                         col.label(egui::RichText::new(format!("{} — {kind}", entity.name)).strong());
                         let s = &entity.spawn;
                         let mut facts = Vec::new();
@@ -1469,7 +1512,22 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
                         }
                         hint(col, &facts.join(" · "));
                         col.horizontal(|row| {
-                            if row.add(button(t(T::WsPutOnMap)).primary()).on_hover_text(t(T::WsPlaceHint)).clicked() {
+                            if entity.item {
+                                // A thing for the bag goes to a hero, or into the workshop to be put away.
+                                let heroes: Vec<String> = world.party.iter().map(|h| h.name.clone()).collect();
+                                egui::ComboBox::from_id_salt("lib_give_to").width(100.0).selected_text(if ws.give_to.is_empty() { "—".to_string() } else { ws.give_to.clone() }).show_ui(row, |ui| {
+                                    for hero in &heroes {
+                                        ui.selectable_value(&mut ws.give_to, hero.clone(), hero.as_str());
+                                    }
+                                });
+                                if row.add(button(t(T::WsGiveNow)).primary().enabled(!ws.give_to.is_empty(), t(T::WsNeedItem))).clicked() {
+                                    let mut effect = entity.spawn.clone();
+                                    effect["op"] = "give".into();
+                                    effect["to"] = ws.give_to.clone().into();
+                                    effect["rows"] = serde_json::json!(entity.art.rows);
+                                    acts.push(GmAct::Apply(Box::new(TurnDraft { effects: vec![effect], ..TurnDraft::default() })));
+                                }
+                            } else if row.add(button(t(T::WsPutOnMap)).primary()).on_hover_text(t(T::WsPlaceHint)).clicked() {
                                 ws.placing = Some(entity.clone());
                                 ws.tool = MapTool::Place;
                                 ws.mode = Mode::Map;
@@ -1506,7 +1564,7 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
                                 ws.id = art.id.clone();
                                 ws.name = art.name.clone();
                                 ws.walkable = art.walkable;
-                                let entity = Entity { id: art.id.clone(), name: art.name.clone(), creature: !art.tile, spawn: serde_json::json!({}), art: art.clone() };
+                                let entity = Entity { id: art.id.clone(), name: art.name.clone(), creature: !art.tile, item: false, spawn: serde_json::json!({}), art: art.clone() };
                                 ws.edit(&entity, world);
                                 ws.take(&rows);
                                 if art.tile {

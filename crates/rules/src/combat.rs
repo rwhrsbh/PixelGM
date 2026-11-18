@@ -412,7 +412,13 @@ impl Encounter {
     }
 
     fn occupied(&self, cell: Cell, except: usize) -> Option<usize> {
-        self.combatants.iter().enumerate().find(|(i, c)| *i != except && !c.dead && c.at() == cell).map(|(i, _)| i)
+        self.combatants.iter().enumerate().find(|(i, c)| *i != except && !c.dead && block_distance(c.at(), c.size, cell) == 0).map(|(i, _)| i)
+    }
+
+    /// The cells a fighter of `size` takes when its corner stands on `at`.
+    fn block(at: Cell, size: u8) -> impl Iterator<Item = Cell> {
+        let s = size.max(1) as i32;
+        (0..s).flat_map(move |dx| (0..s).map(move |dy| (at.0 + dx, at.1 + dy)))
     }
 
     /// Every cell the actor can walk to this turn, with the path that gets there. Allies can
@@ -429,8 +435,10 @@ impl Encounter {
             let here = *paths[at].last().unwrap();
             for step in STEPS {
                 let next = (here.0 + step.0, here.1 + step.1);
-                let enemy_there = self.occupied(next, me).is_some_and(|i| self.combatants[i].side != actor.side && self.combatants[i].standing());
-                if blocked(next) || enemy_there || paths.iter().any(|p| p.last() == Some(&next)) {
+                // Something large fits through only where its whole body fits: a giant
+                // three cells wide does not squeeze through a door one cell wide.
+                let enemy_there = Self::block(next, actor.size).any(|cell| self.occupied(cell, me).is_some_and(|i| self.combatants[i].side != actor.side && self.combatants[i].standing()));
+                if Self::block(next, actor.size).any(|cell| blocked(cell)) || enemy_there || paths.iter().any(|p| p.last() == Some(&next)) {
                     continue;
                 }
                 let mut path = paths[at].clone();
@@ -440,7 +448,7 @@ impl Encounter {
             }
         }
         // Somewhere to stop: not the start, and not a cell someone is standing in.
-        paths.into_iter().skip(1).filter(|p| self.occupied(*p.last().unwrap(), me).is_none()).collect()
+        paths.into_iter().skip(1).filter(|p| Self::block(*p.last().unwrap(), actor.size).all(|cell| self.occupied(cell, me).is_none())).collect()
     }
 
     /// Walks the actor to `to` if it can get there this turn. Leaving an enemy's reach
@@ -735,6 +743,25 @@ mod tests {
         e.turn = 0;
         e.begin_turn();
         e
+    }
+
+    #[test]
+    fn a_giant_does_not_squeeze_through_a_gap_one_cell_wide() {
+        // A wall along x = 5 with a gap at y = 5; a giant three cells across stands to its left.
+        let wall = |(x, y): Cell| x == 5 && y != 5;
+        let mut giant = Combatant::blank("giant", "Giant", Side::Enemy, (1, 4));
+        giant.size = 3;
+        giant.hp = 30;
+        giant.speed = 12;
+        let mut small = Combatant::blank("rat", "Rat", Side::Enemy, (3, 5));
+        small.hp = 3;
+        small.speed = 12;
+        for (fighter, through) in [(giant, false), (small, true)] {
+            let (mut e, _) = Encounter::start(vec![fighter], Rng::seeded(1));
+            e.combatants[0].movement_left = 12;
+            let beyond = e.reach(&wall).iter().any(|p| p.last().is_some_and(|c| c.0 > 5));
+            assert_eq!(beyond, through);
+        }
     }
 
     #[test]

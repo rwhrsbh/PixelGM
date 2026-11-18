@@ -41,6 +41,11 @@ impl Art {
         Some(Self::with_colors(world, id, &def.name, true, def.walkable, &def.sprite.rows))
     }
 
+    /// A picture of a thing for the bag, any size, in a world's colours.
+    pub fn of_rows(world: &World, id: &str, name: &str, rows: &[String]) -> Art {
+        Self::with_colors(world, id, name, false, false, rows)
+    }
+
     /// A sprite of a world, as a library keeps it.
     pub fn of_sprite(world: &World, id: &str) -> Option<Art> {
         let sprite = world.sprites.get(id)?;
@@ -56,6 +61,8 @@ pub struct Entity {
     pub id: String,
     pub name: String,
     pub creature: bool,
+    /// A thing for the bag: `spawn` is then the thing as "give" writes it.
+    pub item: bool,
     /// The spawn effect without its cell: kind, name, description, attitude, monster or
     /// stats, count, faction, shop; or blocking, contents, lock, key, actions.
     pub spawn: serde_json::Value,
@@ -166,6 +173,7 @@ mod tests {
             id: "bog_merchant".into(),
             name: "Bog merchant".into(),
             creature: true,
+            item: false,
             spawn: serde_json::json!({
                 "name": "Bog merchant", "description": "Sells what the bog gives.", "attitude": "friendly",
                 "stats": { "ac": 12, "hp": 18, "speed": 25, "xp": 50, "attacks": [{ "name": "Staff", "bonus": 3, "damage": "1d6+1", "range": 5 }] },
@@ -229,7 +237,7 @@ pub fn harvest(world: &World) -> (Vec<Art>, Vec<Entity>) {
                 spawn["shop"] = serde_json::to_value(c.stock.iter().map(crate::story::Item::as_draft).collect::<Vec<_>>()).unwrap_or_default();
             }
             spawn["actions"] = actions_of(&c.actions);
-            entities.push(Entity { id: c.id.clone(), name: c.name.clone(), creature: true, spawn, art });
+            entities.push(Entity { id: c.id.clone(), name: c.name.clone(), creature: true, item: false, spawn, art });
         }
         for p in place.props.iter().filter(|p| p.body.is_none()) {
             if !seen.insert(p.id.clone()) {
@@ -243,8 +251,24 @@ pub fn harvest(world: &World) -> (Vec<Art>, Vec<Entity>) {
                 spawn["key"] = chest.key.clone().into();
             }
             spawn["actions"] = actions_of(&p.actions);
-            entities.push(Entity { id: p.id.clone(), name: p.name.clone(), creature: false, spawn, art });
+            entities.push(Entity { id: p.id.clone(), name: p.name.clone(), creature: false, item: false, spawn, art });
         }
+    }
+    // The things of the world: in chests, on shelves, on the ground, in the heroes' bags.
+    let mut things: Vec<&crate::story::Item> = Vec::new();
+    for place in world.locations.values() {
+        things.extend(place.props.iter().filter_map(|p| p.chest.as_ref()).flat_map(|c| c.items.iter()));
+        things.extend(place.creatures.iter().flat_map(|c| c.stock.iter()));
+        things.extend(place.items.iter().map(|l| &l.item));
+    }
+    things.extend(world.story.bags.iter().flat_map(|b| b.inventory.iter()));
+    for item in things.into_iter().filter(|i| !i.rows.is_empty() && i.kind != "gold") {
+        let id = format!("item_{}", crate::build::slug(&item.name));
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let art = Art::of_rows(world, &id, &item.name, &item.rows);
+        entities.push(Entity { id, name: item.name.clone(), creature: false, item: true, spawn: item.as_draft(), art });
     }
     (arts, entities)
 }
@@ -279,5 +303,25 @@ mod harvest_tests {
         let (x, y) = w.player.cell();
         w.place_entity(thing, x as usize + 2, y as usize);
         assert!(w.here().creatures.iter().any(|c| c.name == thing.name) || w.here().props.iter().any(|p| p.name == thing.name));
+    }
+}
+
+#[cfg(test)]
+mod thing_tests {
+    use super::*;
+
+    #[test]
+    fn the_things_of_a_world_are_on_its_shelf_with_their_pictures() {
+        let draft: crate::WorldDraft = serde_json::from_str(&crate::fake::world("things")).unwrap();
+        let mut w = crate::build_world(&draft, "things", "English").unwrap().0;
+        let crate_id = w.here().props.first().map(|p| p.id.clone()).unwrap();
+        let rows: Vec<String> = (0..48).map(|_| "0000000220000000".to_string()).collect();
+        let effects = crate::story::read_effects(&[serde_json::json!({ "op": "stash", "id": crate_id, "name": "Moon blade", "kind": "weapon", "size": [1, 3], "rows": rows, "price": 90 })], &mut Vec::new());
+        w.apply(&effects, None);
+        let (_, entities) = harvest(&w);
+        let blade = entities.iter().find(|e| e.item && e.name == "Moon blade").expect("the blade is on the shelf");
+        assert_eq!(blade.art.rows.len(), 48);
+        assert_eq!(blade.spawn["size"], serde_json::json!([1, 3]));
+        assert_eq!(blade.spawn["price"], serde_json::json!(90));
     }
 }

@@ -468,7 +468,8 @@ impl World {
         let (ux, uy) = (x as usize, y as usize);
         let solid = here.tile_id(ux, uy).and_then(|id| self.tiles.get(id)).is_none_or(|t| !t.walkable);
         let fighting = |id: &str| self.fight.as_ref().is_some_and(|f| f.index_of(id).is_some());
-        solid || here.props.iter().any(|p| p.blocking && (p.x, p.y) == (ux, uy)) || here.creatures.iter().any(|c| (c.x, c.y) == (ux, uy) && !fighting(&c.id))
+        let covers = |cx: usize, cy: usize, size: u8| rules::combat::block_distance((cx as i32, cy as i32), size, (x, y)) == 0;
+        solid || here.props.iter().any(|p| p.blocking && covers(p.x, p.y, p.size)) || here.creatures.iter().any(|c| covers(c.x, c.y, c.size) && !fighting(&c.id))
     }
 
     /// The place a companion is in: where the hero of its player is.

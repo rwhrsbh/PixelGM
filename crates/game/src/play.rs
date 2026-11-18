@@ -1052,7 +1052,7 @@ fn live_world(
         let world = &game.world;
         let here = world.here();
         let (px, py) = world.player.cell();
-        let idle: Vec<usize> = here.creatures.iter().enumerate().filter(|(_, c)| c.attitude != world::Attitude::Hostile && c.stock.is_empty() && ((c.x as i32 - px).abs() > 1 || (c.y as i32 - py).abs() > 1)).map(|(n, _)| n).collect();
+        let idle: Vec<usize> = here.creatures.iter().enumerate().filter(|(_, c)| c.attitude != world::Attitude::Hostile && c.stock.is_empty() && c.size <= 1 && ((c.x as i32 - px).abs() > 1 || (c.y as i32 - py).abs() > 1)).map(|(n, _)| n).collect();
         if !idle.is_empty() {
             let n = idle[(rng.die(idle.len() as u32) - 1) as usize];
             let (cx, cy) = (here.creatures[n].x as i32, here.creatures[n].y as i32);
