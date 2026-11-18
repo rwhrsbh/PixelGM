@@ -84,6 +84,10 @@ pub struct TileDef {
     pub name: String,
     pub walkable: bool,
     pub sprite: Sprite,
+    /// What can be done with every cell of this ground — cut a tree, swim the water, climb
+    /// the rock — as the master wrote it: "self" for the cell's x and y is the cell acted on.
+    #[serde(default)]
+    pub actions: Vec<crate::story::ActionDraft>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]

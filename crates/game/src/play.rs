@@ -1719,8 +1719,11 @@ fn keys(keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&Gamepad>, game: Re
             return;
         }
         // A thing to hand comes first, then a way out close by, then the party's own words.
-        match (game.world.thing_near(THING_REACH), game.world.exit_near(EXIT_HINT_REACH)) {
-            (Some(thing), _) => *phase = Phase::Looking { thing: thing.to_string() },
+        // Ground that has something to do with it (a tree to cut, water to swim) comes after
+        // the things, before the ways out.
+        let ground = game.world.tile_near().map(|(x, y)| format!("tile@{x},{y}"));
+        match (game.world.thing_near(THING_REACH).map(str::to_string).or(ground), game.world.exit_near(EXIT_HINT_REACH)) {
+            (Some(thing), _) => *phase = Phase::Looking { thing },
             (None, Some(exit)) => leave.0 = Some(exit.to.clone()),
             (None, None) => *phase = Phase::Writing { near: None },
         }
@@ -2793,6 +2796,10 @@ fn sheet_for(phase: &Phase, world: &World, now: u64, lang: Lang, extra: &Extra) 
         Phase::Paused => Sheet::Paused { seat: extra.seat, lost: extra.lost },
         Phase::Judging => extra.judging.clone().map_or(Sheet::None, Sheet::Judging),
         Phase::Master => Sheet::Master(extra.panel.clone()),
+        Phase::Looking { thing } if world::story::tile_cell(thing).is_some() => match world::story::tile_cell(thing).and_then(|cell| world.ground_actions(cell)) {
+            Some((name, actions)) => Sheet::Looking { name: name.to_string(), description: String::new(), actions: actions.iter().map(|a| a.label.clone()).collect(), chest: None, shop: false },
+            None => Sheet::None,
+        },
         Phase::Looking { thing } => {
             let here = world.here();
             let found = here
@@ -3430,6 +3437,10 @@ fn quest_lines(world: &World, lang: Lang) -> Vec<String> {
 /// a new task is also called out in the corner feed.
 /// What a prepared action of a thing here is called.
 fn action_label(world: &World, thing: &str, index: usize) -> Option<String> {
+    if let Some(cell) = world::story::tile_cell(thing) {
+        let (name, actions) = world.ground_actions(cell)?;
+        return actions.get(index).map(|a| format!("{} ({name})", a.label));
+    }
     let here = world.here();
     let (name, actions) = here.props.iter().find(|p| p.id == thing).map(|p| (&p.name, &p.actions)).or_else(|| here.creatures.iter().find(|c| c.id == thing).map(|c| (&c.name, &c.actions)))?;
     actions.get(index).map(|a| format!("{} ({name})", a.label))

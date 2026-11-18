@@ -500,6 +500,16 @@ texts! {
     RedrawHere: "Перерисовать место", "Redraw the place";
     ArtSaved: "Готово, можно ставить:", "Done, ready to use:";
     WsRun: "Ведение игры", "Running the game";
+    WsGroundAction: "Действие этой земли", "An action of this ground";
+    WsGroundDeeds: "Что можно делать с этой землёй", "What can be done with this ground";
+    WsGroundDeedsHint: "Задаётся один раз — и работает у каждой такой клетки мира: у любого дерева, у любой воды.", "Set once, it works at every such cell of the world: any tree, any water.";
+    FxTileAction: "Действие у всех таких тайлов", "An action for every such tile";
+    FxTileActionTile: "Тайл", "Tile";
+    FxTileActionLabel: "Что выбирают игроки", "What the players pick";
+    FxTileActionOutcome: "Что происходит", "What happens";
+    FxTileActionNeeds: "Нужна вещь", "Needs a thing";
+    FxThisCell: "эта клетка", "this cell";
+    FxThisCellHint: "Клетка, с которой делают действие (для действий тайла)", "The cell acted on (for actions of a tile)";
     WsMenuWorkshop: "Мастерская мастера", "Master's workshop";
     WsTitleRehearsal: "Мастерская", "Workshop";
     WsBackToMenu: "В главное меню", "To the main menu";
@@ -783,7 +793,6 @@ texts! {
     FxAddAChange: "+ Добавить изменение…", "+ Add a change…";
     FxTheParty: "— отряд —", "— the party —";
     FxOrANewId: "или новый id", "or a new id";
-    FxNowWhereTheHero: "сейчас: где герой", "now: where the hero is";
     FxSteps: "шаги", "steps";
     FxAdd2: "Добавить", "Add";
     FxCancel: "Отмена", "Cancel";

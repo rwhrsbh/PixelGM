@@ -742,3 +742,25 @@ fn the_master_rests_the_party_makes_peace_and_drops_a_thing() {
     w.apply(&steps(serde_json::json!([{ "op": "drop", "x": 6, "y": 2, "name": "Silver ring", "kind": "junk", "price": 40 }])), None);
     assert!(w.locations["lake"].items.iter().any(|l| l.item.name == "Silver ring" && (l.x, l.y) == (6, 2)));
 }
+
+/// Every tree of the world can be cut down, once the master says so for the tree tile: the
+/// tree the hero faces becomes a stump and a log goes into the bag; the next tree too.
+#[test]
+fn every_tree_can_be_cut_once_the_tile_says_so() {
+    let mut w = world_in(&lake(), (3, 7), serde_json::json!([]));
+    w.facing = (1, 0);
+    w.apply(&steps(serde_json::json!([{ "op": "tile_action", "tile": "tree", "label": "Cut it down", "outcome": "The tree falls.", "effects": [{ "op": "tile", "x": "self", "y": "self", "tile": "grass" }, { "op": "give", "name": "Log", "kind": "junk" }] }])), None);
+    let cell = w.tile_near().expect("the tree in front has something to do");
+    assert_eq!(cell, (4, 7));
+    let (name, actions) = w.ground_actions(cell).unwrap();
+    assert_eq!((name, actions[0].label.as_str()), (w.tiles["tree"].name.as_str(), "Cut it down"));
+    let thing = format!("tile@{},{}", cell.0, cell.1);
+    assert_eq!(w.perform(&thing, 0).as_deref(), Some("The tree falls."));
+    assert_eq!(w.locations["lake"].tile_id(4, 7), Some("grass"));
+    assert!(w.story.bags[0].inventory.iter().any(|i| i.name == "Log"));
+    // The action stays with the tile, for the next tree.
+    assert_eq!(w.tiles["tree"].actions.len(), 1);
+    // And travels with the tile to the library and into another world.
+    let art = crate::library::Art::of_tile(&w, "tree").unwrap();
+    assert_eq!(art.actions.len(), 1);
+}

@@ -78,6 +78,7 @@ pub const OPS: &[Op] = &[
     Op { op: "stash", label: T::FxStash, group: 1, fields: &[f("id", T::FxStashId, Kind::Thing), f("name", T::FxStashName, Kind::Text), f("description", T::FxStashDescription, Kind::Text), f("kind", T::FxStashKind, Kind::Pick(KINDS)), f("heal", T::FxStashHeal, Kind::Dice), f("damage", T::FxStashDamage, Kind::Dice), f("price", T::FxStashPrice, Kind::Number)] },
     Op { op: "rest", label: T::FxRest, group: 0, fields: &[f("kind", T::FxRestKind, Kind::Pick(&["long", "short"]))] },
     Op { op: "peace", label: T::FxPeace, group: 1, fields: &[] },
+    Op { op: "tile_action", label: T::FxTileAction, group: 2, fields: &[f("tile", T::FxTileActionTile, Kind::Tile), f("label", T::FxTileActionLabel, Kind::Text), f("outcome", T::FxTileActionOutcome, Kind::Long), f("needs", T::FxTileActionNeeds, Kind::Text)] },
     Op { op: "drop", label: T::FxDrop, group: 2, fields: &[f("cell", T::FxDropCell, Kind::Cell), f("name", T::FxDropName, Kind::Text), f("description", T::FxDropDescription, Kind::Text), f("kind", T::FxDropKind, Kind::Pick(KINDS)), f("heal", T::FxDropHeal, Kind::Dice), f("damage", T::FxDropDamage, Kind::Dice), f("price", T::FxDropPrice, Kind::Number)] },
     Op { op: "hand", label: T::FxHand, group: 0, fields: &[f("name", T::FxHandName, Kind::Text), f("to", T::FxHandTo, Kind::Hero)] },
     Op { op: "take", label: T::FxTake, group: 0, fields: &[f("name", T::FxTakeName, Kind::Text)] },
@@ -294,7 +295,10 @@ pub fn builder(ui: &mut Ui, form: &mut Form, world: &World, lang: Lang) -> Optio
                     }
                     Kind::Cell => {
                         row.add(egui::TextEdit::singleline(value).desired_width(70.0).hint_text("x, y"));
-                        hint(row, T::FxNowWhereTheHero.text(lang));
+                        // In an action of a tile, the very cell acted on.
+                        if row.add(button(T::FxThisCell.text(lang))).on_hover_text(T::FxThisCellHint.text(lang)).clicked() {
+                            *value = "self".to_string();
+                        }
                     }
                     Kind::Steps => {
                         let mut list: Vec<Value> = serde_json::from_str(value).unwrap_or_default();
@@ -349,6 +353,11 @@ pub fn build(op: &Op, values: &std::collections::HashMap<&'static str, String>) 
                     continue;
                 }
                 json!(list)
+            }
+            Kind::Cell if text == "self" => {
+                effect["x"] = json!("self");
+                effect["y"] = json!("self");
+                continue;
             }
             Kind::Cell => {
                 let numbers: Vec<i64> = text.split([',', ' ', ';']).filter_map(|s| s.trim().parse().ok()).collect();

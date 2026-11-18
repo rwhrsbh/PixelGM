@@ -1112,7 +1112,13 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
         }
     });
     match ws.kind {
-        MakeKind::Tile => {}
+        MakeKind::Tile => {
+            // What can be done with every cell of this ground: cut, swim, climb, dig.
+            egui::CollapsingHeader::new(dark(t(T::WsGroundDeeds))).default_open(true).show(ui, |ui| {
+                hint(ui, t(T::WsGroundDeedsHint));
+                deeds_ui(ui, ws, world, acts, lang);
+            });
+        }
         MakeKind::Item => item_properties(ui, ws, world, acts, lang),
         MakeKind::Object => {
             // A ready start: the kind fills what such a thing usually has.
@@ -1130,40 +1136,7 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
                 kit::toggle(ui, t(T::WsBlocking), &mut ws.blocking);
             });
             // What can be done with it: each a choice the players get when they stand by it.
-            egui::CollapsingHeader::new(dark(t(T::WsDeeds))).default_open(true).show(ui, |ui| {
-                let mut gone = None;
-                let mut asked = None;
-                for (n, deed) in ws.deeds.iter_mut().enumerate() {
-                    frame().fill(c(PARCHMENT_SHADE)).inner_margin(4.0).show(ui, |ui| {
-                        ui.horizontal(|row| {
-                            row.add(egui::TextEdit::singleline(&mut deed.label).desired_width(190.0).hint_text(t(T::WsChoiceLabel)));
-                            if row.add(button("×")).clicked() {
-                                gone = Some(n);
-                            }
-                        });
-                        ui.add(egui::TextEdit::singleline(&mut deed.outcome).desired_width(f32::INFINITY).hint_text(t(T::WsChoiceOutcome)));
-                        ui.add(egui::TextEdit::singleline(&mut deed.needs).desired_width(f32::INFINITY).hint_text(t(T::WsNeedsHint)));
-                        egui::CollapsingHeader::new(format!("{} ({})", t(T::WsDeedSteps), deed.steps.len())).id_salt(("deed_steps", n)).show(ui, |ui| {
-                            let asking = ws.script_asking && ws.script_for == Some(n);
-                            if let Some(words) = super::effects_ui::script_list(ui, &mut deed.steps, &mut deed.form, &mut deed.words, asking, world, lang) {
-                                asked = Some((n, words));
-                            }
-                        });
-                    });
-                }
-                if let Some((n, words)) = asked {
-                    ws.script_asking = true;
-                    ws.script_for = Some(n);
-                    let about = format!("{} «{}», {}", ws.name, ws.deeds[n].label, ws.description);
-                    acts.push(GmAct::AskScript { about, wish: words });
-                }
-                if let Some(n) = gone {
-                    ws.deeds.remove(n);
-                }
-                if ui.add(button(t(T::WsAddDeed))).clicked() {
-                    ws.deeds.push(Deed::default());
-                }
-            });
+            egui::CollapsingHeader::new(dark(t(T::WsDeeds))).default_open(true).show(ui, |ui| deeds_ui(ui, ws, world, acts, lang));
             egui::CollapsingHeader::new(dark(t(T::WsChestPart))).default_open(ws.chest).show(ui, |ui| {
                 kit::toggle(ui, t(T::WsChest), &mut ws.chest);
                 if ws.chest {
@@ -1278,6 +1251,43 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
             *ws = Workshop { mode, kind, loaded, arts, made, ..Workshop::default() };
         }
     });
+}
+
+/// What can be done with what is made, each with its steps.
+fn deeds_ui(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>, lang: Lang) {
+    let t = |text: T| text.text(lang);
+    let mut gone = None;
+    let mut asked = None;
+    for (n, deed) in ws.deeds.iter_mut().enumerate() {
+        frame().fill(c(PARCHMENT_SHADE)).inner_margin(4.0).show(ui, |ui| {
+            ui.horizontal(|row| {
+                row.add(egui::TextEdit::singleline(&mut deed.label).desired_width(190.0).hint_text(t(T::WsChoiceLabel)));
+                if row.add(button("×")).clicked() {
+                    gone = Some(n);
+                }
+            });
+            ui.add(egui::TextEdit::singleline(&mut deed.outcome).desired_width(f32::INFINITY).hint_text(t(T::WsChoiceOutcome)));
+            ui.add(egui::TextEdit::singleline(&mut deed.needs).desired_width(f32::INFINITY).hint_text(t(T::WsNeedsHint)));
+            egui::CollapsingHeader::new(format!("{} ({})", t(T::WsDeedSteps), deed.steps.len())).id_salt(("deed_steps", n)).show(ui, |ui| {
+                let asking = ws.script_asking && ws.script_for == Some(n);
+                if let Some(words) = super::effects_ui::script_list(ui, &mut deed.steps, &mut deed.form, &mut deed.words, asking, world, lang) {
+                    asked = Some((n, words));
+                }
+            });
+        });
+    }
+    if let Some((n, words)) = asked {
+        ws.script_asking = true;
+        ws.script_for = Some(n);
+        let about = format!("{} «{}», {}", ws.name, ws.deeds[n].label, ws.description);
+        acts.push(GmAct::AskScript { about, wish: words });
+    }
+    if let Some(n) = gone {
+        ws.deeds.remove(n);
+    }
+    if ui.add(button(t(T::WsAddDeed))).clicked() {
+        ws.deeds.push(Deed::default());
+    }
 }
 
 /// Fills what an object of a kind usually is and does; the master changes it after.
@@ -1446,7 +1456,14 @@ fn save(ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>) {
     let name = if ws.name.trim().is_empty() { id.replace('_', " ") } else { ws.name.trim().to_string() };
     let rows = ws.rows();
     match ws.kind {
-        MakeKind::Tile => acts.push(GmAct::SaveArt { tile: true, id, name, walkable: ws.walkable, rows }),
+        MakeKind::Tile => {
+            acts.push(GmAct::SaveArt { tile: true, id: id.clone(), name, walkable: ws.walkable, rows });
+            // What can be done with it goes with it, into the world.
+            let effects: Vec<serde_json::Value> = ws.deeds.iter().filter(|d| !d.label.trim().is_empty()).map(|d| serde_json::json!({ "op": "tile_action", "tile": id, "label": d.label.trim(), "outcome": d.outcome.trim(), "needs": d.needs.trim(), "effects": d.steps })).collect();
+            if !effects.is_empty() {
+                acts.push(GmAct::Apply(Box::new(TurnDraft { effects, ..TurnDraft::default() })));
+            }
+        }
         kind => {
             // The picture with the colours of this world, so it looks the same anywhere.
             let mut colors: Vec<(char, [u8; 3])> = Vec::new();
@@ -1457,7 +1474,7 @@ fn save(ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>) {
                     colors.push((ch, [r, g, b]));
                 }
             }
-            let art = Art { id: id.clone(), name: name.clone(), tile: false, walkable: false, rows, colors };
+            let art = Art { id: id.clone(), name: name.clone(), tile: false, walkable: false, rows, colors, actions: Vec::new() };
             let mut spawn = ws.spawn();
             spawn["name"] = name.clone().into();
             let entity = Entity { id: id.clone(), name, creature: kind == MakeKind::Creature, item: false, spawn, art };
@@ -1656,6 +1673,8 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
                                 ws.take(&rows);
                                 if art.tile {
                                     ws.kind = MakeKind::Tile;
+                                    // What can be done with the ground comes along to be changed.
+                                    ws.deeds = art.actions.iter().map(|a| Deed { label: a.label.clone(), outcome: a.outcome.clone(), needs: a.needs.clone(), steps: a.effects.clone(), ..Deed::default() }).collect();
                                 }
                                 ws.mode = Mode::Make;
                             }
@@ -1761,6 +1780,10 @@ fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<Gm
         items.push((T::WsFromLibrary.text(lang), Press::Place));
         items.push((T::WsMark.text(lang), Press::Form("mark", vec![("cell", cell.clone())])));
         items.push((T::WsDropHere.text(lang), Press::Form("drop", vec![("cell", cell.clone())])));
+        // What can be done with this ground, everywhere it lies.
+        if !tile.is_empty() {
+            items.push((T::WsGroundAction.text(lang), Press::Form("tile_action", vec![("tile", tile.clone())])));
+        }
     }
     // The ring: the name in the middle, the presses around it.
     let radius = 78.0 + items.len() as f32 * 2.0;
@@ -1825,7 +1848,7 @@ fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<Gm
     let mut panels = std::mem::take(&mut ws.panels);
     let size = vec2(360.0, 360.0);
     let at = egui::pos2(if origin.x + side.x + size.x < screen.width() { origin.x + side.x } else { (origin.x - size.x).max(0.0) }, origin.y);
-    let with_steps = matches!(op, "action" | "secret");
+    let with_steps = matches!(op, "action" | "secret" | "tile_action");
     let mut done = false;
     window(ctx, &mut panels, "ring_page", &page_title, at, size, |ui| {
         egui::ScrollArea::vertical().max_height(size.y - 40.0).auto_shrink([false, true]).show(ui, |ui| {

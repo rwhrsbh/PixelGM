@@ -412,7 +412,7 @@ impl World {
             match crate::build::tile_from(&tile.rows, self.palette.len()) {
                 Some(sprite) if !id.is_empty() => {
                     let name = if tile.name.trim().is_empty() { id.clone() } else { tile.name.trim().to_string() };
-                    self.tiles.insert(id, crate::model::TileDef { name, walkable: tile.walkable, sprite });
+                    self.tiles.insert(id, crate::model::TileDef { name, walkable: tile.walkable, sprite, actions: Vec::new() });
                 }
                 _ => notes.push(format!("tile '{}' had no usable picture and was skipped", tile.id)),
             }

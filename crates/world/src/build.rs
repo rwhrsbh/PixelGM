@@ -350,7 +350,7 @@ fn add_tiles(drafts: &[TileDraft], assets: &mut Assets, notes: &mut Vec<String>)
         match tile_from(&draft.rows, assets.palette_len) {
             Some(sprite) if !id.is_empty() => {
                 let name = if draft.name.trim().is_empty() { id.clone() } else { draft.name.trim().to_string() };
-                assets.tiles.insert(id, TileDef { name, walkable: draft.walkable, sprite });
+                assets.tiles.insert(id, TileDef { name, walkable: draft.walkable, sprite, actions: Vec::new() });
             }
             _ => notes.push(format!("tile '{}' had no usable picture and was skipped", draft.id)),
         }
@@ -833,7 +833,9 @@ impl World {
         let id = slug(id);
         match tile_from(rows, self.palette.len()) {
             Some(sprite) if !id.is_empty() => {
-                self.tiles.insert(id, crate::model::TileDef { name: name.trim().to_string(), walkable, sprite });
+                // A tile drawn again keeps what can be done with it.
+                let actions = self.tiles.get(&id).map(|t| t.actions.clone()).unwrap_or_default();
+                self.tiles.insert(id, crate::model::TileDef { name: name.trim().to_string(), walkable, sprite, actions });
                 true
             }
             _ => false,

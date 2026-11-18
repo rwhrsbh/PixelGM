@@ -202,7 +202,10 @@ pub fn hud(
     notices.0.retain(|n| n.age < n.life);
 
     // The strip at the bottom: what pressing a key does now, or what just happened to the hero.
-    let thing_name = world.thing_near(THING_REACH).and_then(|id| here.props.iter().map(|p| (&p.id, &p.name)).chain(here.creatures.iter().map(|c| (&c.id, &c.name))).find(|(i, _)| i.as_str() == id).map(|(_, name)| name.clone()));
+    let thing_name = world
+        .thing_near(THING_REACH)
+        .and_then(|id| here.props.iter().map(|p| (&p.id, &p.name)).chain(here.creatures.iter().map(|c| (&c.id, &c.name))).find(|(i, _)| i.as_str() == id).map(|(_, name)| name.clone()))
+        .or_else(|| world.tile_near().and_then(|cell| world.ground_actions(cell)).map(|(name, _)| name.to_string()));
     let lying = world.lying_near().and_then(|n| here.items.get(n)).map(|l| l.item.name.clone());
     let hint = match (toast.text.filter(|_| toast.left > 0.0), thing_name, world.exit_near(EXIT_HINT_REACH)) {
         (Some(said), _, _) => t(said).to_string(),

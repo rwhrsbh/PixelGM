@@ -19,6 +19,8 @@ pub struct Art {
     pub rows: Vec<String>,
     /// The colour behind each palette character the rows use, as red, green, blue.
     pub colors: Vec<(char, [u8; 3])>,
+    /// For a tile: what can be done with every cell of it.
+    pub actions: Vec<crate::story::ActionDraft>,
 }
 
 impl Art {
@@ -32,13 +34,15 @@ impl Art {
             let [r, g, b, _] = world.palette.rgba(index);
             colors.push((ch, [r, g, b]));
         }
-        Art { id: id.to_string(), name: name.to_string(), tile, walkable, rows: rows.to_vec(), colors }
+        Art { id: id.to_string(), name: name.to_string(), tile, walkable, rows: rows.to_vec(), colors, actions: Vec::new() }
     }
 
     /// A tile of a world, as a library keeps it.
     pub fn of_tile(world: &World, id: &str) -> Option<Art> {
         let def = world.tiles.get(id)?;
-        Some(Self::with_colors(world, id, &def.name, true, def.walkable, &def.sprite.rows))
+        let mut art = Self::with_colors(world, id, &def.name, true, def.walkable, &def.sprite.rows);
+        art.actions = def.actions.clone();
+        Some(art)
     }
 
     /// A picture of a thing for the bag, any size, in a world's colours.
@@ -119,7 +123,16 @@ impl World {
             map.push((*ch, char_of(index)));
         }
         let rows: Vec<String> = art.rows.iter().map(|r| r.chars().map(|c| map.iter().find(|(from, _)| *from == c).map_or(c, |(_, to)| *to)).collect()).collect();
-        if art.tile { self.add_drawn_tile(&art.id, &art.name, art.walkable, &rows) } else { self.add_drawn_sprite(&art.id, &rows) }
+        if !art.tile {
+            return self.add_drawn_sprite(&art.id, &rows);
+        }
+        let drawn = self.add_drawn_tile(&art.id, &art.name, art.walkable, &rows);
+        if drawn && !art.actions.is_empty()
+            && let Some(def) = self.tiles.get_mut(&crate::build::slug(&art.id))
+        {
+            def.actions = art.actions.clone();
+        }
+        drawn
     }
 
     /// Whether a tile can be walked on, as the master sets it. `false` for a tile there is not.

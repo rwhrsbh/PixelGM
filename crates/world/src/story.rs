@@ -373,6 +373,20 @@ pub enum Effect {
         #[serde(default)]
         remove: bool,
     },
+    /// Something can be done with every cell of a kind of ground (or no longer, with
+    /// "remove"): cut any tree, swim any water. In its effects "self" for x and y is the cell.
+    TileAction {
+        tile: String,
+        label: String,
+        #[serde(default)]
+        outcome: String,
+        #[serde(default)]
+        effects: Vec<Value>,
+        #[serde(default)]
+        needs: String,
+        #[serde(default)]
+        remove: bool,
+    },
     /// The party rests: "short" spends hit dice, "long" is a night's sleep.
     Rest {
         #[serde(default)]
@@ -1215,6 +1229,18 @@ impl World {
                     self.deed(hero, &mut Rng::from_clock());
                     continue;
                 }
+                Effect::TileAction { tile, label, outcome, effects: steps, needs, remove } => {
+                    match self.tiles.get_mut(&slug(tile)) {
+                        Some(def) => {
+                            def.actions.retain(|a| a.label.trim() != label.trim());
+                            if !remove {
+                                def.actions.push(ActionDraft { label: label.trim().to_string(), outcome: outcome.trim().to_string(), effects: steps.clone(), needs: needs.trim().to_string(), ..ActionDraft::default() });
+                            }
+                        }
+                        None => notes.push(format!("tile_action: there is no tile '{tile}'")),
+                    }
+                    continue;
+                }
                 Effect::Rest { kind } => {
                     if kind.trim() == "short" {
                         let mut rng = Rng::from_clock();
@@ -1653,7 +1679,7 @@ impl World {
                         None => notes.push(format!("lines: no creature called '{id}' is here")),
                     }
                 }
-                Effect::Kill { .. } | Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight { .. } | Effect::Deed { .. } | Effect::Revive { .. } | Effect::Rest { .. } | Effect::Peace => {}
+                Effect::Kill { .. } | Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight { .. } | Effect::Deed { .. } | Effect::Revive { .. } | Effect::Rest { .. } | Effect::Peace | Effect::TileAction { .. } => {}
                 Effect::Wait { .. } | Effect::Set { .. } | Effect::Add { .. } | Effect::If { .. } | Effect::Random { .. } | Effect::Repeat { .. } | Effect::Script { .. } | Effect::Define { .. } => {}
             }
         }
@@ -1755,6 +1781,9 @@ impl World {
     /// Carries out the `index`-th prepared action of a thing: the outcome is recorded, the
     /// effects applied, and the action is used up. Returns the outcome to show.
     pub fn perform(&mut self, thing: &str, index: usize) -> Option<String> {
+        if let Some(cell) = tile_cell(thing) {
+            return self.perform_on_ground(cell, index);
+        }
         let here = self.current.clone();
         let location = self.locations.get_mut(&here)?;
         let actions = match location.props.iter_mut().find(|p| p.id == thing) {
@@ -2204,4 +2233,70 @@ impl World {
 /// A little salt for a choice at random, from the time of day.
 fn rand_salt() -> usize {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos() as usize / 1000)
+}
+
+/// The cell a "thing" names when it is a cell of the ground: "tile@x,y".
+pub fn tile_cell(thing: &str) -> Option<(usize, usize)> {
+    let (x, y) = thing.strip_prefix("tile@")?.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+/// "self" for a cell's x and y, anywhere in the effects, becomes that cell.
+fn at_cell(value: &Value, cell: (usize, usize)) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| {
+                    let v = match (k.as_str(), v) {
+                        ("x", Value::String(s)) if s.trim() == "self" => Value::from(cell.0),
+                        ("y", Value::String(s)) if s.trim() == "self" => Value::from(cell.1),
+                        ("to", Value::Array(pair)) if pair.iter().all(|p| p.as_str() == Some("self")) => serde_json::json!([cell.0, cell.1]),
+                        _ => at_cell(v, cell),
+                    };
+                    (k.clone(), v)
+                })
+                .collect(),
+        ),
+        Value::Array(list) => Value::Array(list.iter().map(|v| at_cell(v, cell)).collect()),
+        other => other.clone(),
+    }
+}
+
+impl World {
+    /// The cell of ground with something to do with it nearest the party: the one it faces
+    /// first, then those around it.
+    pub fn tile_near(&self) -> Option<(usize, usize)> {
+        let here = self.here();
+        let (px, py) = self.player.cell();
+        let (fx, fy) = self.facing;
+        let around = [(fx, fy), (0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
+        around.iter().map(|(dx, dy)| (px + dx, py + dy)).filter(|(x, y)| *x >= 0 && *y >= 0).map(|(x, y)| (x as usize, y as usize)).find(|(x, y)| here.tile_id(*x, *y).and_then(|t| self.tiles.get(t)).is_some_and(|t| !t.actions.is_empty()))
+    }
+
+    /// What can be done with a cell of the ground, by its tile.
+    pub fn ground_actions(&self, cell: (usize, usize)) -> Option<(&str, &[ActionDraft])> {
+        let def = self.here().tile_id(cell.0, cell.1).and_then(|t| self.tiles.get(t))?;
+        Some((def.name.as_str(), def.actions.as_slice()))
+    }
+
+    /// Does what was chosen with a cell of the ground. It can be done again with the next
+    /// tree, the next stretch of water: the action stays with the tile.
+    fn perform_on_ground(&mut self, cell: (usize, usize), index: usize) -> Option<String> {
+        let action = self.ground_actions(cell)?.1.get(index)?.clone();
+        if !action.needs.trim().is_empty() {
+            let wanted = action.needs.trim().to_lowercase();
+            let carried = self.story.bags.iter().any(|b| b.inventory.iter().any(|i| i.name.to_lowercase().contains(&wanted) || wanted.contains(&i.name.to_lowercase())));
+            if !carried {
+                let russian = self.language.to_lowercase().starts_with("ru") || self.language.contains("усск");
+                return Some(if russian { format!("Для этого нужно: {}.", action.needs.trim()) } else { format!("This needs: {}.", action.needs.trim()) });
+            }
+        }
+        let raw: Vec<Value> = action.effects.iter().map(|e| at_cell(e, cell)).collect();
+        let mut notes = Vec::new();
+        let effects = read_effects(&raw, &mut notes);
+        self.story.say(Speaker::Player, &action.label);
+        self.story.say(Speaker::Master, &action.outcome);
+        self.apply(&effects, None);
+        Some(action.outcome)
+    }
 }
