@@ -1239,8 +1239,15 @@ pub fn darkness_seen(size: (usize, usize), hour: Hour, lights: &[Lamp], beat: u3
             if let Some(t) = fog {
                 // Drifting thicker and thinner, cleared around every light, its grey darkened
                 // by the hour; where the night is darker than the fog, the night shows.
-                let drift = cloud_noise(x + (t * 2.0) as i32, y, w, 14) * 0.6 + cloud_noise(x - (t * 1.3) as i32, y + 7, w, 6) * 0.4;
-                let thick = ((0.42 + drift * 0.45) * (1.0 - lit * 1.2)).clamp(0.0, 0.85);
+                // Both veils drift the same way, slowly, and between whole blocks: sliding
+                // block by block, the two against each other, it jerked back and forth.
+                let slide = |xf: f32, y: i32, size: i32| {
+                    let (whole, part) = (xf.floor(), xf.fract());
+                    cloud_noise(whole as i32, y, w, size) * (1.0 - part) + cloud_noise(whole as i32 + 1, y, w, size) * part
+                };
+                let drift = slide(x as f32 + t * 0.6, y, 14) * 0.6 + slide(x as f32 + t * 0.35, y + 7, 6) * 0.4;
+                // A thin veil, cleared well around the hero and every light.
+                let thick = ((0.22 + drift * 0.33) * (1.0 - lit * 1.6)).clamp(0.0, 0.55);
                 let night = hour.dark * (1.0 - lit);
                 let shade = 1.0 - hour.dark * 0.8;
                 let colour = if night > thick { hour.tint } else { [(176.0 * shade) as u8, (178.0 * shade) as u8, (188.0 * shade) as u8] };
