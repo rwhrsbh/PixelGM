@@ -87,6 +87,8 @@ pub const OPS: &[Op] = &[
     Op { op: "describe", ru: "Новое описание", en: "New description", group: 1, fields: &[f("id", "Что", "What", Kind::Thing), f("description", "Описание", "Description", Kind::Long)] },
     Op { op: "join", ru: "Присоединить к отряду", en: "Join the party", group: 1, fields: &[f("id", "Кто", "Who", Kind::Thing)] },
     Op { op: "dismiss", ru: "Отпустить спутника", en: "Dismiss a companion", group: 1, fields: &[f("id", "Кто", "Who", Kind::Thing)] },
+    Op { op: "edit", ru: "Изменить существо/вещь", en: "Change a creature or thing", group: 1, fields: &[f("id", "Что", "What", Kind::Thing), f("name", "Новое имя", "New name", Kind::Text), f("size", "Размер, клеток", "Size, cells", Kind::Number), f("ac", "КД", "AC", Kind::Number), f("hp", "Хиты", "HP", Kind::Number), f("speed", "Скорость", "Speed", Kind::Number), f("xp", "Опыт за победу", "XP for beating it", Kind::Number), f("monster", "Монстр SRD", "SRD monster", Kind::Text), f("blocking", "Не пройти сквозь", "Blocks the way", Kind::Bool), f("sprite", "Спрайт (id)", "Sprite (id)", Kind::Text)] },
+    Op { op: "action", ru: "Действие для вещи", en: "An action for a thing", group: 6, fields: &[f("id", "С чем", "With what", Kind::Thing), f("label", "Что выбирают игроки", "What the players pick", Kind::Text), f("outcome", "Что происходит", "What happens", Kind::Long), f("needs", "Нужна вещь", "Needs a thing", Kind::Text)] },
     Op { op: "lines", ru: "Реплики существа", en: "A creature's lines", group: 1, fields: &[f("id", "Кто", "Who", Kind::Thing), f("lines", "Фразы, по одной в строке", "Phrases, one a line", Kind::Lines), f("every", "Раз в сколько секунд", "Every how many seconds", Kind::Number), f("order", "Порядок", "Order", Kind::Pick(ORDER))] },
     Op { op: "tile", ru: "Сменить землю", en: "Change the ground", group: 2, fields: &[f("cell", "Клетка", "Cell", Kind::Cell), f("tile", "Тайл", "Tile", Kind::Tile)] },
     Op { op: "mark", ru: "След на земле", en: "A mark on the ground", group: 2, fields: &[f("cell", "Клетка", "Cell", Kind::Cell), f("kind", "Что", "What", Kind::Pick(MARKS))] },
@@ -160,6 +162,8 @@ pub struct Form {
     pub op: usize,
     pub values: std::collections::HashMap<&'static str, String>,
     pub open: bool,
+    /// Only the fields: the effect is chosen by the caller, who also has the buttons.
+    pub fixed: bool,
 }
 
 /// The form for one effect; returns the effect once "Add" is pressed.
@@ -175,6 +179,7 @@ pub fn builder(ui: &mut Ui, form: &mut Form, world: &World, lang: Lang) -> Optio
     crate::ui::egui::Frame::new().fill(crate::ui::theme::c(crate::theme::PARCHMENT_SHADE)).inner_margin(6.0).show(ui, |ui| {
         let current = &OPS[form.op.min(OPS.len() - 1)];
         let name = |o: &Op| if ru { o.ru } else { o.en };
+        if !form.fixed {
         egui::ComboBox::from_id_salt(("effect_op", ui.id())).width(260.0).height(320.0).selected_text(name(current)).show_ui(ui, |ui| {
             for (g, (gru, gen_)) in GROUPS.iter().enumerate() {
                 ui.label(egui::RichText::new(if ru { *gru } else { *gen_ }).strong());
@@ -186,6 +191,7 @@ pub fn builder(ui: &mut Ui, form: &mut Form, world: &World, lang: Lang) -> Optio
                 }
             }
         });
+        }
         let current = &OPS[form.op.min(OPS.len() - 1)];
         let here = world.here();
         let things: Vec<(String, String)> = here.creatures.iter().map(|c| (c.id.clone(), c.name.clone())).chain(here.props.iter().map(|p| (p.id.clone(), p.name.clone()))).collect();
@@ -268,6 +274,9 @@ pub fn builder(ui: &mut Ui, form: &mut Form, world: &World, lang: Lang) -> Optio
                 }
             });
         }
+        if form.fixed {
+            return;
+        }
         ui.horizontal(|row| {
             if row.add(button(if ru { "Добавить" } else { "Add" }).primary()).clicked() {
                 made = Some(build(current, &form.values));
@@ -314,6 +323,50 @@ pub fn build(op: &Op, values: &std::collections::HashMap<&'static str, String>) 
         }
     }
     effect
+}
+
+/// A script being put together: effects one under another, in the order they happen, each
+/// can be moved up or down or taken out; new ones come from the form of every effect, or the
+/// model writes them from words. Returns the words when the model is to be asked.
+pub fn script_list(ui: &mut Ui, list: &mut Vec<Value>, form: &mut Form, words: &mut String, asking: bool, world: &World, lang: Lang) -> Option<String> {
+    let ru = lang == Lang::Ru;
+    if list.is_empty() {
+        hint(ui, if ru { "Пока пусто. Добавь шаги по порядку: что случится, «Пауза», что потом…" } else { "Empty yet. Add the steps in order: what happens, a Wait, what then…" });
+    }
+    let (mut up, mut gone) = (None, None);
+    for (n, effect) in list.iter().enumerate() {
+        ui.horizontal(|row| {
+            row.label(egui::RichText::new(format!("{}. {}", n + 1, describe(effect, world, lang))).color(crate::ui::theme::c(crate::theme::INK)));
+            if n > 0 && row.add(button("▲")).clicked() {
+                up = Some(n);
+            }
+            if row.add(button("×")).clicked() {
+                gone = Some(n);
+            }
+        });
+    }
+    if let Some(n) = up {
+        list.swap(n, n - 1);
+    }
+    if let Some(n) = gone {
+        list.remove(n);
+    }
+    if let Some(effect) = builder(ui, form, world, lang) {
+        list.push(effect);
+    }
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(if ru { "Или опиши словами — ИИ напишет шаги:" } else { "Or describe it in words: the AI writes the steps:" }).strong());
+    ui.add(egui::TextEdit::multiline(words).desired_rows(2).desired_width(f32::INFINITY).hint_text(if ru { "например: взрыв, тряска, через 3 минуты ещё взрыв и обвал на выходе" } else { "e.g.: a blast, a shake, three minutes later another blast and the exit caves in" }));
+    let mut ask = None;
+    ui.horizontal(|row| {
+        if row.add(button(if ru { "ИИ напишет" } else { "The AI writes it" }).enabled(!words.trim().is_empty() && !asking, if asking { if ru { "ИИ пишет…" } else { "The AI is writing…" } } else if ru { "Сначала опиши" } else { "Describe it first" })).clicked() {
+            ask = Some(words.trim().to_string());
+        }
+        if asking {
+            row.spinner();
+        }
+    });
+    ask
 }
 
 #[cfg(test)]

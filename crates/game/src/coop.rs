@@ -114,6 +114,8 @@ pub enum GmAct {
     Invent(String),
     /// How the rules settle what the master describes: the model answers the master alone.
     AskRules { book: String, question: String },
+    /// Effects the model is to write from the master's words, for what is named in `about`.
+    AskScript { about: String, wish: String },
     /// Someone in the master's place says something aloud, as a bubble.
     Say { who: String, text: String },
     /// The place the master is in is drawn again by the model, as the master wants it.
@@ -256,6 +258,8 @@ pub enum Down {
     LibraryEntity(Box<world::library::Entity>),
     /// The ruling the master asked for, or why there is none.
     Ruling(Result<String, String>),
+    /// The effects the master asked the model to write, or why there are none.
+    Script(Result<Vec<serde_json::Value>, String>),
     /// Who the guest's deed waits for, by player name: empty when it waits for nobody.
     WaitingFor(Vec<String>),
     /// What happened in the fight of a place: only the players there watch it.
@@ -726,6 +730,8 @@ pub struct Table {
     pub master_note: String,
     /// The last ruling the master asked of the model; `None` while it is being asked.
     pub ruling: Option<Result<String, String>>,
+    /// The last script the master asked the model to write.
+    pub script: Option<Result<Vec<serde_json::Value>, String>>,
     /// This player's library of creatures, as last read from disk.
     pub cards: Vec<CreatureCard>,
 }
@@ -1541,6 +1547,7 @@ fn client_pump(
                 }
             }
             ClientEvent::Message(Down::Ruling(answer)) => table.ruling = Some(answer),
+            ClientEvent::Message(Down::Script(answer)) => table.script = Some(answer),
             ClientEvent::Message(Down::LibraryEntity(entity)) => {
                 if let Err(e) = store.save_entity(&entity) {
                     warn!("could not keep {} in the library: {e}", entity.id);

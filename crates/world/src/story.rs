@@ -328,6 +328,44 @@ pub enum Effect {
         #[serde(default)]
         hero: String,
     },
+    /// A creature or a thing here is changed: whatever is given, the rest stays.
+    Edit {
+        id: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default, deserialize_with = "lenient_opt")]
+        size: Option<i64>,
+        #[serde(default, deserialize_with = "lenient_opt")]
+        ac: Option<i64>,
+        #[serde(default, deserialize_with = "lenient_opt")]
+        hp: Option<i64>,
+        #[serde(default, deserialize_with = "lenient_opt")]
+        speed: Option<i64>,
+        #[serde(default, deserialize_with = "lenient_opt")]
+        xp: Option<i64>,
+        /// The SRD monster it fights as; empty for its own numbers.
+        #[serde(default)]
+        monster: Option<String>,
+        #[serde(default)]
+        blocking: Option<bool>,
+        #[serde(default)]
+        sprite: Option<String>,
+    },
+    /// Something new can be done with a creature or a thing here (or the one with that label
+    /// is done differently now): a lever's pull, a door's knock, a statue's riddle.
+    Action {
+        id: String,
+        label: String,
+        #[serde(default)]
+        outcome: String,
+        #[serde(default)]
+        effects: Vec<Effect>,
+        #[serde(default)]
+        needs: String,
+        /// Taken away instead of added.
+        #[serde(default)]
+        remove: bool,
+    },
     /// Someone here says a line, in a bubble over them.
     Say {
         #[serde(default)]
@@ -1377,6 +1415,77 @@ impl World {
                 }
                 Effect::Weather { weather } => location.weather = weather.trim().to_lowercase(),
                 Effect::Music { mood } => location.mood = mood.trim().to_lowercase(),
+                Effect::Edit { id, name, size, ac, hp, speed, xp, monster, blocking, sprite } => {
+                    let id = resolve(id);
+                    if let Some(c) = location.creatures.iter_mut().find(|c| c.id == id) {
+                        if let Some(name) = name.as_ref().filter(|n| !n.trim().is_empty()) {
+                            c.name = name.trim().to_string();
+                        }
+                        if let Some(size) = size {
+                            c.size = (*size).clamp(1, 3) as u8;
+                        }
+                        if let Some(sprite) = sprite.as_ref().filter(|s| !s.trim().is_empty()) {
+                            c.sprite = slug(sprite);
+                        }
+                        if let Some(monster) = monster {
+                            c.monster = Some(monster.trim().to_lowercase().replace([' ', '_'], "-")).filter(|m| !m.is_empty());
+                        }
+                        // Numbers of its own, starting from what it had.
+                        if ac.is_some() || hp.is_some() || speed.is_some() || xp.is_some() {
+                            let mut stats = c.stats.clone().unwrap_or_else(|| crate::party::Stats { ac: 12, hp: 10, speed: 30, attacks: Vec::new(), xp: 25 });
+                            if let Some(ac) = ac {
+                                stats.ac = (*ac).clamp(1, 40) as i32;
+                            }
+                            if let Some(hp) = hp {
+                                stats.hp = (*hp).clamp(1, 9999) as i32;
+                            }
+                            if let Some(speed) = speed {
+                                stats.speed = (*speed).clamp(0, 200) as u32;
+                            }
+                            if let Some(xp) = xp {
+                                stats.xp = (*xp).clamp(0, 1_000_000) as u32;
+                            }
+                            c.stats = Some(stats);
+                            c.monster = None;
+                        }
+                    } else if let Some(p) = location.props.iter_mut().find(|p| p.id == id) {
+                        if let Some(name) = name.as_ref().filter(|n| !n.trim().is_empty()) {
+                            p.name = name.trim().to_string();
+                        }
+                        if let Some(size) = size {
+                            p.size = (*size).clamp(1, 3) as u8;
+                        }
+                        if let Some(blocking) = blocking {
+                            p.blocking = *blocking;
+                        }
+                        if let Some(sprite) = sprite.as_ref().filter(|s| !s.trim().is_empty()) {
+                            p.sprite = slug(sprite);
+                        }
+                    } else {
+                        notes.push(format!("edit: nothing called '{id}' is here"));
+                    }
+                }
+                Effect::Action { id, label, outcome, effects: inner, needs, remove } => {
+                    let id = resolve(id);
+                    let actions = match location.props.iter_mut().find(|p| p.id == id) {
+                        Some(p) => Some(&mut p.actions),
+                        None => location.creatures.iter_mut().find(|c| c.id == id).map(|c| &mut c.actions),
+                    };
+                    match actions {
+                        Some(actions) => {
+                            actions.retain(|a| a.label.trim() != label.trim());
+                            if !remove {
+                                let draft = ActionDraft { label: label.clone(), outcome: outcome.clone(), needs: needs.clone(), ..ActionDraft::default() };
+                                let mut made = read_actions(&[draft], &mut notes);
+                                if let Some(action) = made.first_mut() {
+                                    action.effects = inner.clone();
+                                }
+                                actions.extend(made);
+                            }
+                        }
+                        None => notes.push(format!("action: nothing called '{id}' is here")),
+                    }
+                }
                 Effect::Say { id, text } => {
                     let who = if id.trim().is_empty() { "party".to_string() } else { resolve(id) };
                     if !text.trim().is_empty() {

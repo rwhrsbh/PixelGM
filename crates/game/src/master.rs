@@ -82,6 +82,13 @@ pub enum Ask {
         /// Whose library it is for.
         for_player: String,
     },
+    /// A human master describes in words what should happen; the model writes the effects.
+    Script {
+        world: Box<World>,
+        about: String,
+        wish: String,
+        for_player: String,
+    },
     /// A human master asks how the rules settle what happened at the table.
     Ruling {
         world: Box<World>,
@@ -130,6 +137,8 @@ pub enum Answer {
     /// A tile or sprite drawn for the human master.
     Art { tile: bool, id: String, walkable: bool, rows: Result<Vec<String>, Trouble> },
     Translated { texts: Vec<String>, translated: Result<Vec<String>, Trouble> },
+    /// The effects a human master asked the model to write.
+    Script { for_player: String, effects: Result<Vec<serde_json::Value>, Trouble> },
     /// The ruling a human master asked for.
     Ruling { for_player: String, answer: Result<String, Trouble> },
 }
@@ -487,6 +496,7 @@ impl Master {
                 Ask::Translate { texts, language } => format!("{} texts into {language}", texts.len()),
                 Ask::Invent { .. } => "a creature for a library".to_string(),
                 Ask::Ruling { .. } => "a ruling for the human master".to_string(),
+                Ask::Script { .. } => "a script for the human master".to_string(),
             },
             if fake { " (fake master)" } else { "" }
         );
@@ -601,6 +611,15 @@ impl Master {
                 Ask::Portrait { world, hero } => {
                     let draft: Result<PortraitDraft, Trouble> = if fake { faked(fake::portrait()) } else { call.read(prompt::system_prompt(&world.language), &prompt::portrait(&world, hero)) };
                     Answer::Portrait { hero, rows: draft.map(|d| d.rows) }
+                }
+                Ask::Script { world, about, wish, for_player } => {
+                    #[derive(serde::Deserialize, Default)]
+                    #[serde(default)]
+                    struct ScriptDraft {
+                        effects: Vec<serde_json::Value>,
+                    }
+                    let draft: Result<ScriptDraft, Trouble> = if fake { faked(serde_json::json!({ "effects": [{ "op": "shake", "seconds": 1 }, { "op": "wait", "seconds": 3 }, { "op": "say", "id": "self", "text": wish.trim() }] }).to_string()) } else { call.read(prompt::play_prompt(&world), &prompt::script(&world, &about, &wish)) };
+                    Answer::Script { for_player, effects: draft.map(|d| d.effects) }
                 }
                 Ask::Ruling { world, book, question, for_player } => {
                     #[derive(serde::Deserialize, Default)]

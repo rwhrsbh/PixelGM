@@ -649,3 +649,22 @@ fn a_boss_takes_three_cells() {
     let ogre = w.locations["lake"].creatures.iter().find(|c| c.id == "ogre").unwrap();
     assert_eq!(ogre.size, 3);
 }
+
+/// The master makes a creature bigger and tougher, and gives a statue something to do.
+#[test]
+fn a_creature_is_changed_and_a_thing_given_an_action() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([{ "id": "statue", "name": "Statue", "description": "Stone.", "x": 5, "y": 5, "blocking": true, "sprite": "rock" }]));
+    w.apply(&steps(serde_json::json!([
+        { "op": "spawn", "kind": "creature", "id": "wolf", "name": "Wolf", "x": 4, "y": 1, "monster": "wolf", "attitude": "neutral", "count": 1 },
+        { "op": "edit", "id": "wolf", "name": "Dire wolf", "size": 2, "hp": 40, "ac": 15 },
+        { "op": "action", "id": "statue", "label": "Touch the eyes", "outcome": "The statue groans.", "effects": [{ "op": "shake", "seconds": 1 }, { "op": "set", "var": "statue", "value": 1 }] }
+    ])), None);
+    let here = &w.locations["lake"];
+    let wolf = here.creatures.iter().find(|c| c.id == "wolf").unwrap();
+    assert_eq!((wolf.name.as_str(), wolf.size), ("Dire wolf", 2));
+    assert_eq!(wolf.stats.as_ref().map(|s| (s.hp, s.ac)), Some((40, 15)));
+    assert!(wolf.monster.is_none());
+    let statue = here.props.iter().find(|p| p.id == "statue").unwrap();
+    let touch = statue.actions.iter().find(|a| a.label == "Touch the eyes").unwrap();
+    assert_eq!(touch.effects.len(), 2);
+}

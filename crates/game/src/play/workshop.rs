@@ -85,6 +85,14 @@ impl Default for Hit {
 /// Kinds a thing can be, as the game knows them.
 const KINDS: [&str; 10] = ["weapon", "armor", "light", "potion", "food", "throwable", "key", "tool", "junk", "quest"];
 
+/// A cell of the map the master clicked, with what covers it.
+#[derive(Clone, Debug)]
+pub struct Focus {
+    pub cell: (usize, usize),
+    pub id: Option<String>,
+    pub at: egui::Pos2,
+}
+
 #[derive(Resource)]
 pub struct Workshop {
     pub mode: Mode,
@@ -118,6 +126,20 @@ pub struct Workshop {
     line: String,
     /// What the AI is told.
     order: String,
+    /// What the master clicked on the map: the cell, what covers it, and where on the screen,
+    /// for the ring of what can be done with it.
+    pub focus: Option<Focus>,
+    /// The page of the ring opened: what it does, by effect, or "move".
+    menu_page: Option<(&'static str, String)>,
+    /// The steps of a script being put together for an action or a plate.
+    script: Vec<serde_json::Value>,
+    script_form: super::effects_ui::Form,
+    /// The form of the page opened from the ring.
+    ring_form: super::effects_ui::Form,
+    script_words: String,
+    script_asking: bool,
+    /// A creature or thing to be walked to the next cell clicked.
+    carry: Option<String>,
     tool: MapTool,
     tile: String,
     /// The library's creature or object put on a cell by a click, by its place in the list.
@@ -179,6 +201,14 @@ impl Default for Workshop {
             speaker: String::new(),
             line: String::new(),
             order: String::new(),
+            focus: None,
+            menu_page: None,
+            script: Vec::new(),
+            script_form: Default::default(),
+            ring_form: Default::default(),
+            script_words: String::new(),
+            script_asking: false,
+            carry: None,
             tool: MapTool::Brush,
             tile: String::new(),
             placing: None,
@@ -568,6 +598,19 @@ pub(super) fn workshop_ui(
         Mode::Make => make_room(ctx, ws, world, &tiles, &mut acts, lang, top, screen),
         Mode::Library => library_room(ctx, ws, world, &art_pictures, &made_pictures, &mut acts, &store, lang, top, screen),
         Mode::Rules => rules_room(ctx, ws, world, &mut table, &mut acts, lang, top, screen),
+    }
+    // The ring over what was clicked on the map, and the page opened from it.
+    if matches!(ws.mode, Mode::Run | Mode::Map) {
+        if ws.script_asking
+            && let Some(answer) = table.script.take()
+        {
+            ws.script_asking = false;
+            match answer {
+                Ok(effects) => ws.script = effects,
+                Err(trouble) => table.master_note = trouble,
+            }
+        }
+        ring(ctx, ws, world, &mut acts, lang, screen);
     }
     // What a player did waits for the master's answer, whatever room they are in.
     match judging {
@@ -1074,6 +1117,171 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, arts: &[e
     ws.panels = panels;
 }
 
+/// What a press in the ring does: open a form of an effect filled for the thing, do an
+/// effect at once, or pick the thing up to set it down elsewhere.
+enum Press {
+    Form(&'static str, Vec<(&'static str, String)>),
+    Now(serde_json::Value),
+    Carry,
+    Place,
+}
+
+/// The ring of what the master can do with what they clicked, around it, as in a life
+/// simulation game, in the parchment of the game; and the page opened from it.
+fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAct>, lang: Lang, screen: Rect) {
+    let ru = lang == Lang::Ru;
+    let Some(focus) = ws.focus.clone() else { return };
+    let here = world.here();
+    let cell = format!("{}, {}", focus.cell.0, focus.cell.1);
+    let creature = focus.id.as_ref().and_then(|id| here.creatures.iter().find(|c| c.id == *id));
+    let prop = focus.id.as_ref().and_then(|id| here.props.iter().find(|p| p.id == *id));
+    let tile = here.tile_id(focus.cell.0, focus.cell.1).unwrap_or("").to_string();
+    let tile_name = world.tiles.get(&tile).map_or(tile.clone(), |t| t.name.clone());
+    let l = |r: &'static str, e: &'static str| if ru { r } else { e };
+    let mut items: Vec<(&'static str, Press)> = Vec::new();
+    let title;
+    if let Some(c) = creature {
+        title = c.name.clone();
+        let id = c.id.clone();
+        let stats = c.stats.clone();
+        items.push((l("Реплики", "Lines"), Press::Form("lines", vec![("id", id.clone()), ("lines", c.lines.join("\n")), ("every", if c.every > 0 { c.every.to_string() } else { "20".into() }), ("order", if c.random_lines { "random".into() } else { "in_turn".into() })])));
+        items.push((l("Сказать", "Say"), Press::Form("say", vec![("id", id.clone())])));
+        items.push((l("Характеристики", "Numbers"), Press::Form("edit", vec![("id", id.clone()), ("name", c.name.clone()), ("size", c.size.to_string()), ("ac", stats.as_ref().map_or(String::new(), |s| s.ac.to_string())), ("hp", stats.as_ref().map_or(String::new(), |s| s.hp.to_string())), ("speed", stats.as_ref().map_or(String::new(), |s| s.speed.to_string())), ("monster", c.monster.clone().unwrap_or_default())])));
+        let attitude = match c.attitude {
+            world::Attitude::Hostile => "hostile",
+            world::Attitude::Neutral => "neutral",
+            _ => "friendly",
+        };
+        items.push((l("Отношение", "Attitude"), Press::Form("attitude", vec![("id", id.clone()), ("attitude", attitude.into())])));
+        items.push((l("Действие", "Action"), Press::Form("action", vec![("id", id.clone())])));
+        items.push((l("Урон", "Damage"), Press::Form("damage", vec![("id", id.clone()), ("amount", "1d6".into())])));
+        items.push((l("Бой", "Fight"), Press::Now(serde_json::json!({ "op": "fight", "with": [id.clone()] }))));
+        items.push((l("Убить", "Kill"), Press::Now(serde_json::json!({ "op": "kill", "id": id.clone() }))));
+        items.push((l("В отряд", "Join"), Press::Now(serde_json::json!({ "op": "join", "id": id.clone() }))));
+        items.push((l("Описание", "Description"), Press::Form("describe", vec![("id", id.clone()), ("description", c.description.clone())])));
+        items.push((l("Двигать", "Move"), Press::Carry));
+        items.push((l("Убрать", "Remove"), Press::Now(serde_json::json!({ "op": "remove", "id": id }))));
+    } else if let Some(p) = prop {
+        title = p.name.clone();
+        let id = p.id.clone();
+        items.push((l("Действие", "Action"), Press::Form("action", vec![("id", id.clone())])));
+        items.push((l("Изменить", "Change"), Press::Form("edit", vec![("id", id.clone()), ("name", p.name.clone()), ("size", p.size.to_string()), ("blocking", p.blocking.to_string())])));
+        items.push((l("Описание", "Description"), Press::Form("describe", vec![("id", id.clone()), ("description", p.description.clone())])));
+        items.push((l("Сказать", "Say"), Press::Form("say", vec![("id", id.clone())])));
+        items.push((l("Двигать", "Move"), Press::Carry));
+        items.push((l("Убрать", "Remove"), Press::Now(serde_json::json!({ "op": "remove", "id": id }))));
+    } else {
+        title = format!("{tile_name} ({cell})");
+        items.push((l("Сменить землю", "Ground"), Press::Form("tile", vec![("cell", cell.clone()), ("tile", tile.clone())])));
+        items.push((l("Плита", "Plate"), Press::Form("secret", vec![("cell", cell.clone()), ("kind", "plate".into()), ("dc", "0".into())])));
+        items.push((l("Ловушка", "Trap"), Press::Form("secret", vec![("cell", cell.clone()), ("kind", "trap".into()), ("dc", "13".into())])));
+        items.push((l("Тайник", "Cache"), Press::Form("secret", vec![("cell", cell.clone()), ("kind", "hidden".into()), ("dc", "14".into())])));
+        items.push((l("Выход", "Way out"), Press::Form("exit", vec![("cell", cell.clone())])));
+        items.push((l("Создать", "Spawn"), Press::Form("spawn", vec![("cell", cell.clone())])));
+        items.push((l("Из библиотеки", "From library"), Press::Place));
+        items.push((l("След", "Mark"), Press::Form("mark", vec![("cell", cell.clone())])));
+    }
+    // The ring: the name in the middle, the presses around it.
+    let radius = 78.0 + items.len() as f32 * 2.0;
+    let side = vec2(radius * 2.0 + 120.0, radius * 2.0 + 40.0);
+    let origin = egui::pos2((focus.at.x - side.x / 2.0).clamp(0.0, (screen.width() - side.x).max(0.0)), (focus.at.y - side.y / 2.0).clamp(0.0, (screen.height() - side.y).max(0.0)));
+    let center = origin + side / 2.0;
+    let mut pressed = None;
+    let mut close = false;
+    let shown = egui::Area::new(egui::Id::new("master_ring")).order(egui::Order::Foreground).fixed_pos(origin).show(ctx, |ui| {
+        let (rect, _) = ui.allocate_exact_size(side, Sense::hover());
+        ui.painter().circle_filled(center, radius * 0.55, c(PARCHMENT).gamma_multiply(0.85));
+        ui.painter().circle_stroke(center, radius * 0.55, egui::Stroke::new(2.0, c(BRASS_DARK)));
+        let name = ui.painter().layout(title.clone(), egui::FontId::proportional(12.0), c(INK), radius);
+        ui.painter().galley(center - name.size() / 2.0 - vec2(0.0, 8.0), name, c(INK));
+        let close_rect = Rect::from_center_size(center + vec2(0.0, 14.0), vec2(26.0, 18.0));
+        if ui.put(close_rect, button("×")).clicked() {
+            close = true;
+        }
+        for (n, (label, _)) in items.iter().enumerate() {
+            let angle = -std::f32::consts::FRAC_PI_2 + n as f32 / items.len() as f32 * std::f32::consts::TAU;
+            let at = center + vec2(angle.cos() * radius, angle.sin() * radius * 0.8);
+            let width = label.chars().count() as f32 * 7.0 + 16.0;
+            if ui.put(Rect::from_center_size(at, vec2(width, 20.0)), button(*label)).clicked() {
+                pressed = Some(n);
+            }
+        }
+        let _ = rect;
+    });
+    ws.panels.push(shown.response.rect);
+    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ws.focus = None;
+        ws.menu_page = None;
+        return;
+    }
+    if let Some(n) = pressed {
+        let (label, press) = items.swap_remove(n);
+        match press {
+            Press::Now(effect) => {
+                acts.push(GmAct::Apply(Box::new(TurnDraft { effects: vec![effect], ..TurnDraft::default() })));
+                ws.focus = None;
+            }
+            Press::Carry => {
+                ws.carry = focus.id.clone();
+                ws.focus = None;
+            }
+            Press::Place => {
+                ws.mode = Mode::Map;
+                ws.tool = MapTool::Place;
+                ws.focus = None;
+            }
+            Press::Form(op, values) => {
+                if let Some(n) = super::effects_ui::OPS.iter().position(|o| o.op == op) {
+                    ws.ring_form = super::effects_ui::Form { op: n, values: values.into_iter().collect(), open: true, fixed: true };
+                    ws.script.clear();
+                    ws.menu_page = Some((op, format!("{title}: {label}")));
+                }
+            }
+        }
+    }
+    // The page opened from the ring, beside it.
+    let Some((op, page_title)) = ws.menu_page.clone() else { return };
+    let mut panels = std::mem::take(&mut ws.panels);
+    let size = vec2(360.0, 360.0);
+    let at = egui::pos2(if origin.x + side.x + size.x < screen.width() { origin.x + side.x } else { (origin.x - size.x).max(0.0) }, origin.y);
+    let with_steps = matches!(op, "action" | "secret");
+    let mut done = false;
+    window(ctx, &mut panels, "ring_page", &page_title, at, size, |ui| {
+        egui::ScrollArea::vertical().max_height(size.y - 40.0).auto_shrink([false, true]).show(ui, |ui| {
+            super::effects_ui::builder(ui, &mut ws.ring_form, world, lang);
+            if with_steps {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(if ru { "Что при этом происходит — шаги по порядку:" } else { "What happens then, step by step:" }).strong().color(c(WAX_DARK)));
+                let about = format!("{page_title} (id {})", focus.id.clone().unwrap_or_else(|| cell.clone()));
+                if let Some(words) = super::effects_ui::script_list(ui, &mut ws.script, &mut ws.script_form, &mut ws.script_words, ws.script_asking, world, lang) {
+                    ws.script_asking = true;
+                    acts.push(GmAct::AskScript { about, wish: words });
+                }
+            }
+        });
+        ui.separator();
+        ui.horizontal(|row| {
+            if row.add(button(if ru { "Отмена" } else { "Cancel" })).clicked() {
+                done = true;
+            }
+            if kit::right(row, |r| r.add(button(if ru { "Применить" } else { "Apply" }).primary())).clicked() {
+                let mut effect = super::effects_ui::build(&super::effects_ui::OPS[ws.ring_form.op], &ws.ring_form.values);
+                if with_steps {
+                    effect["effects"] = serde_json::Value::Array(ws.script.clone());
+                }
+                acts.push(GmAct::Apply(Box::new(TurnDraft { effects: vec![effect], ..TurnDraft::default() })));
+                done = true;
+            }
+        });
+    });
+    ws.panels.extend(panels);
+    if done {
+        ws.menu_page = None;
+        ws.focus = None;
+        ws.script.clear();
+    }
+}
+
 /// Running the game: telling, changing the world, the AI, the seat — one page at a time.
 #[allow(clippy::too_many_arguments)]
 fn run_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, table: &mut Table, acts: &mut Vec<GmAct>, phase: &mut Phase, lang: Lang, top: f32, screen: Rect, me: &str) {
@@ -1393,11 +1601,12 @@ pub(super) fn workshop_map(
     window: Single<&Window, With<bevy::window::PrimaryWindow>>,
     frame: Res<crate::view::View>,
 ) {
-    if *phase != Phase::Master || ws.mode != Mode::Map {
+    if *phase != Phase::Master || !matches!(ws.mode, Mode::Map | Mode::Run) {
         return;
     }
     // Over the editor's windows the mouse is theirs, not the map's.
-    let over_window = egui.ctx_mut().ok().and_then(|ctx| ctx.pointer_latest_pos()).is_some_and(|at| ws.panels.iter().any(|rect| rect.contains(at)));
+    let pointer = egui.ctx_mut().ok().and_then(|ctx| ctx.pointer_latest_pos());
+    let over_window = pointer.is_some_and(|at| ws.panels.iter().any(|rect| rect.contains(at)));
     if over_window && !mouse.just_released(MouseButton::Left) {
         return;
     }
@@ -1422,6 +1631,22 @@ pub(super) fn workshop_map(
     }
     let thing_at = |cell: (usize, usize)| here.thing_covering(cell.0, cell.1).map(str::to_string);
     let apply = |effects: Vec<serde_json::Value>| GmAct::Apply(Box::new(TurnDraft { effects, ..TurnDraft::default() }));
+    // A click while running the game (a right click in the map room) opens the ring over
+    // what is there; with something picked up from the ring, it is set down there instead.
+    let ring_click = (ws.mode == Mode::Run && mouse.just_pressed(MouseButton::Left)) || mouse.just_pressed(MouseButton::Right);
+    if ring_click && !over_window {
+        match ws.carry.take() {
+            Some(id) => send(apply(vec![serde_json::json!({ "op": "move", "id": id, "x": cell.0, "y": cell.1 })]), &session, &settings, &mut table),
+            None => {
+                ws.focus = Some(Focus { cell, id: thing_at(cell), at: pointer.unwrap_or_default() });
+                ws.menu_page = None;
+            }
+        }
+        return;
+    }
+    if ws.mode == Mode::Run {
+        return;
+    }
     let mut act = None;
     match ws.tool {
         MapTool::Brush if mouse.pressed(MouseButton::Left) && !ws.tile.is_empty() => {

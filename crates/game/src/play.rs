@@ -2458,6 +2458,14 @@ fn receive(
                     _ => background.chapter_rest = if background.urgent { 20.0 } else { BACKGROUND_REST },
                 }
             }
+            Answer::Script { for_player, effects } => {
+                let effects = effects.map_err(|trouble| trouble_text(&trouble, gm.dispatcher.now(), settings.lang));
+                if for_player == player_name(&settings) {
+                    table.script = Some(effects);
+                } else {
+                    session.send_to(&for_player, &Down::Script(effects));
+                }
+            }
             Answer::Ruling { for_player, answer } => {
                 let answer = answer.map_err(|trouble| trouble_text(&trouble, gm.dispatcher.now(), settings.lang));
                 if for_player == player_name(&settings) {
@@ -4037,6 +4045,9 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             let place = desk.game.world.current.clone();
             desk.session.broadcast(&Down::Bubble { place, who: who.clone(), text: text.clone() });
             desk.table.bubbles.push((who, text));
+        }
+        GmAct::AskScript { about, wish } => {
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Script { world: Box::new(desk.game.world.clone()), about, wish, for_player: player.to_string() });
         }
         GmAct::AskRules { book, question } => {
             desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Ruling { world: Box::new(desk.game.world.clone()), book, question, for_player: player.to_string() });
