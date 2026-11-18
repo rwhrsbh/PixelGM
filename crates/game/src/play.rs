@@ -2115,6 +2115,29 @@ fn receive(
                 game.world.focus_fight(&home);
                 redraw.0 = true;
             }
+            Answer::Art { tile, id, walkable, rows } => {
+                let lang = settings.lang;
+                let note = match rows {
+                    Ok(rows) => {
+                        let name = id.replace('_', " ");
+                        let saved = if tile { game.world.add_drawn_tile(&id, &name, walkable, &rows) } else { game.world.add_drawn_sprite(&id, &rows) };
+                        if saved {
+                            let slug = world::build::slug(&id);
+                            share_art(&store, &session, if tile { world::library::Art::of_tile(&game.world, &slug) } else { world::library::Art::of_sprite(&game.world, &slug) });
+                        }
+                        redraw.0 = true;
+                        autosave(&store, &game);
+                        if saved { format!("{} {id}", T::ArtSaved.text(lang)) } else { T::ArtUnreadable.text(lang).to_string() }
+                    }
+                    Err(trouble) => trouble_text(&trouble, gm.dispatcher.now(), lang),
+                };
+                match seated(&game.world).map(str::to_string) {
+                    Some(master) if master != player_name(&settings) => {
+                        session.send_to(&master, &Down::Card(Err(note)));
+                    }
+                    _ => table.master_note = note,
+                }
+            }
             Answer::Things(drawn) => {
                 background.things_asked = false;
                 match drawn {
@@ -2378,6 +2401,13 @@ fn receive(
             }
             Answer::Card { for_player, card } => {
                 let card = card.map(|card| *card).map_err(|trouble| trouble_text(&trouble, gm.dispatcher.now(), settings.lang));
+                // A creature made for the master goes into everyone's library at the table.
+                if let Ok(made) = &card {
+                    if for_player != player_name(&settings) {
+                        let _ = store.save_card(made);
+                    }
+                    session.broadcast(&Down::LibraryCard(made.clone()));
+                }
                 if for_player == player_name(&settings) {
                     table.keep_card(&store, card, settings.lang);
                 } else {
@@ -3785,6 +3815,24 @@ fn release(desk: &mut Desk, master: &str) {
     }
 }
 
+/// What the master made goes into the library of everyone at the table, the host's too.
+fn share_art(store: &Store, session: &Session, art: Option<world::library::Art>) {
+    let Some(art) = art else { return };
+    if let Err(e) = store.save_art(&art) {
+        warn!("could not keep {} in the library: {e}", art.id);
+    }
+    session.broadcast(&Down::LibraryArt(art));
+}
+
+/// A word for the player in the master's seat: on the host's screen, or sent to them.
+fn tell_master(desk: &mut Desk, master: &str, note: String) {
+    if master == player_name(desk.settings) {
+        desk.table.master_note = note;
+    } else {
+        desk.session.send_to(master, &Down::Card(Err(note)));
+    }
+}
+
 /// What the player in the master's seat asked for, done on the host. Anyone may take an
 /// empty seat; everything else is only the master's to do.
 fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
@@ -3838,6 +3886,36 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             desk.table.busy = Some(said);
         }
         GmAct::Apply(draft) => finish(desk, "", &draft),
+        GmAct::ImportArt(art) => {
+            let lang = desk.settings.lang;
+            let note = if desk.game.world.import_art(&art) { format!("{} {}", T::ArtSaved.text(lang), art.id) } else { T::ArtUnreadable.text(lang).to_string() };
+            tell_master(desk, player, note);
+            desk.redraw.0 = true;
+        }
+        GmAct::SetWalkable { tile, walkable } => {
+            if desk.game.world.set_walkable(&tile, walkable) {
+                share_art(desk.store, desk.session, world::library::Art::of_tile(&desk.game.world, &tile));
+                desk.redraw.0 = true;
+            }
+        }
+        GmAct::SaveArt { tile, id, name, walkable, rows } => {
+            let world = &mut desk.game.world;
+            let saved = if tile { world.add_drawn_tile(&id, &name, walkable, &rows) } else { world.add_drawn_sprite(&id, &rows) };
+            if saved {
+                let slug = world::build::slug(&id);
+                let art = if tile { world::library::Art::of_tile(world, &slug) } else { world::library::Art::of_sprite(world, &slug) };
+                share_art(desk.store, desk.session, art);
+            }
+            let lang = desk.settings.lang;
+            let note = if saved { format!("{} {id}", T::ArtSaved.text(lang)) } else { T::ArtUnreadable.text(lang).to_string() };
+            tell_master(desk, player, note);
+            desk.redraw.0 = true;
+        }
+        GmAct::DrawArt { tile, id, description, walkable } => {
+            let lang = desk.settings.lang;
+            tell_master(desk, player, format!("{} {id}…", T::ArtDrawing.text(lang)));
+            desk.master.ask(desk.gm, desk.store, desk.settings, Ask::Art { world: Box::new(desk.game.world.clone()), tile, id, description, walkable });
+        }
         GmAct::Redraw(wish) => {
             // The place the master stands in, as walked into from one of its ways out; its
             // stub keeps its name and description for the model, its exits where they lead.

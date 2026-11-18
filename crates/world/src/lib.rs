@@ -8,6 +8,7 @@ pub mod build;
 pub mod fake;
 pub mod model;
 pub mod party;
+pub mod library;
 pub mod living;
 pub mod path;
 pub mod shop;

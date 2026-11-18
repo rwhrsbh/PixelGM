@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 16;
+pub const PROTOCOL: u32 = 17;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -110,6 +110,14 @@ pub enum GmAct {
     Say { who: String, text: String },
     /// The place the master is in is drawn again by the model, as the master wants it.
     Redraw(String),
+    /// A tile or a sprite the master drew by hand, to be used at once.
+    SaveArt { tile: bool, id: String, name: String, walkable: bool, rows: Vec<String> },
+    /// A tile or a sprite the master wants the model to draw, as described.
+    DrawArt { tile: bool, id: String, description: String, walkable: bool },
+    /// A tile or a sprite of the master's library brought into the world.
+    ImportArt(world::library::Art),
+    /// Whether a tile of the world can be walked on.
+    SetWalkable { tile: String, walkable: bool },
 }
 
 /// A draft of the model's as the master sees it.
@@ -226,6 +234,9 @@ pub enum Down {
     Thinking(String),
     /// The game master could not answer.
     Trouble(String),
+    /// Something the master made, for everyone's library: kept for good.
+    LibraryArt(world::library::Art),
+    LibraryCard(world::CreatureCard),
     /// Who the guest's deed waits for, by player name: empty when it waits for nobody.
     WaitingFor(Vec<String>),
     /// What happened in the fight of a place: only the players there watch it.
@@ -1503,6 +1514,16 @@ fn client_pump(
             }
             ClientEvent::Message(Down::Roster(roster)) => table.roster = roster,
             ClientEvent::Message(Down::WaitingFor(names)) => table.waiting_for = names,
+            ClientEvent::Message(Down::LibraryArt(art)) => {
+                if let Err(e) = store.save_art(&art) {
+                    warn!("could not keep {} in the library: {e}", art.id);
+                }
+            }
+            ClientEvent::Message(Down::LibraryCard(card)) => {
+                if let Err(e) = store.save_card(&card) {
+                    warn!("could not keep {} in the library: {e}", card.id);
+                }
+            }
             ClientEvent::Message(Down::News { place, text }) => table.notices.push(format!("{place}: {text}")),
             // Unwrapped above: a feed in a feed is nothing.
             ClientEvent::Message(Down::Feed { .. }) => {}

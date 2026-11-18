@@ -57,6 +57,14 @@ pub enum Ask {
         texts: Vec<String>,
         language: String,
     },
+    /// Draw one tile or sprite for the human master.
+    Art {
+        world: Box<World>,
+        tile: bool,
+        id: String,
+        description: String,
+        walkable: bool,
+    },
     /// Draw the things that came into the world without a picture.
     Things {
         world: Box<World>,
@@ -112,6 +120,8 @@ pub enum Answer {
     Stunt { place: String, spell: Option<(String, u8)>, draft: Result<Box<StuntDraft>, Trouble> },
     Portrait { hero: usize, rows: Result<Vec<String>, Trouble> },
     Things(Result<Vec<world::bag::ThingPicture>, Trouble>),
+    /// A tile or sprite drawn for the human master.
+    Art { tile: bool, id: String, walkable: bool, rows: Result<Vec<String>, Trouble> },
     Translated { texts: Vec<String>, translated: Result<Vec<String>, Trouble> },
 }
 
@@ -436,7 +446,7 @@ impl Master {
         // Small talk is asked of the cheap models, once.
         let cheap = matches!(ask, Ask::Chatter { .. });
         // Drawing, translating and small talk need no thinking: it only costs tokens.
-        let plain = matches!(ask, Ask::Things { .. } | Ask::Translate { .. } | Ask::Chatter { .. } | Ask::Portrait { .. });
+        let plain = matches!(ask, Ask::Things { .. } | Ask::Art { .. } | Ask::Translate { .. } | Ask::Chatter { .. } | Ask::Portrait { .. });
         let call = Call {
             providers: if plain { Settings { thinking: llm::ThinkingSetting::Off, ..settings.clone() }.providers() } else { settings.providers() },
             rotation: self.rotation.clone(),
@@ -464,6 +474,7 @@ impl Master {
                 Ask::Stunt { .. } => "a stunt in a fight".to_string(),
                 Ask::Portrait { hero, .. } => format!("a portrait of hero {hero}"),
                 Ask::Things { things, .. } => format!("pictures of {} things", things.len()),
+                Ask::Art { tile, id, .. } => format!("the master's {} '{id}'", if *tile { "tile" } else { "sprite" }),
                 Ask::Translate { texts, language } => format!("{} texts into {language}", texts.len()),
                 Ask::Invent { .. } => "a creature for a library".to_string(),
             },
@@ -564,6 +575,10 @@ impl Master {
                     // A list of another length cannot be matched to what was sent.
                     let translated = draft.and_then(|d| if d.texts.len() == texts.len() { Ok(d.texts) } else { Err(Trouble::Unreadable(format!("{} translations for {} texts", d.texts.len(), texts.len()))) });
                     Answer::Translated { texts, translated }
+                }
+                Ask::Art { world, tile, id, description, walkable } => {
+                    let draft: Result<PortraitDraft, Trouble> = if fake { faked(fake::portrait()) } else { call.read(prompt::DRAWER.to_string(), &prompt::draw_art(&world, tile, &id, &description)) };
+                    Answer::Art { tile, id, walkable, rows: draft.map(|d| d.rows) }
                 }
                 Ask::Things { world, things } => {
                     let draft: Result<world::bag::ThingsDraft, Trouble> = if fake {

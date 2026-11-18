@@ -238,6 +238,12 @@ pub struct CreatureCard {
     pub rows: Vec<String>,
     pub monster: Option<String>,
     pub stats: Option<crate::party::Stats>,
+    /// How it meets the party: "hostile", "neutral" or "friendly"; empty for as asked.
+    #[serde(default)]
+    pub attitude: String,
+    /// It sells things: brought in, it keeps a shop.
+    #[serde(default)]
+    pub merchant: bool,
 }
 
 impl CreatureCard {
@@ -245,15 +251,25 @@ impl CreatureCard {
     pub fn summon(&self, x: usize, y: usize, hostile: bool) -> TurnDraft {
         let id = slug(&self.id);
         let id = if id.is_empty() { slug(&self.name) } else { id };
-        TurnDraft {
-            sprites: vec![SpriteDraft { id: id.clone(), rows: self.rows.clone() }],
-            effects: vec![serde_json::json!({
-                "op": "spawn", "kind": "creature", "id": id, "name": self.name, "description": self.description,
-                "x": x, "y": y, "sprite": id, "attitude": if hostile { "hostile" } else { "neutral" },
-                "monster": self.monster, "stats": self.stats,
-            })],
-            ..TurnDraft::default()
+        let attitude = match self.attitude.as_str() {
+            "hostile" | "neutral" | "friendly" => self.attitude.as_str(),
+            _ if hostile => "hostile",
+            _ => "neutral",
+        };
+        let mut spawn = serde_json::json!({
+            "op": "spawn", "kind": "creature", "id": id, "name": self.name, "description": self.description,
+            "x": x, "y": y, "sprite": id, "attitude": attitude,
+            "monster": self.monster, "stats": self.stats,
+        });
+        // A merchant comes with the plainest wares; the master adds the rest.
+        if self.merchant {
+            spawn["shop"] = serde_json::json!([
+                { "name": "Ration", "kind": "food", "price": 2 },
+                { "name": "Torch", "kind": "light", "light": 4, "price": 2 },
+                { "name": "Potion of healing", "kind": "potion", "heal": "2d4+2", "price": 50 }
+            ]);
         }
+        TurnDraft { sprites: vec![SpriteDraft { id: id.clone(), rows: self.rows.clone() }], effects: vec![spawn], ..TurnDraft::default() }
     }
 }
 
@@ -586,6 +602,8 @@ mod tests {
             rows: vec!["0110".into(), "1111".into(), "1001".into()],
             monster: None,
             stats: Some(crate::party::Stats { ac: 13, hp: 30, speed: 30, attacks: Vec::new(), xp: 200 }),
+            attitude: String::new(),
+            merchant: false,
         };
         let (_, notes) = w.take_turn("", &card.summon(6, 6, true));
         assert!(notes.is_empty(), "{notes:?}");

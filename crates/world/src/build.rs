@@ -812,6 +812,31 @@ impl World {
     }
 
     /// Draws a place that was only a stub. The party is not moved.
+    /// A tile the human master drew or had drawn: it can be laid on the map at once. `false`
+    /// when the picture cannot be read.
+    pub fn add_drawn_tile(&mut self, id: &str, name: &str, walkable: bool, rows: &[String]) -> bool {
+        let id = slug(id);
+        match tile_from(rows, self.palette.len()) {
+            Some(sprite) if !id.is_empty() => {
+                self.tiles.insert(id, crate::model::TileDef { name: name.trim().to_string(), walkable, sprite });
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A picture of a creature or a thing the human master drew or had drawn.
+    pub fn add_drawn_sprite(&mut self, id: &str, rows: &[String]) -> bool {
+        let id = slug(id);
+        match sprite_from(rows, self.palette.len()) {
+            Some(sprite) if !id.is_empty() => {
+                self.sprites.insert(id, sprite);
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn add_location(&mut self, draft: &LocationDraft, id: &str, arrived_from: Option<&str>) -> Result<Vec<String>, String> {
         self.add_colors(&draft.palette);
         let known: BTreeSet<String> = self.locations.keys().chain(self.stubs.keys()).cloned().collect();

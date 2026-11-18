@@ -554,6 +554,24 @@ pub fn draw_things(world: &World, things: &[crate::bag::Undrawn]) -> String {
     )
 }
 
+/// One picture the human master asks for: a tile of ground or a sprite of a creature or a
+/// thing, drawn in the world's palette and its look.
+pub fn draw_art(world: &World, tile: bool, id: &str, description: &str) -> String {
+    let palette: String = world.palette.colors.iter().enumerate().map(|(i, [r, g, b])| format!(" {}=#{r:02x}{g:02x}{b:02x}", char_of(i as u8 + 1))).collect();
+    let look = place_context(world, "", &world.current);
+    let what = if tile {
+        "a TILE of ground, 16 by 16, seen from above, filling every pixel (no transparency), seamless so it can lie beside itself"
+    } else {
+        "a SPRITE, 16 by 16, '0' transparent, outlined in colour 1, facing the viewer, feet on the bottom row"
+    };
+    format!(
+        "World: {}. {}\nPALETTE (0 is transparent):{palette}\n{look}\nThe game master wants {what}: \"{id}\" — {}.\nDraw it alike the pictures above, recognisable at a glance.\n\nAnswer with this JSON object:\n{{\"rows\": [\"16 characters\", \"… 16 rows\"]}}",
+        world.title,
+        world.summary,
+        description.trim()
+    )
+}
+
 /// What the master is told it is when it only draws things: short, so a drawing does not
 /// carry the rules of the whole game.
 pub const DRAWER: &str = "You draw pixel-art icons for a tabletop role-playing game. A picture is a list of rows; a row is a string; each character is one pixel holding a palette index: 0 is transparent, then 1-9, then a-v. You answer with ONE JSON object and nothing else.";

@@ -425,6 +425,21 @@ impl Store {
         write_whole(&self.library_dir().join(format!("{name}.json")), serde_json::to_string_pretty(card)?.as_bytes())
     }
 
+    /// Keeps a tile or a sprite in this player's library for good, under its kind and id:
+    /// whoever sat at the table where it was made keeps it.
+    pub fn save_art(&self, art: &world::library::Art) -> io::Result<()> {
+        let name: String = art.id.chars().map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+        let kind = if art.tile { "tile" } else { "sprite" };
+        write_whole(&self.library_dir().join("art").join(format!("{kind}-{name}.json")), serde_json::to_string(art)?.as_bytes())
+    }
+
+    /// The tiles and sprites of the library, tiles first, by name.
+    pub fn load_arts(&self) -> Vec<world::library::Art> {
+        let mut arts: Vec<world::library::Art> = fs::read_dir(self.library_dir().join("art")).into_iter().flatten().flatten().filter_map(|f| fs::read_to_string(f.path()).ok()).filter_map(|s| serde_json::from_str(&s).ok()).collect();
+        arts.sort_by(|a, b| b.tile.cmp(&a.tile).then(a.name.cmp(&b.name)));
+        arts
+    }
+
     /// The library, by name. A card that cannot be read is left out.
     pub fn load_cards(&self) -> Vec<CreatureCard> {
         let mut cards: Vec<CreatureCard> =

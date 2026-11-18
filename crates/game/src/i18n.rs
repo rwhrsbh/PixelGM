@@ -498,6 +498,9 @@ texts! {
     WaitingChoice: "Ждём выбора:", "Waiting for the choice of:";
     LobbyMaster: "мастер игры", "the game master";
     RedrawHere: "Перерисовать место", "Redraw the place";
+    ArtSaved: "Готово, можно ставить:", "Done, ready to use:";
+    ArtUnreadable: "Рисунок не прочитался: нужны 16 строк по 16 знаков.", "The picture could not be read: 16 rows of 16 characters are needed.";
+    ArtDrawing: "ИИ рисует", "The AI is drawing";
     BeMaster: "Буду мастером", "I'll be the master";
     PlayAHero: "Играть героем", "Play a hero";
     MasterTaken: "Место мастера уже занято", "The master's seat is taken";
