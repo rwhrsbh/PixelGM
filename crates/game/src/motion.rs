@@ -138,6 +138,7 @@ fn start(
         }
         // Seen or felt only by those it was meant for; the master, with no hero, sees it all.
         let felt = cue.who.is_empty() || mine.and_then(|i| world.party.get(i)).is_none_or(|hero| cue.who.iter().any(|w| w.eq_ignore_ascii_case(&hero.name)));
+        info!("sight {} of {}: {}", cue.motion, cue.id, if felt { "shown" } else { "not for this hero" });
         if !felt {
             continue;
         }
