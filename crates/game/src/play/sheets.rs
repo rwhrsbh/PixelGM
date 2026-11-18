@@ -84,7 +84,7 @@ pub fn overlay(
     }
     let sheet = translated(sheet_for(&phase, &game.world, gm.dispatcher.now(), lang, &extra), foreign(&game.world, lang), translator.bypass_change_detection());
     // In the editor's rooms the master's panel gives way to the editor's windows.
-    if panel.workshop && matches!(sheet, Sheet::Master(_)) {
+    if matches!(sheet, Sheet::Master(_)) {
         return;
     }
     // The master answers the players in a window of the editor's.

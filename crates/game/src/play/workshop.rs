@@ -108,6 +108,16 @@ pub struct Workshop {
     roll: (String, String, i64, String, String),
     /// The change being put together in the form of every effect.
     effect: super::effects_ui::Form,
+    /// The page of the running window: 0 tell, 1 change the world, 2 the AI, 3 the seat.
+    page: usize,
+    /// What the master tells, and to whom ("" is everyone).
+    telling: String,
+    telling_to: String,
+    /// Who speaks a line, and the line.
+    speaker: String,
+    line: String,
+    /// What the AI is told.
+    order: String,
     tool: MapTool,
     tile: String,
     /// The library's creature or object put on a cell by a click, by its place in the list.
@@ -163,6 +173,12 @@ impl Default for Workshop {
             reply_to: None,
             roll: ("dex".into(), String::new(), 12, String::new(), String::new()),
             effect: Default::default(),
+            page: 0,
+            telling: String::new(),
+            telling_to: String::new(),
+            speaker: String::new(),
+            line: String::new(),
+            order: String::new(),
             tool: MapTool::Brush,
             tile: String::new(),
             placing: None,
@@ -547,7 +563,7 @@ pub(super) fn workshop_ui(
     panel.workshop = ws.mode != Mode::Run;
     let top = bar.response.rect.max.y + 6.0;
     match ws.mode {
-        Mode::Run => {}
+        Mode::Run => run_room(ctx, ws, world, &mut table, &mut acts, &mut phase, lang, top, screen, &player_name(&settings)),
         Mode::Map => map_room(ctx, ws, &tiles, &made_pictures, &mut acts, lang, top, screen),
         Mode::Make => make_room(ctx, ws, world, &tiles, &mut acts, lang, top, screen),
         Mode::Library => library_room(ctx, ws, world, &art_pictures, &made_pictures, &mut acts, &store, lang, top, screen),
@@ -1052,6 +1068,121 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, arts: &[e
             }
             _ => {
                 hint(ui, t(T::WsPickCard));
+            }
+        }
+    });
+    ws.panels = panels;
+}
+
+/// Running the game: telling, changing the world, the AI, the seat — one page at a time.
+#[allow(clippy::too_many_arguments)]
+fn run_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, table: &mut Table, acts: &mut Vec<GmAct>, phase: &mut Phase, lang: Lang, top: f32, screen: Rect, me: &str) {
+    let t = |text: T| text.text(lang);
+    let mut panels = std::mem::take(&mut ws.panels);
+    let size = vec2(440.0_f32.min(screen.width() - 40.0), 300.0);
+    window(ctx, &mut panels, "run", t(T::WsRun), egui::pos2(8.0, (screen.height() - size.y - 60.0).max(top)), size, |ui| {
+        ui.horizontal(|row| {
+            for (n, (label, about)) in [(T::WsTell, T::WsTellAbout), (T::WsChange, T::WsChangeAbout), (T::WsAi, T::WsAiAbout), (T::WsSeat, T::WsSeatAbout)].into_iter().enumerate() {
+                if lit(row, t(label), ws.page == n, t(about)) {
+                    ws.page = n;
+                }
+            }
+        });
+        ui.separator();
+        let here = world.here();
+        match ws.page {
+            0 => {
+                // Told to everyone, or whispered to one player.
+                let others: Vec<String> = world.present.iter().filter(|p| p.as_str() != me).cloned().collect();
+                ui.horizontal(|row| {
+                    row.label(t(T::WsTellTo));
+                    let shown = if ws.telling_to.is_empty() { t(T::WsEveryone).to_string() } else { ws.telling_to.clone() };
+                    egui::ComboBox::from_id_salt("tell_to").width(160.0).selected_text(shown).show_ui(row, |ui| {
+                        ui.selectable_value(&mut ws.telling_to, String::new(), t(T::WsEveryone));
+                        for player in &others {
+                            ui.selectable_value(&mut ws.telling_to, player.clone(), format!("{player} ({})", t(T::WsSecretly)));
+                        }
+                    });
+                });
+                ui.add(egui::TextEdit::multiline(&mut ws.telling).desired_rows(3).desired_width(f32::INFINITY).hint_text(t(T::WsTellHint)));
+                if ui.add(button(t(T::WsTellSend)).primary().enabled(!ws.telling.trim().is_empty(), t(T::NeedText))).clicked() {
+                    let text = std::mem::take(&mut ws.telling).trim().to_string();
+                    acts.push(if ws.telling_to.is_empty() { GmAct::Apply(Box::new(TurnDraft { narration: text, ..TurnDraft::default() })) } else { GmAct::Whisper { to: ws.telling_to.clone(), text } });
+                }
+                heading(ui, t(T::WsSpeak));
+                ui.horizontal(|row| {
+                    let things: Vec<(String, String)> = here.creatures.iter().map(|c| (c.id.clone(), c.name.clone())).chain(here.props.iter().map(|p| (p.id.clone(), p.name.clone()))).collect();
+                    let shown = things.iter().find(|(id, _)| *id == ws.speaker).map_or("—".to_string(), |(_, n)| n.clone());
+                    egui::ComboBox::from_id_salt("speaker").width(120.0).selected_text(shown).show_ui(row, |ui| {
+                        for (id, name) in &things {
+                            ui.selectable_value(&mut ws.speaker, id.clone(), name.as_str());
+                        }
+                    });
+                    row.add(egui::TextEdit::singleline(&mut ws.line).desired_width(170.0).hint_text(t(T::WsLineHint)));
+                    if row.add(button(t(T::WsSay)).enabled(!ws.speaker.is_empty() && !ws.line.trim().is_empty(), t(T::NeedText))).clicked() {
+                        acts.push(GmAct::Say { who: ws.speaker.clone(), text: std::mem::take(&mut ws.line) });
+                    }
+                });
+            }
+            1 => {
+                // The commonest changes a click away; every other in the list below.
+                hint(ui, t(T::WsChangeHint));
+                ui.horizontal_wrapped(|row| {
+                    for op in ["damage", "heal", "give", "gold", "xp", "check", "spawn", "fight", "time", "weather", "light", "shake"] {
+                        if let Some((n, entry)) = super::effects_ui::OPS.iter().enumerate().find(|(_, o)| o.op == op)
+                            && row.add(button(if lang == Lang::Ru { entry.ru } else { entry.en })).clicked()
+                        {
+                            ws.effect.op = n;
+                            ws.effect.values.clear();
+                            ws.effect.open = true;
+                        }
+                    }
+                });
+                egui::ScrollArea::vertical().max_height(170.0).auto_shrink([false, true]).show(ui, |ui| {
+                    if let Some(effect) = super::effects_ui::builder(ui, &mut ws.effect, world, lang) {
+                        acts.push(GmAct::Apply(Box::new(TurnDraft { effects: vec![effect], ..TurnDraft::default() })));
+                    }
+                });
+                ui.horizontal(|row| {
+                    if row.add(button(t(T::WsSecretRoll))).on_hover_text(t(T::WsSecretRollHint)).clicked() {
+                        let roll = Roll::d20(&mut Rng::from_clock(), 0, Edge::Plain);
+                        table.master_note = format!("d20: {}", roll.total());
+                    }
+                    if !table.master_note.is_empty() {
+                        row.label(egui::RichText::new(&table.master_note).strong().color(c(WAX_DARK)));
+                    }
+                });
+            }
+            2 => {
+                hint(ui, t(T::WsAiHint));
+                ui.add(egui::TextEdit::multiline(&mut ws.order).desired_rows(3).desired_width(f32::INFINITY).hint_text(t(T::WsOrderHint)));
+                let ready = !ws.order.trim().is_empty();
+                ui.horizontal_wrapped(|row| {
+                    if row.add(button(t(T::WsOrderSend)).primary().enabled(ready, t(T::NeedText))).on_hover_text(t(T::WsOrderSendHint)).clicked() {
+                        acts.push(GmAct::Direct(std::mem::take(&mut ws.order)));
+                    }
+                    if row.add(button(t(T::RedrawHere)).enabled(ready, t(T::NeedText))).on_hover_text(t(T::WsRedrawHint)).clicked() {
+                        acts.push(GmAct::Redraw(std::mem::take(&mut ws.order)));
+                    }
+                    if row.add(button(t(T::WsInvent)).enabled(ready, t(T::NeedText))).on_hover_text(t(T::WsInventHint)).clicked() {
+                        acts.push(GmAct::Invent(std::mem::take(&mut ws.order)));
+                    }
+                });
+                if !table.master_note.is_empty() {
+                    hint(ui, &table.master_note);
+                }
+            }
+            _ => {
+                hint(ui, t(T::WsSeatHint));
+                ui.horizontal(|row| {
+                    if row.add(button(t(T::WsWalk))).on_hover_text(t(T::WsWalkHint)).clicked() {
+                        *phase = Phase::Walking;
+                    }
+                    if row.add(button(t(T::WsGiveSeat))).on_hover_text(t(T::WsGiveSeatHint)).clicked() {
+                        acts.push(GmAct::Seat(false));
+                        *phase = Phase::Walking;
+                    }
+                });
             }
         }
     });
