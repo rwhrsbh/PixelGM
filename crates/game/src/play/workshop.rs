@@ -85,7 +85,15 @@ impl Default for Hit {
 }
 
 /// Kinds a thing can be, as the game knows them.
-const KINDS: [&str; 10] = ["weapon", "armor", "light", "potion", "food", "throwable", "key", "tool", "junk", "quest"];
+const KINDS: [&str; 11] = ["weapon", "armor", "shield", "light", "potion", "food", "throwable", "key", "tool", "junk", "quest"];
+
+/// What is dragged onto the map: a creature or a thing set down on the ground, a tile laid
+/// as the ground, or a thing for the bag left lying there.
+#[derive(Clone)]
+pub enum Dragged {
+    Thing(Entity),
+    Tile(String),
+}
 
 /// Something that can be done with a creature or a thing the master makes.
 #[derive(Clone, Default)]
@@ -174,6 +182,8 @@ pub struct Workshop {
     script_asking: bool,
     /// A creature or thing to be walked to the next cell clicked.
     carry: Option<String>,
+    /// A card being dragged from a palette or the library onto the map, with its picture.
+    pub dragging: Option<(Dragged, egui::TextureId)>,
     /// What can be done with what is made: a label, what happens, the steps; each with the
     /// form that adds its steps.
     deeds: Vec<Deed>,
@@ -270,6 +280,7 @@ impl Default for Workshop {
             script_words: String::new(),
             script_asking: false,
             carry: None,
+            dragging: None,
             deeds: Vec::new(),
             script_for: None,
             tool: MapTool::Brush,
@@ -490,8 +501,8 @@ fn art_pixels(art: &Art) -> crate::art::Pixels {
 }
 
 /// A card of the palette: the picture large, its name under it, outlined when chosen.
-fn card(ui: &mut Ui, picture: egui::TextureId, chosen: bool, name: &str, mark: &str, side: f32) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(side, side + 22.0), Sense::click());
+fn card(ui: &mut Ui, picture: egui::TextureId, chosen: bool, name: &str, mark: &str, side: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(side, side + 22.0), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     let back = if chosen { BRASS_LIGHT } else if response.hovered() { PARCHMENT_LIGHT } else { PARCHMENT_SHADE };
     painter.rect_filled(rect, 2.0, c(back));
@@ -506,7 +517,7 @@ fn card(ui: &mut Ui, picture: egui::TextureId, chosen: bool, name: &str, mark: &
     if !mark.is_empty() {
         painter.text(face.right_top() + vec2(-2.0, 2.0), egui::Align2::RIGHT_TOP, mark, egui::FontId::proportional(10.0), c(PARCHMENT_LIGHT));
     }
-    response.on_hover_text(format!("{name} {mark}")).clicked()
+    response.on_hover_text(format!("{name} {mark}"))
 }
 
 /// A tab of the editor's bar or a tool: lit while it is the one in use.
@@ -743,6 +754,18 @@ pub(super) fn workshop_ui(
         Mode::Library => library_room(ctx, ws, world, &shelf, &mut acts, &store, lang, top, screen),
         Mode::Rules => rules_room(ctx, ws, world, &mut table, &mut acts, lang, top, screen),
     }
+    // A card being dragged follows the mouse, faint, until it is let go.
+    if let Some((_, picture)) = ws.dragging.as_ref()
+        && let Some(at) = ctx.pointer_latest_pos()
+    {
+        let picture = *picture;
+        egui::Area::new(egui::Id::new("dragged_card")).order(egui::Order::Tooltip).interactable(false).fixed_pos(at - vec2(20.0, 20.0)).show(ctx, |ui| {
+            ui.add(egui::Image::new((picture, vec2(40.0, 40.0))).tint(egui::Color32::from_white_alpha(200)));
+        });
+    }
+    if ctx.input(|i| i.pointer.any_released()) && !ctx.input(|i| i.pointer.primary_down()) && ws.dragging.is_some() && ctx.pointer_latest_pos().is_none() {
+        ws.dragging = None;
+    }
     // The ring over what was clicked on the map, and the page opened from it.
     // Steps the AI wrote go where they were asked for: an action of what is made, or the
     // page of the ring.
@@ -799,14 +822,25 @@ fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, eg
                 ui.horizontal_wrapped(|row| {
                     for (n, entity) in ws.favorites.entities.clone().iter().enumerate().filter(|(_, e)| !e.item) {
                         let chosen = ws.placing.as_ref().is_some_and(|p| p.id == entity.id) && ws.tool == MapTool::Place;
-                        if card(row, favourite.entities[n], chosen, &entity.name, if entity.creature { "☺" } else { "▣" }, 48.0) {
+                        let pressed = card(row, favourite.entities[n], chosen, &entity.name, if entity.creature { "☺" } else { "▣" }, 48.0);
+                        if pressed.drag_started() {
+                            ws.dragging = Some((Dragged::Thing(entity.clone()), favourite.entities[n]));
+                        }
+                        if pressed.clicked() {
                             ws.placing = Some(entity.clone());
                             ws.tool = MapTool::Place;
                         }
                     }
                     for (n, art) in ws.favorites.arts.clone().iter().enumerate().filter(|(_, a)| a.tile) {
                         let id = world::build::slug(&art.id);
-                        if card(row, favourite.arts[n], ws.tile == id && matches!(ws.tool, MapTool::Brush | MapTool::Rect), &art.name, if art.walkable { "○" } else { "×" }, 48.0) {
+                        let pressed = card(row, favourite.arts[n], ws.tile == id && matches!(ws.tool, MapTool::Brush | MapTool::Rect), &art.name, if art.walkable { "○" } else { "×" }, 48.0);
+                        if pressed.drag_started() {
+                            if !tiles.iter().any(|(t, ..)| *t == id) {
+                                acts.push(GmAct::ImportArt(art.clone()));
+                            }
+                            ws.dragging = Some((Dragged::Tile(id.clone()), favourite.arts[n]));
+                        }
+                        if pressed.clicked() {
                             // A tile of another world comes into this one first.
                             if !tiles.iter().any(|(t, ..)| *t == id) {
                                 acts.push(GmAct::ImportArt(art.clone()));
@@ -823,7 +857,11 @@ fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, eg
             ui.horizontal_wrapped(|row| {
                 for (id, name, picture, walkable) in tiles {
                     let mark = if *walkable { "○" } else { "×" };
-                    if card(row, *picture, ws.tile == *id && matches!(ws.tool, MapTool::Brush | MapTool::Rect), name, mark, 48.0) {
+                    let pressed = card(row, *picture, ws.tile == *id && matches!(ws.tool, MapTool::Brush | MapTool::Rect), name, mark, 48.0);
+                    if pressed.drag_started() {
+                        ws.dragging = Some((Dragged::Tile(id.clone()), *picture));
+                    }
+                    if pressed.clicked() {
                         ws.tile = id.clone();
                         if !matches!(ws.tool, MapTool::Brush | MapTool::Rect) {
                             ws.tool = MapTool::Brush;
@@ -844,7 +882,11 @@ fn map_room(ctx: &egui::Context, ws: &mut Workshop, tiles: &[(String, String, eg
             ui.horizontal_wrapped(|row| {
                 for (n, entity) in ws.made.iter().enumerate().filter(|(_, e)| !e.item) {
                     let mark = if entity.creature { "☺" } else { "▣" };
-                    if card(row, made[n], ws.placing.as_ref().is_some_and(|p| p.id == entity.id) && ws.tool == MapTool::Place, &entity.name, mark, 48.0) {
+                    let pressed = card(row, made[n], ws.placing.as_ref().is_some_and(|p| p.id == entity.id) && ws.tool == MapTool::Place, &entity.name, mark, 48.0);
+                    if pressed.drag_started() {
+                        ws.dragging = Some((Dragged::Thing(entity.clone()), made[n]));
+                    }
+                    if pressed.clicked() {
                         ws.placing = Some(entity.clone());
                         ws.tool = MapTool::Place;
                     }
@@ -1266,7 +1308,7 @@ fn item_properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec
                 }
             });
         });
-        if matches!(ws.item_kind.as_str(), "weapon" | "armor") {
+        if matches!(ws.item_kind.as_str(), "weapon" | "armor" | "shield") {
             // What it works as by the rules: its own name and picture stay.
             let srd = rules::srd();
             let mut gear: Vec<(String, String)> = if ws.item_kind == "weapon" { srd.weapons.iter().map(|(i, w)| (i.clone(), w.name.clone())).collect() } else { srd.armors.iter().map(|(i, a)| (i.clone(), a.name.clone())).collect() };
@@ -1307,7 +1349,7 @@ fn item_properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec
     let ready = !ws.name.trim().is_empty() && ws.grid.iter().any(|i| *i != 0);
     let thing = {
         let mut draft = serde_json::json!({ "name": ws.name.trim(), "description": ws.description.trim(), "kind": ws.item_kind, "size": [ws.cells.0, ws.cells.1], "rows": ws.rows(), "heal": ws.heal.trim(), "damage": ws.damage.trim(), "price": ws.price, "rarity": ws.rarity });
-        if !ws.gear.is_empty() && matches!(ws.item_kind.as_str(), "weapon" | "armor") {
+        if !ws.gear.is_empty() && matches!(ws.item_kind.as_str(), "weapon" | "armor" | "shield") {
             draft["gear"] = ws.gear.clone().into();
             draft["bonus"] = ws.bonus.into();
         }
@@ -1472,7 +1514,11 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
                             }
                             let star = ws.favorites.entities.iter().any(|e| e.id == entity.id);
                             let mark = format!("{}{}", if star { "★" } else { "" }, if entity.creature { "☺" } else if entity.item { "♦" } else { "▣" });
-                            if card(row, pictures.entities[n], ws.picked == Some((true, n)), &entity.name, &mark, 60.0) {
+                            let pressed = card(row, pictures.entities[n], ws.picked == Some((true, n)), &entity.name, &mark, 60.0);
+                            if pressed.drag_started() {
+                                ws.dragging = Some((Dragged::Thing(entity.clone()), pictures.entities[n]));
+                            }
+                            if pressed.clicked() {
                                 ws.picked = Some((true, n));
                             }
                         }
@@ -1480,7 +1526,12 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, pictures:
                             for (n, art) in arts.iter().enumerate() {
                                 let star = ws.favorites.arts.iter().any(|a| a.id == art.id && a.tile == art.tile);
                                 let mark = format!("{}{}", if star { "★" } else { "" }, if art.tile { if art.walkable { "○" } else { "×" } } else { "☺" });
-                                if card(row, pictures.arts[n], ws.picked == Some((false, n)), &art.name, &mark, 60.0) {
+                                let pressed = card(row, pictures.arts[n], ws.picked == Some((false, n)), &art.name, &mark, 60.0);
+                                if pressed.drag_started() && art.tile {
+                                    acts.push(GmAct::ImportArt(art.clone()));
+                                    ws.dragging = Some((Dragged::Tile(world::build::slug(&art.id)), pictures.arts[n]));
+                                }
+                                if pressed.clicked() {
                                     ws.picked = Some((false, n));
                                 }
                             }
@@ -1673,6 +1724,7 @@ fn ring(ctx: &egui::Context, ws: &mut Workshop, world: &World, acts: &mut Vec<Gm
         items.push((T::WsSpawn.text(lang), Press::Form("spawn", vec![("cell", cell.clone())])));
         items.push((T::WsFromLibrary.text(lang), Press::Place));
         items.push((T::WsMark.text(lang), Press::Form("mark", vec![("cell", cell.clone())])));
+        items.push((T::WsDropHere.text(lang), Press::Form("drop", vec![("cell", cell.clone())])));
     }
     // The ring: the name in the middle, the presses around it.
     let radius = 78.0 + items.len() as f32 * 2.0;
@@ -1829,7 +1881,7 @@ fn run_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, table: &mut T
                 // The commonest changes a click away; every other in the list below.
                 hint(ui, t(T::WsChangeHint));
                 ui.horizontal_wrapped(|row| {
-                    for op in ["damage", "heal", "give", "gold", "xp", "check", "spawn", "fight", "time", "weather", "light", "shake"] {
+                    for op in ["damage", "heal", "give", "gold", "xp", "check", "spawn", "fight", "peace", "rest", "time", "weather", "light", "shake"] {
                         if let Some((n, entry)) = super::effects_ui::OPS.iter().enumerate().find(|(_, o)| o.op == op)
                             && row.add(button(entry.label.text(lang))).clicked()
                         {
@@ -2136,7 +2188,7 @@ pub(super) fn workshop_map(
     window: Single<&Window, With<bevy::window::PrimaryWindow>>,
     frame: Res<crate::view::View>,
 ) {
-    if *phase != Phase::Master || !matches!(ws.mode, Mode::Map | Mode::Run) {
+    if *phase != Phase::Master || (!matches!(ws.mode, Mode::Map | Mode::Run) && ws.dragging.is_none()) {
         return;
     }
     // Over the editor's windows the mouse is theirs, not the map's.
@@ -2152,6 +2204,30 @@ pub(super) fn workshop_map(
         let (cx, cy) = ((point.x / side).floor() as i32, (point.y / side).floor() as i32);
         (cx >= 0 && cy >= 0 && cx < w as i32 && cy < h as i32).then_some((cx as usize, cy as usize))
     });
+    // A card dragged from a palette or the library is set down where it is let go: over a
+    // window it is put back.
+    if ws.dragging.is_some() && mouse.just_released(MouseButton::Left) {
+        let Some((dragged, _)) = ws.dragging.take() else { return };
+        let Some(cell) = cell.filter(|_| !pointer.is_some_and(|at| ws.panels.iter().any(|rect| rect.contains(at)))) else { return };
+        let act = match dragged {
+            // On top of the ground: the tile under it stays as it is.
+            Dragged::Thing(entity) if entity.item => {
+                let mut effect = entity.spawn.clone();
+                effect["op"] = "drop".into();
+                effect["x"] = cell.0.into();
+                effect["y"] = cell.1.into();
+                effect["rows"] = serde_json::json!(entity.art.rows);
+                GmAct::Apply(Box::new(TurnDraft { effects: vec![effect], ..TurnDraft::default() }))
+            }
+            Dragged::Thing(entity) => GmAct::Place { entity: Box::new(entity), x: cell.0, y: cell.1 },
+            Dragged::Tile(tile) => GmAct::Apply(Box::new(TurnDraft { effects: vec![serde_json::json!({ "op": "tile", "x": cell.0, "y": cell.1, "tile": tile })], ..TurnDraft::default() })),
+        };
+        send(act, &session, &settings, &mut table);
+        return;
+    }
+    if ws.dragging.is_some() {
+        return;
+    }
     let Some(cell) = cell else {
         ws.hovered.clear();
         return;

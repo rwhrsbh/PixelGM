@@ -41,6 +41,9 @@ const EFFECTS: &str = r##"EFFECTS change the world. Each is an object with "op":
   {"op": "edit", "id": "…", "name": "…", "size": 2, "ac": 15, "hp": 40, "speed": 30, "xp": 200, "monster": "srd index", "blocking": true, "sprite": "…"} — a creature or thing here changes: only what is given (a beast grows, a guard is badly hurt for good, a door stops blocking)
   {"op": "action", "id": "…", "label": "what the players choose", "outcome": "what happens", "effects": [], "needs": "a thing's name", "remove": false} — something new can be done with a creature or thing here (a lever appears to pull, a statue to question); "remove": true takes it away
   {"op": "stash", "id": "chest, crate, body or merchant id", "name": "…", …as in "give"} — a thing goes into a container here (found when it is opened) or onto a merchant's shelf
+  {"op": "rest", "kind": "short|long"} — the party rests: a short rest spends hit dice, a long one is a night's sleep that heals everything
+  {"op": "peace"} — the fight here stops without a winner: a parley, a surrender, a truce; those who fought are no longer hostile
+  {"op": "drop", "x": 0, "y": 0, "name": "…", …as in "give"} — a thing is left lying on a cell, to be picked up
   {"op": "say", "id": "creature id", "text": "…"} — someone says a line aloud, in a bubble over them
   Every sight — "shake", "animate", "say" — takes "who": ["hero name", …] for only those heroes to see or feel it, or "x", "y" and "radius" (cells) for only those that near; with neither, everyone in this place. A whisper in a crowd, a tremor felt only in the cellar, a wink to one hero.
   {"op": "lines", "id": "creature id", "lines": ["…", "…"], "every": 20, "order": "in_turn|random"} — what someone keeps saying by themselves every so many seconds (a crier, a guard, a parrot); "lines": [] makes them quiet

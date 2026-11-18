@@ -275,7 +275,7 @@ pub fn harvest(world: &World) -> (Vec<Art>, Vec<Entity>) {
 
 /// Actions as a spawn writes them.
 fn actions_of(actions: &[crate::story::Action]) -> serde_json::Value {
-    serde_json::Value::Array(actions.iter().map(|a| serde_json::json!({ "label": a.label, "outcome": a.outcome, "effects": a.effects, "needs": a.needs, "spends": a.spends })).collect())
+    serde_json::Value::Array(actions.iter().map(|a| serde_json::json!({ "label": a.label, "outcome": a.outcome, "effects": a.effects, "needs": a.needs.clone().unwrap_or_default(), "spends": a.spends })).collect())
 }
 
 /// What every master has from the start: the tiles, pictures, creatures and things of the
@@ -299,10 +299,13 @@ mod harvest_tests {
         // A thing of the pack is put into another world with its picture.
         let draft: crate::WorldDraft = serde_json::from_str(&crate::fake::world("other")).unwrap();
         let mut w = crate::build_world(&draft, "other", "English").unwrap().0;
-        let thing = &entities[0];
+        // Every creature and thing of the pack goes in whole, with its actions.
         let (x, y) = w.player.cell();
-        w.place_entity(thing, x as usize + 2, y as usize);
-        assert!(w.here().creatures.iter().any(|c| c.name == thing.name) || w.here().props.iter().any(|p| p.name == thing.name));
+        for thing in entities.iter().filter(|e| !e.item) {
+            let notes = w.place_entity(thing, x as usize + 2, y as usize);
+            assert!(notes.iter().all(|n| !n.contains("could not be read")), "{}: {notes:?}", thing.name);
+            assert!(w.here().creatures.iter().any(|c| c.name == thing.name) || w.here().props.iter().any(|p| p.name == thing.name), "{}", thing.name);
+        }
     }
 }
 

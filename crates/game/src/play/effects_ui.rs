@@ -56,7 +56,7 @@ pub struct Op {
 }
 
 const MOTIONS: &[&str] = &["jump", "crouch", "sit", "lie", "fall", "shake", "spin", "strike", "dance", "wave", "nod", "bow", "cower", "stagger"];
-const KINDS: &[&str] = &["weapon", "armor", "light", "potion", "food", "throwable", "key", "tool", "junk", "quest"];
+const KINDS: &[&str] = &["weapon", "armor", "shield", "light", "potion", "food", "throwable", "key", "tool", "junk", "quest"];
 const MARKS: &[&str] = &["blood", "dung", "puddle", "scorch", "ash", "slime", "vomit", "wine", "paint", "rubble", "coins", "bones"];
 const MOODS: &[&str] = &["calm", "explore", "tense", "battle", "boss", "mystery", "horror", "sad", "tavern", "triumph", "dungeon"];
 const ATTITUDES: &[&str] = &["hostile", "neutral", "friendly"];
@@ -76,6 +76,9 @@ pub const OPS: &[Op] = &[
     Op { op: "heal", label: T::FxHeal, group: 0, fields: &[f("amount", T::FxHealAmount, Kind::Dice), f("id", T::FxHealId, Kind::Someone)] },
     Op { op: "give", label: T::FxGive, group: 0, fields: &[f("name", T::FxGiveName, Kind::Text), f("description", T::FxGiveDescription, Kind::Text), f("kind", T::FxGiveKind, Kind::Pick(KINDS)), f("heal", T::FxGiveHeal, Kind::Dice), f("damage", T::FxGiveDamage, Kind::Dice), f("to", T::FxGiveTo, Kind::Hero)] },
     Op { op: "stash", label: T::FxStash, group: 1, fields: &[f("id", T::FxStashId, Kind::Thing), f("name", T::FxStashName, Kind::Text), f("description", T::FxStashDescription, Kind::Text), f("kind", T::FxStashKind, Kind::Pick(KINDS)), f("heal", T::FxStashHeal, Kind::Dice), f("damage", T::FxStashDamage, Kind::Dice), f("price", T::FxStashPrice, Kind::Number)] },
+    Op { op: "rest", label: T::FxRest, group: 0, fields: &[f("kind", T::FxRestKind, Kind::Pick(&["long", "short"]))] },
+    Op { op: "peace", label: T::FxPeace, group: 1, fields: &[] },
+    Op { op: "drop", label: T::FxDrop, group: 2, fields: &[f("cell", T::FxDropCell, Kind::Cell), f("name", T::FxDropName, Kind::Text), f("description", T::FxDropDescription, Kind::Text), f("kind", T::FxDropKind, Kind::Pick(KINDS)), f("heal", T::FxDropHeal, Kind::Dice), f("damage", T::FxDropDamage, Kind::Dice), f("price", T::FxDropPrice, Kind::Number)] },
     Op { op: "hand", label: T::FxHand, group: 0, fields: &[f("name", T::FxHandName, Kind::Text), f("to", T::FxHandTo, Kind::Hero)] },
     Op { op: "take", label: T::FxTake, group: 0, fields: &[f("name", T::FxTakeName, Kind::Text)] },
     Op { op: "gold", label: T::FxGold, group: 0, fields: &[f("amount", T::FxGoldAmount, Kind::Number), f("to", T::FxGoldTo, Kind::Hero)] },
@@ -489,7 +492,7 @@ mod tests {
     fn every_op_the_master_offers_is_one_the_game_reads_or_will() {
         // Each op in the list is told to the model too, so both masters can use it.
         for op in OPS {
-            assert!(!op.fields.is_empty() || op.op == "xp", "{}", op.op);
+            assert!(!op.fields.is_empty() || matches!(op.op, "xp" | "peace"), "{}", op.op);
         }
     }
 }

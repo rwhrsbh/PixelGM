@@ -500,6 +500,18 @@ texts! {
     RedrawHere: "Перерисовать место", "Redraw the place";
     ArtSaved: "Готово, можно ставить:", "Done, ready to use:";
     WsRun: "Ведение игры", "Running the game";
+    WsDropHere: "Вещь на землю", "A thing here";
+    FxRest: "Отдых отряда", "The party rests";
+    FxRestKind: "Какой", "Which";
+    FxPeace: "Прекратить бой миром", "End the fight in peace";
+    FxDrop: "Положить вещь на землю", "Leave a thing on the ground";
+    FxDropCell: "Клетка", "Cell";
+    FxDropName: "Название", "Name";
+    FxDropDescription: "Описание", "Description";
+    FxDropKind: "Вид", "Kind";
+    FxDropHeal: "Лечит", "Heals";
+    FxDropDamage: "Урон", "Damage";
+    FxDropPrice: "Цена", "Price";
     WsThings: "Вещи", "Things";
     WsNeedItemName: "Нужно имя и рисунок", "A name and a picture are needed";
     WsSaveItemHint: "Сохранить вещь в библиотеку навсегда: выдавать и класть в сундуки в любом мире", "Keep the thing in the library for good: give it or put it in chests in any world";

@@ -4032,6 +4032,7 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             if !notes.is_empty() {
                 tell_master(desk, player, notes.join("; "));
             }
+            autosave(desk.store, desk.game);
             desk.redraw.0 = true;
         }
         GmAct::SetWalkable { tile, walkable } => {

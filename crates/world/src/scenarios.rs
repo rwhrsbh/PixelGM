@@ -465,8 +465,10 @@ fn after_the_story_is_written_up_the_master_still_sees_where_everyone_stands_and
         w.story.say(crate::Speaker::Master, &format!("Stone {n} skips and sinks."));
     }
     w.story.say(crate::Speaker::Player, "Brak: I ask Bob where he learned that.");
-    let base = crate::prompt::tokens(&crate::prompt::play_prompt(&w)) + crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
-    write_up(&mut w, base / 3 + 3_000);
+    // A room the rules fit in with some to spare, but not a third of the long story.
+    let rules = crate::prompt::tokens(&crate::prompt::play_prompt(&w));
+    let story = crate::prompt::tokens(&crate::prompt::turn(&w, "", None));
+    write_up(&mut w, rules + story / 3 + 3_000);
     let asked = crate::prompt::turn(&w, "Brak: I look at the water in front of me", None);
     for wanted in [
         "The party stands at (3, 8)",
@@ -723,4 +725,20 @@ fn a_boss_is_set_down_where_all_its_cells_are_free() {
             assert!(tiles.get(id).is_some_and(|t| t.walkable), "({x}, {y}) under the ogre is {id}");
         }
     }
+}
+
+/// The master lets the party sleep, stops a fight with a parley, and leaves a thing on the ground.
+#[test]
+fn the_master_rests_the_party_makes_peace_and_drops_a_thing() {
+    let mut w = world_in(&lake(), (2, 2), serde_json::json!([]));
+    w.party[0].hp = 3;
+    w.apply(&steps(serde_json::json!([{ "op": "rest", "kind": "long" }])), None);
+    assert_eq!(w.party[0].hp, w.party[0].max_hp);
+    w.apply(&steps(serde_json::json!([{ "op": "spawn", "kind": "creature", "id": "bandit", "name": "Bandit", "x": 4, "y": 2, "monster": "bandit", "attitude": "hostile", "count": 1 }, { "op": "fight", "with": ["bandit"] }])), None);
+    assert!(w.fight_here());
+    w.apply(&steps(serde_json::json!([{ "op": "peace" }])), None);
+    assert!(!w.fight_here());
+    assert!(w.locations["lake"].creatures.iter().all(|c| c.attitude != crate::Attitude::Hostile));
+    w.apply(&steps(serde_json::json!([{ "op": "drop", "x": 6, "y": 2, "name": "Silver ring", "kind": "junk", "price": 40 }])), None);
+    assert!(w.locations["lake"].items.iter().any(|l| l.item.name == "Silver ring" && (l.x, l.y) == (6, 2)));
 }

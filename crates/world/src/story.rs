@@ -373,6 +373,26 @@ pub enum Effect {
         #[serde(default)]
         remove: bool,
     },
+    /// The party rests: "short" spends hit dice, "long" is a night's sleep.
+    Rest {
+        #[serde(default)]
+        kind: String,
+    },
+    /// The fight here stops without a winner: those who fought stand down and are no longer
+    /// hostile (a parley, a surrender, a truce).
+    Peace,
+    /// A thing is left lying on a cell of the ground, to be picked up.
+    Drop {
+        #[serde(default, deserialize_with = "lenient_opt")]
+        x: Option<i64>,
+        #[serde(default, deserialize_with = "lenient_opt")]
+        y: Option<i64>,
+        name: String,
+        #[serde(default)]
+        description: String,
+        #[serde(flatten)]
+        traits: ItemTraits,
+    },
     /// A thing is put into a chest, a crate or a body here, or into a merchant's wares.
     Stash {
         id: String,
@@ -554,14 +574,19 @@ pub struct Action {
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct ActionDraft {
+    #[serde(deserialize_with = "lenient_text")]
     pub label: String,
+    #[serde(deserialize_with = "lenient_text")]
     pub outcome: String,
     pub effects: Vec<Value>,
+    // Left empty, as null, by some masters and by older libraries: read as nothing.
+    #[serde(deserialize_with = "lenient_text")]
     pub near: String,
+    #[serde(deserialize_with = "lenient_text")]
     pub needs: String,
     pub spends: bool,
     /// The character it is offered to.
-    #[serde(rename = "for")]
+    #[serde(rename = "for", deserialize_with = "lenient_text")]
     pub for_hero: String,
 }
 
@@ -1190,6 +1215,28 @@ impl World {
                     self.deed(hero, &mut Rng::from_clock());
                     continue;
                 }
+                Effect::Rest { kind } => {
+                    if kind.trim() == "short" {
+                        let mut rng = Rng::from_clock();
+                        for h in present.clone() {
+                            self.party[h].short_rest(&mut rng);
+                        }
+                    } else {
+                        self.long_rest();
+                    }
+                    continue;
+                }
+                Effect::Peace => {
+                    if self.fight_here() {
+                        self.end_fight();
+                    }
+                    if let Some(place) = self.locations.get_mut(&here) {
+                        for c in place.creatures.iter_mut().filter(|c| c.attitude == Attitude::Hostile) {
+                            c.attitude = Attitude::Neutral;
+                        }
+                    }
+                    continue;
+                }
                 Effect::Revive { hero } => {
                     if !self.revive(hero) {
                         notes.push(format!("revive: nobody dead is called '{hero}'"));
@@ -1567,6 +1614,14 @@ impl World {
                         None => notes.push(format!("action: nothing called '{id}' is here")),
                     }
                 }
+                Effect::Drop { x, y, name, description, traits } => {
+                    let Some(item) = (ThingDraft { name: name.clone(), description: description.clone(), traits: traits.clone() }).item() else { continue };
+                    let (cx, cy) = match (x, y) {
+                        (Some(x), Some(y)) => clamp_cell(*x, *y),
+                        _ => party_cell,
+                    };
+                    location.items.push(crate::model::Lying { x: cx, y: cy, item });
+                }
                 Effect::Stash { id, name, description, traits } => {
                     let id = resolve(id);
                     let Some(item) = (ThingDraft { name: name.clone(), description: description.clone(), traits: traits.clone() }).item() else { continue };
@@ -1598,7 +1653,7 @@ impl World {
                         None => notes.push(format!("lines: no creature called '{id}' is here")),
                     }
                 }
-                Effect::Kill { .. } | Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight { .. } | Effect::Deed { .. } | Effect::Revive { .. } => {}
+                Effect::Kill { .. } | Effect::Check { .. } | Effect::Damage { .. } | Effect::Heal { .. } | Effect::Xp { .. } | Effect::Fight { .. } | Effect::Deed { .. } | Effect::Revive { .. } | Effect::Rest { .. } | Effect::Peace => {}
                 Effect::Wait { .. } | Effect::Set { .. } | Effect::Add { .. } | Effect::If { .. } | Effect::Random { .. } | Effect::Repeat { .. } | Effect::Script { .. } | Effect::Define { .. } => {}
             }
         }
