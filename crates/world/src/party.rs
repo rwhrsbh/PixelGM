@@ -341,7 +341,9 @@ impl World {
     pub fn combatant_for(&self, creature: &Creature) -> Combatant {
         let at = (creature.x as i32, creature.y as i32);
         if let Some(monster) = creature.monster.as_deref().and_then(|m| srd().monsters.get(m)) {
-            return Combatant::monster(monster, &creature.id, &creature.name, at);
+            let mut fighter = Combatant::monster(monster, &creature.id, &creature.name, at);
+            fighter.size = creature.size.max(1);
+            return fighter;
         }
         let level = self.party_level() as i32;
         let fallback = Stats { ac: 12, hp: 6 + 5 * level, speed: 30, attacks: vec![StatAttack { name: "Attack".into(), bonus: 3 + level / 2, damage: format!("1d6+{}", 1 + level / 2), range: 5 }], xp: 50 * level as u32 };
@@ -372,9 +374,11 @@ impl World {
             multiattack: Vec::new(),
             challenge: 0.0,
             xp: stats.xp.min(50_000),
-            size: 1,
+            size: creature.size.max(1) as u32,
         };
-        Combatant::monster(&monster, &creature.id, &creature.name, at)
+        let mut fighter = Combatant::monster(&monster, &creature.id, &creature.name, at);
+        fighter.size = creature.size.max(1);
+        fighter
     }
 
     /// Rolls the check that is waiting. The party member with the best bonus makes the

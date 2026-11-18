@@ -122,6 +122,13 @@ pub struct Combatant {
     pub dead: bool,
     /// Dying heroes who rolled three successes: down, but no longer rolling.
     pub stable: bool,
+    /// Cells across and down it takes, from its own cell to the right and down.
+    #[serde(default = "one_cell")]
+    pub size: u8,
+}
+
+fn one_cell() -> u8 {
+    1
 }
 
 impl Combatant {
@@ -151,6 +158,7 @@ impl Combatant {
             death: DeathSaves::default(),
             dead: false,
             stable: false,
+            size: 1,
         }
     }
 
@@ -280,6 +288,21 @@ pub struct Encounter {
 /// Distance in cells, a diagonal step counting as one.
 pub fn distance(a: Cell, b: Cell) -> u32 {
     (a.0 - b.0).unsigned_abs().max((a.1 - b.1).unsigned_abs())
+}
+
+/// Distance from a block of `size` cells whose top left is `at` to a cell: from its nearest
+/// cell. A giant three cells wide is reached by striking any of them.
+pub fn block_distance(at: Cell, size: u8, cell: Cell) -> u32 {
+    let s = size.max(1) as i32 - 1;
+    let dx = if cell.0 < at.0 { at.0 - cell.0 } else if cell.0 > at.0 + s { cell.0 - at.0 - s } else { 0 };
+    let dy = if cell.1 < at.1 { at.1 - cell.1 } else if cell.1 > at.1 + s { cell.1 - at.1 - s } else { 0 };
+    dx.unsigned_abs().max(dy.unsigned_abs())
+}
+
+/// Distance between two fighters, from the nearest cell of one to the nearest of the other.
+pub fn gap(a: &Combatant, b: &Combatant) -> u32 {
+    let s = a.size.max(1) as i32;
+    (0..s).flat_map(|dx| (0..s).map(move |dy| (a.x + dx, a.y + dy))).map(|cell| block_distance(b.at(), b.size, cell)).min().unwrap_or(0)
 }
 
 const STEPS: [Cell; 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
@@ -433,7 +456,7 @@ impl Encounter {
                 let watchers: Vec<usize> = (0..self.combatants.len())
                     .filter(|i| {
                         let w = &self.combatants[*i];
-                        w.side != self.combatants[me].side && w.standing() && w.reaction_left && distance(w.at(), from) <= 1 && distance(w.at(), step) > 1
+                        w.side != self.combatants[me].side && w.standing() && w.reaction_left && block_distance(w.at(), w.size, from) <= 1 && block_distance(w.at(), w.size, step) > 1
                     })
                     .collect();
                 for watcher in watchers {
@@ -497,10 +520,9 @@ impl Encounter {
             events.extend(self.combatants[target].hurt(damage));
             return events;
         }
-        let (from, to) = (self.combatants[attacker].at(), self.combatants[target].at());
-        let far = distance(from, to);
+        let far = gap(&self.combatants[attacker], &self.combatants[target]);
         let ranged = strike.range > 1;
-        let crowded = ranged && self.combatants.iter().any(|c| c.side != self.combatants[attacker].side && c.standing() && distance(c.at(), from) <= 1);
+        let crowded = ranged && self.combatants.iter().any(|c| c.side != self.combatants[attacker].side && c.standing() && gap(c, &self.combatants[attacker]) <= 1);
         let helpless = self.combatants[target].hp <= 0;
         let disadvantage = far > strike.range || crowded || self.combatants[target].dodging || (helpless && far > 1);
         let advantage = helpless && far <= 1;
@@ -515,7 +537,7 @@ impl Encounter {
 
     /// Whether the actor could use `strike` on `target` from where it stands.
     pub fn in_range(&self, strike: &Strike, target: usize) -> bool {
-        distance(self.actor().at(), self.combatants[target].at()) <= strike.long_range.max(strike.range)
+        gap(self.actor(), &self.combatants[target]) <= strike.long_range.max(strike.range)
     }
 
     /// The Attack action: every strike of the actor's routine against `target`, stopping
@@ -663,16 +685,19 @@ impl Encounter {
         let me = self.actor_index();
         let mut events = Vec::new();
         let from = self.combatants[me].at();
-        let target = (0..self.combatants.len()).filter(|i| self.combatants[*i].side != self.combatants[me].side && self.combatants[*i].standing()).min_by_key(|i| distance(self.combatants[*i].at(), from));
+        let target = (0..self.combatants.len()).filter(|i| self.combatants[*i].side != self.combatants[me].side && self.combatants[*i].standing()).min_by_key(|i| gap(&self.combatants[*i], &self.combatants[me]));
         let Some(target) = target else { return events };
         let Some(&first) = self.combatants[me].routine.first() else { return events };
         let range = self.combatants[me].strikes[first].range;
-        if distance(from, self.combatants[target].at()) > range {
+        if gap(&self.combatants[me], &self.combatants[target]) > range {
             let goal = self.combatants[target].at();
+            let size = self.combatants[me].size;
+            // From a cell, how far the target is for something this big standing there.
+            let reach_from = |cell: Cell| block_distance(cell, size, goal);
             // The reachable cell closest to the target; among equals, the shortest walk.
-            let best = self.reach(blocked).into_iter().min_by_key(|p| (distance(*p.last().unwrap(), goal).max(range), p.len()));
+            let best = self.reach(blocked).into_iter().min_by_key(|p| (reach_from(*p.last().unwrap()).max(range), p.len()));
             if let Some(path) = best
-                && distance(*path.last().unwrap(), goal) < distance(from, goal)
+                && reach_from(*path.last().unwrap()) < reach_from(from)
             {
                 events.extend(self.move_to(*path.last().unwrap(), blocked));
             }
@@ -710,6 +735,16 @@ mod tests {
         e.turn = 0;
         e.begin_turn();
         e
+    }
+
+    #[test]
+    fn a_giant_is_struck_at_any_of_its_cells() {
+        // A block three cells across at (5, 5) covers (5..=7, 5..=7).
+        assert_eq!(block_distance((5, 5), 3, (8, 6)), 1);
+        assert_eq!(block_distance((5, 5), 3, (6, 6)), 0);
+        assert_eq!(block_distance((5, 5), 3, (4, 4)), 1);
+        assert_eq!(block_distance((5, 5), 3, (10, 6)), 3);
+        assert_eq!(block_distance((5, 5), 1, (8, 6)), 3);
     }
 
     #[test]
