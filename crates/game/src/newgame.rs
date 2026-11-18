@@ -62,10 +62,24 @@ fn form(ui: &mut Ui, making: &mut Making, can_ask: bool, lang: Lang) -> Option<F
     let title = format!("{} · {}/{STEPS} {}", t(T::NewWorldTitle), making.step + 1, steps[making.step.min(STEPS - 1)]);
     let sheet = Sheet { id: "new_world", title: &title, about: "", max: vec2(460.0, 230.0), top: 24.0, fixed: true };
     let last = making.step + 1 == STEPS;
+    let first = making.step == 0;
+    let mut jump: Option<usize> = None;
     kit::sheet(
         ui,
         sheet,
-        |ui| match making.step {
+        |ui| {
+            // Every step at hand as a tab: the settings of the game and its rules are a click
+            // away, not hidden behind Next.
+            ui.horizontal(|row| {
+                for (n, name) in steps.iter().enumerate() {
+                    let tab = button(format!("{}. {name}", n + 1));
+                    if row.add(if n == making.step { tab.primary() } else { tab }).clicked() {
+                        jump = Some(n);
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            match making.step {
             0 => {
                 ui.label(t(T::NewWorldAsk));
                 let field = ui.add(egui::TextEdit::multiline(&mut making.request).desired_rows(5).desired_width(f32::INFINITY).char_limit(WISH_MOST).hint_text("…"));
@@ -126,9 +140,10 @@ fn form(ui: &mut Ui, making: &mut Making, can_ask: bool, lang: Lang) -> Option<F
                     warning(ui, t(T::NeedKey));
                 }
             }
+            }
         },
         |footer| {
-            let back = if making.step == 0 { t(T::NwCancel) } else { t(T::Back) };
+            let back = if first { t(T::NwCancel) } else { t(T::Back) };
             if footer.add(button(back).key("Esc")).clicked() {
                 act = Some(FormAct::Back);
             }
@@ -143,6 +158,9 @@ fn form(ui: &mut Ui, making: &mut Making, can_ask: bool, lang: Lang) -> Option<F
             }
         },
     );
+    if let Some(n) = jump {
+        making.step = n;
+    }
     if act.is_none() && kit::back_pressed(ui) {
         act = Some(FormAct::Back);
     }
