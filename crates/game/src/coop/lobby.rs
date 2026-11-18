@@ -401,8 +401,10 @@ fn screen(
 
     // The table's talk, in the bottom right corner as in every game: what was said above,
     // the line to write in below.
-    let corner = ctx.content_rect();
-    egui::Area::new(egui::Id::new("lobby_talk")).order(egui::Order::Middle).anchor(egui::Align2::RIGHT_BOTTOM, vec2(-(corner.width() * 0.5 - 340.0).max(8.0) - 22.0, -40.0)).show(ctx, |ui| {
+    // Inside the sheet, above its buttons, on any screen.
+    let paper = kit::sheet_rect(ctx, "lobby").unwrap_or_else(|| crate::ui::kit::stage(ctx));
+    let talk_at = egui::pos2(paper.right() - 14.0, paper.bottom() - 36.0);
+    egui::Area::new(egui::Id::new("lobby_talk")).order(egui::Order::Middle).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(talk_at).show(ctx, |ui| {
         egui::Frame::new().fill(c(PARCHMENT_SHADE)).stroke(Stroke::new(1.0, c(BRASS_DARK))).inner_margin(6.0).show(ui, |ui| {
             ui.set_width(300.0);
             ui.label(RichText::new(t(T::TalkTitle)).color(c(INK)).strong());
@@ -426,8 +428,8 @@ fn screen(
     if lobby.choosing {
         let mut close = false;
         // A sheet of the game's own over the lobby, as every other choice is made.
-        egui::Area::new(egui::Id::new("begin")).order(egui::Order::Foreground).fixed_pos(ctx.content_rect().min).show(ctx, |ui| {
-            ui.set_min_size(ctx.content_rect().size());
+        egui::Area::new(egui::Id::new("begin")).order(egui::Order::Foreground).fixed_pos(crate::ui::kit::stage(ctx).min).show(ctx, |ui| {
+            ui.set_min_size(crate::ui::kit::stage(ctx).size());
             let paper = kit::Sheet { id: "begin", title: t(T::Begin), about: "", max: vec2(330.0, 140.0), top: 150.0, fixed: false };
             kit::sheet(
                 ui,
@@ -459,7 +461,7 @@ fn screen(
     // Friends asked in through Steam, one by one, or through Steam's own window.
     if lobby.inviting {
         let mut close = false;
-        egui::Window::new(t(T::Invite)).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+        egui::Window::new(t(T::Invite)).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(crate::ui::kit::stage(ctx).center()).show(ctx, |ui| {
             if link.steam.is_some() && steam_table(&session) {
                 hint(ui, t(T::SteamAsk));
                 egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
@@ -603,7 +605,7 @@ fn rejoin_strip(mut egui: bevy_egui::EguiContexts, mut table: ResMut<Table>, set
     }
     let mut alone = false;
     let mut menu = false;
-    egui::Area::new(egui::Id::new("rejoin")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, vec2(0.0, 6.0)).show(ctx, |ui| {
+    egui::Area::new(egui::Id::new("rejoin")).order(egui::Order::Foreground).pivot(egui::Align2::CENTER_TOP).fixed_pos(crate::ui::kit::stage(ctx).center_top() + vec2(0.0, 6.0)).show(ctx, |ui| {
         egui::Frame::new().fill(c(PARCHMENT)).stroke(Stroke::new(1.0, c(WAX))).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
             ui.horizontal(|row| {
                 match &table.rejoin {

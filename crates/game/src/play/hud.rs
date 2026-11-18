@@ -136,7 +136,7 @@ pub fn hud(
     if !kit::ready(ctx) {
         return;
     }
-    let screen = ctx.content_rect();
+    let screen = crate::ui::kit::stage(ctx);
     let party = crate::view::COLUMN * crate::screen::UI_PIXEL;
     let strip = HUD_HEIGHT * crate::screen::UI_PIXEL;
     let map = egui::Rect::from_min_max(screen.min, Pos2::new(screen.right() - party, screen.bottom() - strip - story.0));
@@ -182,7 +182,7 @@ pub fn hud(
         Phase::Bag => crate::bag_ui::draw::panels(screen, false).0.left() - 6.0,
         _ => map.right(),
     };
-    egui::Area::new(egui::Id::new("hud_notices")).order(egui::Order::Foreground).anchor(Align2::RIGHT_TOP, vec2(-(screen.right() - right) - 4.0, map.top() + 4.0)).show(ctx, |ui| {
+    egui::Area::new(egui::Id::new("hud_notices")).order(egui::Order::Foreground).pivot(Align2::RIGHT_TOP).fixed_pos(egui::pos2(right - 4.0, map.top() + 4.0)).show(ctx, |ui| {
         ui.set_max_width(NOTICE_WIDTH.min(map.width() * 0.45));
         ui.spacing_mut().item_spacing.y = 2.0;
         for (n, notice) in notices.0.iter().take(SHOWN_AT_ONCE).enumerate() {
@@ -217,8 +217,12 @@ pub fn hud(
         (None, None, None) if seat_state(world, &session, &me) == SeatState::Mine => format!("{}{}", t(T::HudHint), t(T::HudMaster)),
         (None, None, None) => t(T::HudHint).to_string(),
     };
-    egui::Area::new(egui::Id::new("hud_keys")).order(egui::Order::Background).anchor(Align2::RIGHT_BOTTOM, vec2(-6.0, -(strip - 9.0) / 2.0)).interactable(false).show(ctx, |ui| {
-        ui.label(RichText::new(hint).color(c(PARCHMENT_SHADE)));
+    // One line, never wrapped word by word into a column: what does not fit the strip beside
+    // the keys at hand is cut with an ellipsis, and shown whole on hover.
+    let room = (crate::ui::kit::stage(ctx).width() * 0.5).max(120.0);
+    egui::Area::new(egui::Id::new("hud_keys")).order(egui::Order::Background).pivot(Align2::RIGHT_BOTTOM).fixed_pos(crate::ui::kit::stage(ctx).right_bottom() + vec2(-6.0, -(strip - 9.0) / 2.0)).show(ctx, |ui| {
+        ui.set_max_width(room);
+        ui.add(egui::Label::new(RichText::new(&hint).color(c(PARCHMENT_SHADE))).wrap_mode(egui::TextWrapMode::Truncate)).on_hover_text(hint.as_str());
     });
     let _ = FADED;
 }

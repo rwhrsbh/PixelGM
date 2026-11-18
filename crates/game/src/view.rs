@@ -37,6 +37,12 @@ impl Default for View {
 }
 
 impl View {
+    /// How tall, in units of the interface, the panel under the map is kept: it does not
+    /// shrink back at once, and what is drawn there fills all of it.
+    pub fn panel(&self) -> f32 {
+        ((self.bottom - HUD_HEIGHT) * UI_PIXEL).max(0.0)
+    }
+
     /// The size of the part of the canvas the map is seen through.
     pub fn region(&self) -> Vec2 {
         Vec2::new(CANVAS.x as f32 - COLUMN * UI_PIXEL, CANVAS.y as f32 - self.bottom * UI_PIXEL)
@@ -76,13 +82,28 @@ pub struct Slot;
 #[derive(Resource, Default)]
 pub struct StoryPanel(pub f32);
 
-fn measure(mut view: ResMut<View>, slots: Query<&ComputedNode, With<Slot>>, story: Res<StoryPanel>) {
+/// How long the panel under the map must stay lower before the map takes the room back.
+const SHRINK_AFTER: f32 = 2.5;
+
+fn measure(time: Res<Time>, mut view: ResMut<View>, slots: Query<&ComputedNode, With<Slot>>, story: Res<StoryPanel>, mut lower_for: Local<f32>) {
     let tallest = slots.iter().map(|node| node.size().y * node.inverse_scale_factor()).fold(0.0f32, f32::max);
     // The panel is laid out in units, a unit being half a pixel of the old interface.
     let tallest = tallest.max(story.0 / UI_PIXEL);
     let bottom = HUD_HEIGHT + tallest.round();
-    if view.bottom != bottom {
+    // The panel grows at once, so that nothing is hidden under it; it gives room back only
+    // once it has stayed lower a while, so that a line coming and going (a fight's log, a
+    // telling typed out) does not make the map jump each time.
+    if bottom > view.bottom {
         view.bottom = bottom;
+        *lower_for = 0.0;
+    } else if bottom < view.bottom {
+        *lower_for += time.delta_secs();
+        if *lower_for >= SHRINK_AFTER {
+            view.bottom = bottom;
+            *lower_for = 0.0;
+        }
+    } else {
+        *lower_for = 0.0;
     }
 }
 

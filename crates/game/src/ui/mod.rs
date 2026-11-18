@@ -51,10 +51,17 @@ fn dress(mut egui: EguiContexts, settings: Res<Settings>, window: Single<&Window
         *dressed = true;
     }
     steering(ctx);
-    let zoom = theme::zoom(window.physical_height(), settings.screen, settings.ui_size) / window.scale_factor();
+    // The interface is drawn on the very part of the window the game's picture takes, at
+    // the picture's own scale: on a screen that is not 16:9 the two stay one, with the
+    // bars outside both.
+    let (scale, position, size) = crate::screen::fit(window.physical_size());
+    let physical = scale * theme::size_ratio(settings.ui_size);
+    let zoom = physical / window.scale_factor();
     if (ctx.zoom_factor() - zoom).abs() > f32::EPSILON {
         ctx.set_zoom_factor(zoom);
     }
+    let stage = egui::Rect::from_min_size(egui::pos2(position.x as f32, position.y as f32) / physical, egui::vec2(size.x as f32, size.y as f32) / physical);
+    kit::set_stage(ctx, stage);
 }
 
 /// Whether the keyboard or a pad is steering: arrows and Tab move the focus, and only then

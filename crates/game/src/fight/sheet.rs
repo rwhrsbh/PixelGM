@@ -36,6 +36,7 @@ pub fn sheet(
     (phase, game, view, lang, session, settings): (Res<Phase>, Res<Game>, Res<FightView>, Res<Lang>, Res<Session>, Res<Settings>),
     table: Res<crate::coop::Table>,
     mut slot: ResMut<crate::view::StoryPanel>,
+    camera: Res<crate::view::View>,
     mut field: ResMut<StuntField>,
     mut was_writing: Local<bool>,
     mut needed: Local<f32>,
@@ -58,7 +59,7 @@ pub fn sheet(
     if slot.0 != height {
         slot.0 = height;
     }
-    let map = Rect::from_min_max(screen.min, Pos2::new(screen.right() - PARTY, screen.bottom() - HUD - height));
+    let map = Rect::from_min_max(screen.min, Pos2::new(screen.right() - PARTY, screen.bottom() - HUD - height.max(camera.panel())));
     let rect = Rect::from_min_max(Pos2::new(screen.left(), map.bottom()), Pos2::new(map.right(), screen.bottom() - HUD));
     let fight = world.fight.as_ref();
 
