@@ -500,6 +500,8 @@ texts! {
     RedrawHere: "Перерисовать место", "Redraw the place";
     ArtSaved: "Готово, можно ставить:", "Done, ready to use:";
     WsRun: "Ведение игры", "Running the game";
+    WsSize: "Размер", "Size";
+    WsSizeHint: "клеток на карте: 3 — огромный босс", "cells on the map: 3 for a huge boss";
     WsGroundAction: "Действие этой земли", "An action of this ground";
     WsGroundDeeds: "Что можно делать с этой землёй", "What can be done with this ground";
     WsGroundDeedsHint: "Задаётся один раз — и работает у каждой такой клетки мира: у любого дерева, у любой воды.", "Set once, it works at every such cell of the world: any tree, any water.";

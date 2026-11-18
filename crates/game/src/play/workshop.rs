@@ -208,6 +208,8 @@ pub struct Workshop {
     /// as many cells as it takes.
     gw: usize,
     gh: usize,
+    /// Cells across and down a creature or an object takes on the map.
+    size: u8,
     /// A thing for the bag: its cells across and down, and what it is.
     cells: (usize, usize),
     item_kind: String,
@@ -301,6 +303,7 @@ impl Default for Workshop {
             gw: SIDE,
             gh: SIDE,
             cells: (1, 1),
+            size: 1,
             item_kind: "weapon".into(),
             gear: String::new(),
             heal: String::new(),
@@ -395,10 +398,13 @@ impl Workshop {
                 if self.merchant {
                     spawn["shop"] = self.wares.iter().filter(|w| !w.name.trim().is_empty()).map(ware).collect::<Vec<_>>().into();
                 }
+                spawn["actions"] = self.deeds.iter().filter(|d| !d.label.trim().is_empty()).map(|d| serde_json::json!({ "label": d.label.trim(), "outcome": d.outcome.trim(), "needs": d.needs.trim(), "effects": d.steps })).collect::<Vec<_>>().into();
+                spawn["size"] = self.size.into();
             }
             MakeKind::Object => {
                 spawn["blocking"] = self.blocking.into();
                 spawn["actions"] = self.deeds.iter().filter(|d| !d.label.trim().is_empty()).map(|d| serde_json::json!({ "label": d.label.trim(), "outcome": d.outcome.trim(), "needs": d.needs.trim(), "effects": d.steps })).collect::<Vec<_>>().into();
+                spawn["size"] = self.size.into();
                 if self.chest {
                     spawn["contents"] = self.contents.iter().filter(|w| !w.name.trim().is_empty()).map(ware).collect::<Vec<_>>().into();
                     spawn["lock"] = self.lock.into();
@@ -449,10 +455,13 @@ impl Workshop {
         };
         self.book = s["monster"].as_str().unwrap_or("").to_string();
         let n = |v: &serde_json::Value| v.as_i64().unwrap_or(0);
-        self.ac = n(&s["stats"]["ac"]) as i32;
-        self.hp = n(&s["stats"]["hp"]) as i32;
-        self.speed = n(&s["stats"]["speed"]) as u32;
-        self.xp = n(&s["stats"]["xp"]) as u32;
+        // A creature that came with no numbers of its own gets the ordinary ones to start from.
+        let fresh = Workshop::default();
+        let or = |v: i64, d: i64| if v > 0 { v } else { d };
+        self.ac = or(n(&s["stats"]["ac"]), fresh.ac as i64) as i32;
+        self.hp = or(n(&s["stats"]["hp"]), fresh.hp as i64) as i32;
+        self.speed = or(n(&s["stats"]["speed"]), fresh.speed as i64) as u32;
+        self.xp = or(n(&s["stats"]["xp"]), fresh.xp as i64) as u32;
         self.hits = s["stats"]["attacks"].as_array().map(|list| list.iter().map(|a| Hit { name: a["name"].as_str().unwrap_or("").into(), bonus: n(&a["bonus"]) as i32, damage: a["damage"].as_str().unwrap_or("").into(), range: n(&a["range"]) as u32 }).collect()).unwrap_or_default();
         self.count = n(&s["count"]) as u32;
         self.faction = s["faction"].as_str().unwrap_or("").to_string();
@@ -463,6 +472,7 @@ impl Workshop {
         self.chest = s["contents"].is_array();
         self.contents = wares(&s["contents"]);
         self.lock = n(&s["lock"]) as i32;
+        self.size = (n(&s["size"]) as u8).clamp(1, 3);
         self.deeds = s["actions"].as_array().map(|list| list.iter().map(|a| Deed { label: a["label"].as_str().unwrap_or("").into(), outcome: a["outcome"].as_str().unwrap_or("").into(), needs: a["needs"].as_str().unwrap_or("").into(), steps: a["effects"].as_array().cloned().unwrap_or_default(), ..Deed::default() }).collect()).unwrap_or_default();
         self.key = s["key"].as_str().unwrap_or("").to_string();
         // The picture in the nearest colours of this world.
@@ -1103,6 +1113,13 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
     egui::CollapsingHeader::new(dark(t(T::WsMain))).default_open(true).show(ui, |ui| {
         field(ui, t(T::WsName), &mut ws.name, t(T::WsNameHint));
         field(ui, t(T::WsId), &mut ws.id, t(T::WsIdHint));
+        if matches!(ws.kind, MakeKind::Creature | MakeKind::Object) {
+            ui.horizontal(|row| {
+                row.add_sized(vec2(70.0, 18.0), egui::Label::new(t(T::WsSize)));
+                row.add(egui::DragValue::new(&mut ws.size).range(1..=3).suffix(" × "));
+                hint(row, t(T::WsSizeHint));
+            });
+        }
         if ws.kind != MakeKind::Tile {
             ui.label(t(T::WsDescription));
             ui.add(egui::TextEdit::multiline(&mut ws.description).desired_rows(2).desired_width(f32::INFINITY));
@@ -1229,6 +1246,7 @@ fn properties(ui: &mut Ui, ws: &mut Workshop, world: &World, acts: &mut Vec<GmAc
                     ws.hits.push(Hit::default());
                 }
             });
+            egui::CollapsingHeader::new(dark(t(T::WsDeeds))).default_open(!ws.deeds.is_empty()).show(ui, |ui| deeds_ui(ui, ws, world, acts, lang));
             egui::CollapsingHeader::new(dark(t(T::WsTrade))).default_open(ws.merchant).show(ui, |ui| {
                 kit::toggle(ui, t(T::WsMerchant), &mut ws.merchant);
                 if ws.merchant {
