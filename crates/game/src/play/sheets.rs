@@ -87,6 +87,10 @@ pub fn overlay(
     if panel.workshop && matches!(sheet, Sheet::Master(_)) {
         return;
     }
+    // The master answers the players in a window of the editor's.
+    if matches!(sheet, Sheet::Judging(_)) {
+        return;
+    }
     // A field opened afresh takes the keyboard.
     let entered = was.replace(std::mem::discriminant(&*phase)) != Some(std::mem::discriminant(&*phase));
     let Ok(ctx) = egui.ctx_mut() else { return };

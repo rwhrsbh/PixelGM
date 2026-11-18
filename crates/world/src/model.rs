@@ -399,6 +399,11 @@ pub struct World {
     /// The player in the game master's seat. Nobody means the model runs the game alone.
     #[serde(default)]
     pub gm: Option<String>,
+    /// With a player in the master's seat: the model writes a draft of every answer for them
+    /// to read first. Off, the deeds come to the master straight and the model is asked only
+    /// when the master wants.
+    #[serde(default)]
+    pub ai_drafts: bool,
     /// Where each guest is, by player name, when the party has split up. The host is
     /// always in `current`; a guest not listed is with the host.
     #[serde(default)]

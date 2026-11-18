@@ -101,6 +101,13 @@ pub struct Workshop {
     question: String,
     answer: String,
     asking: bool,
+    /// The answer the master writes to what the players did, and the deed it answers.
+    reply: TurnDraft,
+    reply_to: Option<(String, String)>,
+    /// The roll being set up for the answer: ability, skill, difficulty, what each way brings.
+    roll: (String, String, i64, String, String),
+    /// The change being put together in the form of every effect.
+    effect: super::effects_ui::Form,
     tool: MapTool,
     tile: String,
     /// The library's creature or object put on a cell by a click, by its place in the list.
@@ -152,6 +159,10 @@ impl Default for Workshop {
             question: String::new(),
             answer: String::new(),
             asking: false,
+            reply: TurnDraft::default(),
+            reply_to: None,
+            roll: ("dex".into(), String::new(), 12, String::new(), String::new()),
+            effect: Default::default(),
             tool: MapTool::Brush,
             tile: String::new(),
             placing: None,
@@ -483,12 +494,13 @@ fn flood(grid: &mut [u8], start: usize, color: u8) {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workshop_ui(
     mut egui: EguiContexts,
-    (phase, game, session, settings, store): (Res<Phase>, Res<Game>, Res<Session>, Res<Settings>, Res<Store>),
+    (mut phase, game, session, settings, store): (ResMut<Phase>, Res<Game>, Res<Session>, Res<Settings>, Res<Store>),
     (mut ws, mut table, mut images, mut panel): (ResMut<Workshop>, ResMut<Table>, ResMut<Assets<Image>>, ResMut<Panel>),
     mut cache: Local<HashMap<String, egui::TextureId>>,
 ) {
     ws.panels.clear();
-    if *phase != Phase::Master {
+    let judging = table.judging.clone();
+    if *phase != Phase::Master && !(*phase == Phase::Judging && judging.is_some()) {
         if panel.workshop {
             panel.workshop = false;
         }
@@ -540,6 +552,17 @@ pub(super) fn workshop_ui(
         Mode::Make => make_room(ctx, ws, world, &tiles, &mut acts, lang, top, screen),
         Mode::Library => library_room(ctx, ws, world, &art_pictures, &made_pictures, &mut acts, &store, lang, top, screen),
         Mode::Rules => rules_room(ctx, ws, world, &mut table, &mut acts, lang, top, screen),
+    }
+    // What a player did waits for the master's answer, whatever room they are in.
+    match judging {
+        Some(view) => {
+            let done = reply_window(ctx, ws, world, &view, &mut acts, lang, screen);
+            if done && session.is_client() {
+                table.judging = None;
+                *phase = Phase::Walking;
+            }
+        }
+        None => ws.reply_to = None,
     }
     for act in acts {
         send(act, &session, &settings, &mut table);
@@ -1033,6 +1056,134 @@ fn library_room(ctx: &egui::Context, ws: &mut Workshop, world: &World, arts: &[e
         }
     });
     ws.panels = panels;
+}
+
+/// The master's answer to what the players did: told in words, with choices, with a roll
+/// the player makes, with whatever the answer changes. True once it is sent or refused.
+fn reply_window(ctx: &egui::Context, ws: &mut Workshop, world: &World, view: &DraftView, acts: &mut Vec<GmAct>, lang: Lang, screen: Rect) -> bool {
+    let t = |text: T| text.text(lang);
+    // A new deed (or a new draft of the model's) starts the answer afresh.
+    let key = (view.said.clone(), view.narration.clone());
+    if ws.reply_to.as_ref() != Some(&key) {
+        ws.reply = view.draft.clone();
+        ws.reply_to = Some(key);
+    }
+    let mut done = false;
+    let mut panels = std::mem::take(&mut ws.panels);
+    let size = vec2(470.0_f32.min(screen.width() - 40.0), (screen.height() * 0.7).min(520.0));
+    window(ctx, &mut panels, "reply", t(T::WsReply), egui::pos2((screen.width() - size.x) / 2.0, screen.height() - size.y - 40.0), size, |ui| {
+        if !view.said.is_empty() {
+            ui.label(egui::RichText::new(format!("«{}»", view.said)).strong().color(c(WAX_DARK)));
+        }
+        let mut ai = world.ai_drafts;
+        if kit::toggle(ui, t(T::WsAiDrafts), &mut ai).changed() {
+            acts.push(GmAct::AiDrafts(ai));
+        }
+        egui::ScrollArea::vertical().max_height(size.y - 120.0).auto_shrink([false, true]).show(ui, |ui| {
+            heading(ui, t(T::WsTelling));
+            ui.add(egui::TextEdit::multiline(&mut ws.reply.narration).desired_rows(4).desired_width(f32::INFINITY).hint_text(t(T::WsTellingHint)));
+            // A roll: the player throws the die on their own screen and everyone sees it.
+            egui::CollapsingHeader::new(dark(t(T::WsAskRoll))).default_open(true).show(ui, |ui| {
+                let ru = lang == Lang::Ru;
+                ui.horizontal(|row| {
+                    let shown = rules::character::Ability::from_index(&ws.roll.0).map_or("—", |a| rules::tr(ru, a.name()));
+                    egui::ComboBox::from_id_salt("roll_ability").width(110.0).selected_text(shown).show_ui(row, |ui| {
+                        for ability in rules::character::Ability::ALL {
+                            ui.selectable_value(&mut ws.roll.0, ability.index().to_string(), rules::tr(ru, ability.name()));
+                        }
+                    });
+                    let skill = rules::srd().skills.iter().find(|s| s.index == ws.roll.1).map_or(t(T::WsNoSkill).to_string(), |s| rules::tr(lang == Lang::Ru, &s.name).to_string());
+                    egui::ComboBox::from_id_salt("roll_skill").width(130.0).selected_text(skill).height(240.0).show_ui(row, |ui| {
+                        ui.selectable_value(&mut ws.roll.1, String::new(), t(T::WsNoSkill));
+                        for s in &rules::srd().skills {
+                            ui.selectable_value(&mut ws.roll.1, s.index.clone(), rules::tr(lang == Lang::Ru, &s.name));
+                        }
+                    });
+                    row.label(t(T::WsDc));
+                    row.add(egui::DragValue::new(&mut ws.roll.2).range(1..=30));
+                });
+                hint(ui, t(T::WsDcHint));
+                ui.add(egui::TextEdit::singleline(&mut ws.roll.3).desired_width(f32::INFINITY).hint_text(t(T::WsOnSuccess)));
+                ui.add(egui::TextEdit::singleline(&mut ws.roll.4).desired_width(f32::INFINITY).hint_text(t(T::WsOnFailure)));
+                if ui.add(button(t(T::WsAddRoll))).clicked() {
+                    let skill = if ws.roll.1.is_empty() { serde_json::Value::Null } else { ws.roll.1.clone().into() };
+                    ws.reply.effects.push(serde_json::json!({ "op": "check", "ability": ws.roll.0, "skill": skill, "dc": ws.roll.2, "success": { "narration": ws.roll.3.trim(), "effects": [] }, "failure": { "narration": ws.roll.4.trim(), "effects": [] } }));
+                    ws.roll.3.clear();
+                    ws.roll.4.clear();
+                }
+            });
+            heading(ui, t(T::WsChoices));
+            let heroes: Vec<String> = world.party.iter().map(|h| h.name.clone()).collect();
+            let mut gone = None;
+            for (n, option) in ws.reply.options.iter_mut().enumerate() {
+                frame().fill(c(PARCHMENT_SHADE)).inner_margin(4.0).show(ui, |ui| {
+                    ui.horizontal(|row| {
+                        row.add(egui::TextEdit::singleline(&mut option.label).desired_width(250.0).hint_text(t(T::WsChoiceLabel)));
+                        let shown = if option.for_hero.is_empty() { t(T::WsForAnyone).to_string() } else { option.for_hero.clone() };
+                        egui::ComboBox::from_id_salt(("for", n)).width(90.0).selected_text(shown).show_ui(row, |ui| {
+                            ui.selectable_value(&mut option.for_hero, String::new(), t(T::WsForAnyone));
+                            for hero in &heroes {
+                                ui.selectable_value(&mut option.for_hero, hero.clone(), hero.as_str());
+                            }
+                        });
+                        if row.add(button("×")).clicked() {
+                            gone = Some(n);
+                        }
+                    });
+                    ui.add(egui::TextEdit::singleline(&mut option.outcome).desired_width(f32::INFINITY).hint_text(t(T::WsChoiceOutcome)));
+                });
+            }
+            if let Some(n) = gone {
+                ws.reply.options.remove(n);
+            }
+            if ws.reply.options.len() < 5 && ui.add(button(t(T::WsAddChoice))).clicked() {
+                ws.reply.options.push(world::story::ActionDraft::default());
+            }
+            heading(ui, t(T::WsChanges));
+            if ws.reply.effects.is_empty() {
+                hint(ui, t(T::WsNoChanges));
+            }
+            let mut gone = None;
+            for (n, effect) in ws.reply.effects.iter().enumerate() {
+                ui.horizontal(|row| {
+                    row.label(egui::RichText::new(super::effects_ui::describe(effect, world, lang)).color(c(INK)));
+                    if row.add(button("×")).clicked() {
+                        gone = Some(n);
+                    }
+                });
+            }
+            if let Some(n) = gone {
+                ws.reply.effects.remove(n);
+            }
+            if let Some(effect) = super::effects_ui::builder(ui, &mut ws.effect, world, lang) {
+                ws.reply.effects.push(effect);
+            }
+        });
+        ui.separator();
+        ui.horizontal(|row| {
+            if row.add(button(t(T::Reject))).on_hover_text(t(T::WsRefuseHint)).clicked() {
+                acts.push(GmAct::Verdict { accept: false, narration: String::new() });
+                done = true;
+            }
+            if row.add(button(t(T::WsAiWrite))).on_hover_text(t(T::WsAiWriteHint)).clicked() {
+                let hint_text = ws.reply.narration.trim();
+                acts.push(GmAct::Direct(if hint_text.is_empty() { "Answer what the players did.".to_string() } else { format!("Answer what the players did, along these lines: {hint_text}") }));
+                done = true;
+            }
+            let ready = !ws.reply.narration.trim().is_empty() || !ws.reply.effects.is_empty();
+            if kit::right(row, |r| r.add(button(t(T::WsSendAnswer)).primary().enabled(ready, t(T::WsNeedTelling)))).clicked() {
+                let mut reply = ws.reply.clone();
+                reply.options.retain(|o| !o.label.trim().is_empty());
+                acts.push(GmAct::Answer(Box::new(reply)));
+                done = true;
+            }
+        });
+    });
+    ws.panels = panels;
+    if done {
+        ws.reply_to = None;
+    }
+    done
 }
 
 #[allow(clippy::too_many_arguments)]

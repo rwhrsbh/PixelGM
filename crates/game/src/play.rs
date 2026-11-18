@@ -24,6 +24,7 @@ use world::{CreatureCard, LocationDraft, Speaker, TILE, Turn, TurnDraft, Whisper
 
 mod hud;
 mod sheets;
+mod effects_ui;
 mod rules_book;
 mod workshop;
 
@@ -1380,6 +1381,12 @@ fn walk(time: Res<Time>, keyboard: Res<ButtonInput<KeyCode>>, gamepads: Query<&G
                 hero.dead = true;
             }),
             "deed" => world.secrets_due.push(0),
+            // `want=words`: the host's own hero does that, as if typed: the master is asked.
+            "want" => {
+                let said = order.split_once('=').map_or("", |(_, words)| words).to_string();
+                let player = world.owners.first().cloned().filter(|o| !o.is_empty()).unwrap_or_else(|| "Guest".to_string());
+                table.wants.lock().unwrap().push(crate::coop::Want { player, said, near: None, follows: false, passed: false });
+            }
             // `fx=[…]`: effects as the master would write them, carried out at once. A `|`
             // stands for a comma, which the script keeps for itself.
             "fx" => {
@@ -2873,9 +2880,15 @@ fn master_queue(mut game: ResMut<Game>, mut table: ResMut<Table>, mut phase: Res
                 // The master sees the place through the eyes of the one who acts there.
                 let own = solo || acts.iter().any(|a| a.player == me);
                 let lead = if own { None } else { acts.first().map(|a| a.player.clone()) };
-                let home = lead.as_deref().map(|player| enter_scene(&mut game, &mut table, player));
-                master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None, id: id.0 });
-                leave_scene(&mut game, &mut table, home);
+                if seated(&game.world).is_some() && !game.world.ai_drafts {
+                    // A master of flesh answers first: the deed goes to them with an empty
+                    // draft to write, as if the model had answered nothing.
+                    master.give(Answer::Turn { id: id.0, said: said.clone(), near, draft: Ok(Box::new(TurnDraft::default())) });
+                } else {
+                    let home = lead.as_deref().map(|player| enter_scene(&mut game, &mut table, player));
+                    master.ask(&gm, &store, &settings, Ask::Turn { world: Box::new(game.world.clone()), said: said.clone(), near, direction: None, id: id.0 });
+                    leave_scene(&mut game, &mut table, home);
+                }
                 // Everyone sees what each has set about, a line a hero: the words as they
                 // were said, not as the master is asked them.
                 if session.is_host() {
@@ -3864,6 +3877,13 @@ fn gm_act(desk: &mut Desk, player: &str, act: GmAct) {
             release(desk, player);
         }
         GmAct::Verdict { accept, narration } => conclude(desk, player, accept, &narration),
+        GmAct::Answer(draft) => {
+            if let Some(held) = desk.table.drafts.front_mut() {
+                held.draft = *draft;
+            }
+            conclude(desk, player, true, "");
+        }
+        GmAct::AiDrafts(on) => desk.game.world.ai_drafts = on,
         GmAct::Direct(text) => {
             let text = text.trim().to_string();
             if text.is_empty() {

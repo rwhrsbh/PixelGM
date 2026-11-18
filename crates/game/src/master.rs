@@ -653,6 +653,11 @@ impl Master {
         });
     }
 
+    /// An answer that comes without asking the model: read with the rest, as if it had.
+    pub fn give(&self, answer: Answer) {
+        self.answers.lock().unwrap().push(answer);
+    }
+
     /// The answers that arrived since the last call.
     pub fn take(&self) -> Vec<Answer> {
         std::mem::take(&mut *self.answers.lock().unwrap())

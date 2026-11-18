@@ -782,6 +782,7 @@ pub fn build_world(draft: &WorldDraft, request: &str, language: &str) -> Result<
         owners: Vec::new(),
         present: Vec::new(),
         gm: None,
+        ai_drafts: false,
         places: Default::default(),
         host_place: None,
         host_at: None,

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use world::{Action, CreatureCard, FightIntent, FightSummary, Token, Turn, TurnDraft, World};
 
 /// Raised whenever the messages change shape; players with another number are turned away.
-pub const PROTOCOL: u32 = 19;
+pub const PROTOCOL: u32 = 20;
 pub const DEFAULT_PORT: u16 = 47_800;
 
 /// Something a player wants to do that changes the world. A client sends it; the host does
@@ -98,6 +98,12 @@ pub enum GmAct {
     Seat(bool),
     /// The waiting draft is let through, told as the master left it, or thrown away.
     Verdict { accept: bool, narration: String },
+    /// The master's own answer to what the players did, written or changed by hand: it goes to
+    /// them as it is.
+    Answer(Box<TurnDraft>),
+    /// Whether the model writes a draft for every deed before the master reads it, or the
+    /// master answers first and asks the model only when they want.
+    AiDrafts(bool),
     /// A direction for the model. Over a waiting draft it says how that answer is to be
     /// redone; otherwise the model makes a new turn of it. Either way a draft comes back.
     Direct(String),
@@ -134,6 +140,9 @@ pub struct DraftView {
     pub narration: String,
     pub effects: Vec<String>,
     pub options: Vec<String>,
+    /// The whole draft, for the master to change before it goes to the players. Empty when
+    /// the master answers without the model.
+    pub draft: TurnDraft,
 }
 
 /// A model's answer waiting for the human master's verdict.
@@ -157,6 +166,7 @@ impl Held {
             narration: self.draft.narration.trim().to_string(),
             effects: self.draft.effects.iter().map(brief).collect(),
             options: self.draft.options.iter().map(|o| format!("{} — {}", o.label.trim(), o.outcome.trim())).collect(),
+            draft: self.draft.clone(),
         }
     }
 }
