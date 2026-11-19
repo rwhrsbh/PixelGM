@@ -443,6 +443,13 @@ impl Rotation {
     /// and what answered ("provider: model"). The error tells what every attempt came to.
     pub fn complete(&self, providers: &[Provider], system: &str, prompt: &str, transport: &dyn Transport) -> Result<(String, String), String> {
         let mut tried = Vec::new();
+        // Everything resting is no reason to say nothing: the player asked, so the second
+        // round asks them all the same, and the answer, or the refusal, is the real one.
+        for round in 0..2 {
+        let awake = round == 0;
+        if !awake && !tried.is_empty() {
+            break;
+        }
         for provider in providers.iter().filter(|p| p.ready()) {
             let no_key = [String::new()];
             let keys: &[String] = if provider.keys.is_empty() { &no_key } else { &provider.keys };
@@ -458,12 +465,12 @@ impl Rotation {
             let timeout = self.patience();
             for model in &provider.models {
                 let model = model.trim();
-                if self.model_rests(provider.kind, model) {
+                if awake && self.model_rests(provider.kind, model) {
                     continue;
                 }
                 for step in 0..keys.len() {
                     let key = &keys[(start + step) % keys.len()];
-                    if self.rests(provider.kind, key, model) {
+                    if awake && self.rests(provider.kind, key, model) {
                         continue;
                     }
                     // Cloudflare cuts an answer short at a few hundred tokens unless told how
@@ -560,7 +567,7 @@ impl Rotation {
                             crate::context::learn(model, &refusal.text);
                             self.note(provider.kind, key, model, &refusal);
                             // A model that is not there is not there for any key.
-                            if matches!(refusal.status, 0 | 400 | 404 | 410 | 413 | 422) || self.model_rests(provider.kind, model) {
+                            if matches!(refusal.status, 0 | 400 | 404 | 410 | 413 | 422) || (awake && self.model_rests(provider.kind, model)) {
                                 break;
                             }
                         }
@@ -568,7 +575,8 @@ impl Rotation {
                 }
             }
         }
-        Err(if tried.is_empty() { "every key and model of the providers is resting".to_string() } else { tried.join(" | ") })
+        }
+        Err(if tried.is_empty() { "no provider is ready: no key or no model".to_string() } else { tried.join(" | ") })
     }
 
     /// Has the text read aloud: the providers in order, each one's speaking models in the
@@ -766,6 +774,18 @@ mod tests {
         let why = Rotation::default().complete(&[nim(&["k1", "k2"], &["best"])], "s", "p", &dead).unwrap_err();
         assert!(why.contains("…k1") || why.contains("k1"), "{why}");
         assert_eq!(dead.asked.borrow().len(), 2);
+    }
+
+    #[test]
+    fn everything_resting_is_still_asked_when_the_player_asks() {
+        let rotation = Rotation::default();
+        // The only model hung once and rests; asked again, it answers.
+        let hung = scripted(|_, _, _| refused(0));
+        let provider = nim(&["k1"], &["only"]);
+        assert!(rotation.complete(&[provider.clone()], "s", "p", &hung).is_err());
+        let well = scripted(|_, _, _| Ok(OK.to_string()));
+        assert_eq!(rotation.complete(&[provider], "s", "p", &well).unwrap().1, "NVIDIA NIM: only");
+        assert_eq!(well.asked.borrow().len(), 1);
     }
 
     #[test]
