@@ -441,6 +441,9 @@ fn fill<R>(ui: &mut Ui, id: &str, rect: Rect, title_text: &str, about: &str, bod
     let out = egui::ScrollArea::vertical()
         .id_salt("body")
         .max_height(body_room)
+        // egui keeps a scrolled body at least 64 points tall: in a low sheet that would lay
+        // the body over the footer, so the body is never taller than the room it has.
+        .min_scrolled_height(body_room)
         .auto_shrink([false, true])
         .stick_to_bottom(false)
         .show(&mut child, |ui| {
