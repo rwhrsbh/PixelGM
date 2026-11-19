@@ -248,6 +248,7 @@ fn exits_seen(
     keys: Res<ButtonInput<KeyCode>>,
     window: Single<&Window, With<bevy::window::PrimaryWindow>>,
     view: Res<crate::view::View>,
+    session: Res<Session>,
     mut marks: Query<(&ExitAt, Option<&ExitWords>, &mut Visibility)>,
 ) {
     let dark = (settings.gfx.night && cache.hour.is_some_and(|h| h.dark >= 0.8)) || (settings.gfx.weather && cache.sky == crate::weather::Sky::Fog);
@@ -255,7 +256,11 @@ fn exits_seen(
     let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
     let side = TILE as f32 * crate::scene::PX as f32;
     let hovered = crate::view::map_under_cursor(&window, &view).map(|p| ((p.x / side).floor() as i32, (p.y / side).floor() as i32));
-    let (hx, hy) = game.world.player.cell();
+    // In a fight the hero stands where the fight has it, not where it walked in.
+    let world = &game.world;
+    let mine = my_hero(world, &player_name(&settings), matches!(*session, Session::Solo));
+    let fighter = world.fight.as_ref().filter(|_| world.fight_here()).and_then(|f| f.combatants.iter().find(|c| c.id == format!("hero_{}", mine.unwrap_or(0))));
+    let (hx, hy) = fighter.map_or_else(|| world.player.cell(), |c| (c.x, c.y));
     let wanted_words = |to: &str| {
         let cells = || here.exits.iter().filter(|e| e.to == to).map(|e| (e.x as i32, e.y as i32));
         alt || cells().any(|c| Some(c) == hovered) || cells().any(|(x, y)| (x - hx).abs() <= 1 && (y - hy).abs() <= 1)
