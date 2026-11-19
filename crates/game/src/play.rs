@@ -1290,16 +1290,27 @@ fn place_allies(time: Res<Time>, game: Res<Game>, settings: Res<Settings>, mut a
 /// Eight steps a second.
 const STEPS_PER_SECOND: f32 = 8.0;
 
-fn place_hero(game: Res<Game>, pose: Res<HeroPose>, mut hero: Query<(&mut Transform, &mut Sprite, &Frames), With<Hero>>) {
+fn place_hero(game: Res<Game>, pose: Res<HeroPose>, session: Res<Session>, settings: Res<Settings>, mut hero: Query<(&mut Transform, &mut Sprite, &Frames), With<Hero>>) {
     let player = game.world.player;
     // The sprite's feet sit at the bottom of the patch of ground the party takes up.
     let feet_y = player.y + FEET.1;
     let step = if pose.moving { (pose.clock * STEPS_PER_SECOND) as usize % crate::doll::STEPS } else { 0 };
+    // A hero beaten or dead lies where it fell, grey, until it is brought back to its feet:
+    // a lost fight is not undone by its sheet coming up.
+    let mine = my_hero(&game.world, &player_name(&settings), matches!(*session, Session::Solo));
+    let down = mine.and_then(|i| game.world.party.get(i)).is_some_and(|h| h.dead || h.hp <= 0);
+    let (turn, tint) = if down { (Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), Color::srgb(0.45, 0.4, 0.4)) } else { (Quat::IDENTITY, Color::WHITE) };
     for (mut transform, mut sprite, frames) in &mut hero {
         let at = on_screen(player.x, feet_y).round();
         let wanted = Vec3::new(at.x, at.y, depth(feet_y));
         if transform.translation != wanted {
             transform.translation = wanted;
+        }
+        if transform.rotation != turn {
+            transform.rotation = turn;
+        }
+        if sprite.color != tint {
+            sprite.color = tint;
         }
         if let Some(image) = frames.0.get(crate::doll::frame_index(pose.facing, step))
             && sprite.image != *image
