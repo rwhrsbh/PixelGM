@@ -120,14 +120,16 @@ pub fn overlay(
     if slot.0 != panel_height && *phase != Phase::Fighting {
         slot.0 = panel_height;
     }
-    // The sheet itself is no taller than what it holds: what is left of the panel shows the
-    // map, which stays where it is.
+    // The sheet itself is as tall as what it holds: what is left of the panel shows the map,
+    // which stays where it is.
     let drawn = match &sheet {
         Sheet::None => 0.0,
         Sheet::Folded => panel_height,
         Sheet::Last(_) => 36.0,
         Sheet::Arrival(..) => 64.0,
-        _ => panel_height.min(kit::last_needed(ctx).unwrap_or(f32::MAX).max(64.0)),
+        // A sheet with more to hold than the panel's room rises over the map, up to the
+        // tallest panel, rather than hiding its choices: the camera keeps its place.
+        _ => kit::last_needed(ctx).unwrap_or(panel_height).max(64.0).min(panel_height.max(STORY_HEIGHTS[2])),
     };
     let story_rect = Rect::from_min_max(Pos2::new(screen.left(), screen.bottom() - HUD - drawn), Pos2::new(screen.right() - PARTY, screen.bottom() - HUD));
     let no_typing = !ctx.egui_wants_keyboard_input();
