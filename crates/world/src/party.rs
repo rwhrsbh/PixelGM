@@ -351,7 +351,7 @@ impl World {
         let stats = creature.stats.as_ref().filter(|s| s.hp > 0 && !self.table.book_only).unwrap_or(&fallback);
         let (most_hp, most_bonus, most_damage) = if self.limited() { (30 + 40 * level, 4 + level, 6.0 + 6.0 * level as f32) } else { (999, 20, 500.0) };
         let within = |text: &str| {
-            let mut dice = Dice::parse(text, 0)?;
+            let mut dice = loose_dice(text)?;
             let each = (dice.sides as f32 + 1.0) / 2.0;
             if dice.sides > 0 && dice.average() > most_damage {
                 dice.bonus = dice.bonus.min((most_damage / 3.0) as i32);
@@ -359,6 +359,17 @@ impl World {
             }
             Some(dice)
         };
+        let mut attacks: Vec<rules::data::MonsterAttack> = stats
+            .attacks
+            .iter()
+            .filter_map(|a| Some(rules::data::MonsterAttack { name: a.name.clone(), bonus: a.bonus.clamp(-5, most_bonus), damage: vec![within(&a.damage)?], range: a.range.max(5), save: None }))
+            .collect();
+        // A creature with nothing it could strike with would stand through every turn of
+        // the fight: it gets the plain blow.
+        if attacks.is_empty() {
+            let plain = &fallback.attacks[0];
+            attacks.push(rules::data::MonsterAttack { name: stats.attacks.first().map_or_else(|| plain.name.clone(), |a| a.name.clone()), bonus: plain.bonus, damage: vec![within(&plain.damage).expect("the plain blow reads")], range: 5, save: None });
+        }
         let monster = rules::data::Monster {
             index: creature.id.clone(),
             name: creature.name.clone(),
@@ -366,11 +377,7 @@ impl World {
             hp: stats.hp.clamp(1, most_hp),
             speed: stats.speed.clamp(5, 120),
             abilities: [10; 6],
-            attacks: stats
-                .attacks
-                .iter()
-                .filter_map(|a| Some(rules::data::MonsterAttack { name: a.name.clone(), bonus: a.bonus.clamp(-5, most_bonus), damage: vec![within(&a.damage)?], range: a.range.max(5), save: None }))
-                .collect(),
+            attacks,
             multiattack: Vec::new(),
             challenge: 0.0,
             xp: stats.xp.min(50_000),
@@ -1072,6 +1079,35 @@ impl World {
     }
 }
 
+/// Damage as the master wrote it, read whatever else is said around it: "1d8+3 slashing",
+/// "7 (2d6)", "2d6 + 3", "5". The first dice in the text count; a lone number is a flat blow.
+fn loose_dice(text: &str) -> Option<Dice> {
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
+    if let Some(dice) = Dice::parse(&compact, 0) {
+        return Some(dice);
+    }
+    let chars: Vec<char> = compact.chars().collect();
+    let digits = |from: usize| chars[from..].iter().take_while(|c| c.is_ascii_digit()).collect::<String>();
+    for (i, c) in chars.iter().enumerate() {
+        if *c != 'd' {
+            continue;
+        }
+        let sides = digits(i + 1);
+        if sides.is_empty() {
+            continue;
+        }
+        let count: String = chars[..i].iter().rev().take_while(|c| c.is_ascii_digit()).collect::<Vec<_>>().into_iter().rev().collect();
+        let after = i + 1 + sides.len();
+        let bonus = match chars.get(after) {
+            Some(sign @ ('+' | '-')) => digits(after + 1).parse::<i32>().map(|b| if *sign == '-' { -b } else { b }).unwrap_or(0),
+            _ => 0,
+        };
+        return Some(Dice { count: count.parse().unwrap_or(1), sides: sides.parse().ok()?, bonus });
+    }
+    let number = chars.iter().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect::<String>();
+    number.parse::<i32>().ok().filter(|n| *n > 0).map(|n| Dice { count: 0, sides: 0, bonus: n })
+}
+
 /// A spell as something to do in a fight: the strike when the rules can carry it out.
 pub fn spell_strike(world: &World, hero: usize, spell: &str, slot: u8) -> Option<Strike> {
     Strike::spell(world.party.get(hero)?, srd().spells.get(spell)?, slot)
@@ -1467,6 +1503,43 @@ mod tests {
         assert_eq!(w.fight_act(&FightIntent::Dodge), [], "not a hero turn");
         let events = w.fight_monster_turn();
         assert!(matches!(events.last(), Some(Event::TurnBegan { who, .. }) if who == "hero_0"));
+    }
+
+    #[test]
+    fn damage_is_read_however_the_master_wrote_it() {
+        let read = |t: &str| loose_dice(t).map(|d| (d.count, d.sides, d.bonus));
+        assert_eq!(read("1d8+3 slashing"), Some((1, 8, 3)));
+        assert_eq!(read("7 (2d6)"), Some((2, 6, 0)));
+        assert_eq!(read("2d6 + 3"), Some((2, 6, 3)));
+        assert_eq!(read("5"), Some((0, 0, 5)));
+        assert_eq!(read("a nasty bite"), None);
+    }
+
+    #[test]
+    fn a_creature_whose_blows_cannot_be_read_still_strikes() {
+        let mut w = world();
+        let creature = &mut w.locations.get_mut(&w.current.clone()).unwrap().creatures[0];
+        creature.monster = None;
+        creature.stats = Some(Stats { ac: 13, hp: 20, speed: 30, attacks: vec![StatAttack { name: "Claws".into(), bonus: 4, damage: "a nasty bite".into(), range: 5 }], xp: 100 });
+        let creature = w.here().creatures[0].clone();
+        let fighter = w.combatant_for(&creature);
+        assert!(!fighter.routine.is_empty() && fighter.strikes[0].name == "Claws");
+    }
+
+    #[test]
+    fn a_monster_comes_on_and_strikes_rather_than_standing() {
+        let mut w = world();
+        apply(&mut w, json!([{ "op": "attitude", "id": "cat", "attitude": "hostile" }]));
+        w.start_fight(Rng::seeded(2));
+        let fight = w.fight.as_mut().unwrap();
+        let cat = fight.index_of("cat").unwrap();
+        fight.turn = fight.order.iter().position(|i| *i == cat).unwrap();
+        fight.combatants[cat].movement_left = fight.combatants[cat].speed;
+        fight.combatants[cat].action_left = true;
+        let before = (fight.combatants[cat].at(), fight.combatants[0].at(), fight.combatants[cat].movement_left, fight.combatants[cat].routine.clone(), fight.combatants[cat].strikes.len());
+        let events = w.fight_monster_turn();
+        let after = w.fight.as_ref().unwrap().combatants[cat].at();
+        assert!(events.iter().any(|e| matches!(e, Event::Moved { .. } | Event::Attacked { .. })) || after != before.0, "{before:?} -> {after:?}: {events:?}");
     }
 
     #[test]
