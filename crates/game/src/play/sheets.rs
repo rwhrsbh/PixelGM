@@ -233,7 +233,7 @@ pub fn overlay(
                     }
                 },
                 |footer| {
-                    if !turn.options.is_empty() && footer.add(button(t(T::OwnAction))).clicked() {
+                    if footer.add(button(t(T::OwnAction))).clicked() {
                         pressed.borrow_mut().push(PlayAction::Own);
                     }
                     if footer.add(button(t(T::SheetSize))).clicked() {

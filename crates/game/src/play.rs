@@ -774,6 +774,10 @@ fn scene_key(world: &World) -> u64 {
     for prop in &here.props {
         (&prop.id, prop.x, prop.y, &prop.sprite, &prop.name).hash(&mut hasher);
     }
+    // A creature the story moves, brings in or sends off is seen where it now is.
+    for creature in &here.creatures {
+        (&creature.id, creature.x, creature.y, &creature.sprite, creature.size).hash(&mut hasher);
+    }
     world.palette.colors.hash(&mut hasher);
     for (id, tile) in &world.tiles {
         (id, &tile.sprite.rows).hash(&mut hasher);
