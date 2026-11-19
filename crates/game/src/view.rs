@@ -82,28 +82,13 @@ pub struct Slot;
 #[derive(Resource, Default)]
 pub struct StoryPanel(pub f32);
 
-/// How long the panel under the map must stay lower before the map takes the room back.
-const SHRINK_AFTER: f32 = 2.5;
-
-fn measure(time: Res<Time>, mut view: ResMut<View>, slots: Query<&ComputedNode, With<Slot>>, story: Res<StoryPanel>, mut lower_for: Local<f32>) {
+fn measure(mut view: ResMut<View>, slots: Query<&ComputedNode, With<Slot>>, story: Res<StoryPanel>) {
     let tallest = slots.iter().map(|node| node.size().y * node.inverse_scale_factor()).fold(0.0f32, f32::max);
     // The panel is laid out in units, a unit being half a pixel of the old interface.
     let tallest = tallest.max(story.0 / UI_PIXEL);
     let bottom = HUD_HEIGHT + tallest.round();
-    // The panel grows at once, so that nothing is hidden under it; it gives room back only
-    // once it has stayed lower a while, so that a line coming and going (a fight's log, a
-    // telling typed out) does not make the map jump each time.
-    if bottom > view.bottom {
+    if bottom != view.bottom {
         view.bottom = bottom;
-        *lower_for = 0.0;
-    } else if bottom < view.bottom {
-        *lower_for += time.delta_secs();
-        if *lower_for >= SHRINK_AFTER {
-            view.bottom = bottom;
-            *lower_for = 0.0;
-        }
-    } else {
-        *lower_for = 0.0;
     }
 }
 

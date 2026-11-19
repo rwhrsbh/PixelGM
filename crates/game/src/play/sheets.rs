@@ -43,8 +43,6 @@ const HUD: f32 = HUD_HEIGHT * crate::screen::UI_PIXEL;
 const PARTY: f32 = crate::view::COLUMN * crate::screen::UI_PIXEL;
 /// How tall the story's panel is, at each of its three sizes.
 pub const STORY_HEIGHTS: [f32; 3] = [96.0, 168.0, 260.0];
-/// The least a sheet under the map is, whatever it holds.
-const STORY_LEAST: f32 = 64.0;
 
 #[allow(clippy::too_many_arguments)]
 pub fn overlay(
@@ -52,7 +50,7 @@ pub fn overlay(
     mut commands: Commands,
     (phase, game, gm, lang, session, table, panel): (Res<Phase>, Res<Game>, Res<Gm>, Res<Lang>, Res<Session>, Res<Table>, Res<Panel>),
     (mut settings, store, mut folded, use_for, link): (ResMut<Settings>, Res<Store>, ResMut<Folded>, Res<UseFor>, Res<crate::coop::SteamLink>),
-    (time, mut slot, arrival, view): (Res<Time>, ResMut<crate::view::StoryPanel>, Res<Arrival>, Res<crate::view::View>),
+    (time, mut slot, arrival): (Res<Time>, ResMut<crate::view::StoryPanel>, Res<Arrival>),
     mut translator: ResMut<Translator>,
     mut fields: ResMut<Fields>,
     mut was: Local<Option<std::mem::Discriminant<Phase>>>,
@@ -101,7 +99,6 @@ pub fn overlay(
     let pressed: std::cell::RefCell<Vec<PlayAction>> = std::cell::RefCell::new(Vec::new());
     let mut size_pressed = false;
     let mut invite = false;
-    let low = matches!(sheet, Sheet::Arrival(..) | Sheet::Looking { .. } | Sheet::Writing { .. } | Sheet::Asking(_) | Sheet::Reading(_) | Sheet::Folded | Sheet::Last(_) | Sheet::Rolling(_) | Sheet::Judging(_) | Sheet::Master(_));
     // Just walked in: the place's name, and its description written out, where the story is.
     let here = game.world.here();
     let description = translator.bypass_change_detection().read(foreign(&game.world, lang), &here.description);
@@ -114,33 +111,24 @@ pub fn overlay(
         sheet
     };
     let screen = ui.max_rect();
-    let panel_height = match &sheet {
-        Sheet::Arrival(..) => 64.0,
-        Sheet::None => 0.0,
-        Sheet::Folded => 28.0,
-        Sheet::Last(_) => 36.0,
-        // The telling is as tall as it will be when all of it is written out, so the map does
-        // not shrink with every line as the letters come: what is still to come is measured
-        // beside what the sheet holds now.
-        Sheet::Reading(turn) => {
-            let width = screen.width() - PARTY - 24.0;
-            let tall = |text: String| ui.fonts_mut(|f| f.layout(text, egui::FontId::proportional(crate::ui::theme::BODY), egui::Color32::WHITE, width)).size().y;
-            let shown: String = if fields.telling == turn.narration { turn.narration.chars().take(fields.letters as usize).collect() } else { String::new() };
-            let to_come = (tall(turn.narration.clone()) - tall(shown)).max(0.0);
-            STORY_HEIGHTS[settings.narration.min(2) as usize].min(kit::last_needed(ctx).map_or(f32::MAX, |n| n + to_come).max(STORY_LEAST))
-        }
-        // The rest are no taller than what they hold: a thing with two actions leaves the map large.
-        _ if low => STORY_HEIGHTS[settings.narration.min(2) as usize].min(kit::last_needed(ctx).unwrap_or(f32::MAX).max(STORY_LEAST)),
-        _ => 0.0,
-    };
+    // The panel under the map keeps one height whatever it holds, so the map does not move
+    // when a line, a choice or a thing's actions come and go: only folding it or the
+    // narration size the player chose changes it.
+    let panel_height = if matches!(sheet, Sheet::Folded) { 28.0 } else { STORY_HEIGHTS[settings.narration.min(2) as usize] };
     // The map is seen above the panel: the camera is told how much of the screen it takes.
     // In a fight the fight's sheet says how tall it is.
     if slot.0 != panel_height && *phase != Phase::Fighting {
         slot.0 = panel_height;
     }
-    // While the room under the map is held for a moment, the sheet fills it: no gap opens
-    // between the map and the sheet.
-    let drawn = if panel_height > 0.0 { panel_height.max(view.panel()) } else { 0.0 };
+    // The sheet itself is no taller than what it holds: what is left of the panel shows the
+    // map, which stays where it is.
+    let drawn = match &sheet {
+        Sheet::None => 0.0,
+        Sheet::Folded => panel_height,
+        Sheet::Last(_) => 36.0,
+        Sheet::Arrival(..) => 64.0,
+        _ => panel_height.min(kit::last_needed(ctx).unwrap_or(f32::MAX).max(64.0)),
+    };
     let story_rect = Rect::from_min_max(Pos2::new(screen.left(), screen.bottom() - HUD - drawn), Pos2::new(screen.right() - PARTY, screen.bottom() - HUD));
     let no_typing = !ctx.egui_wants_keyboard_input();
     let digit = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6].iter().position(|k| ui.input(|i| i.key_pressed(*k)));
@@ -245,7 +233,7 @@ pub fn overlay(
                     }
                 },
                 |footer| {
-                    if !turn.options.is_empty() && footer.add(button(t(T::OwnAction))).clicked() {
+                    if footer.add(button(t(T::OwnAction))).clicked() {
                         pressed.borrow_mut().push(PlayAction::Own);
                     }
                     if footer.add(button(t(T::SheetSize))).clicked() {

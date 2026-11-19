@@ -248,6 +248,7 @@ fn exits_seen(
     keys: Res<ButtonInput<KeyCode>>,
     window: Single<&Window, With<bevy::window::PrimaryWindow>>,
     view: Res<crate::view::View>,
+    session: Res<Session>,
     mut marks: Query<(&ExitAt, Option<&ExitWords>, &mut Visibility)>,
 ) {
     let dark = (settings.gfx.night && cache.hour.is_some_and(|h| h.dark >= 0.8)) || (settings.gfx.weather && cache.sky == crate::weather::Sky::Fog);
@@ -255,7 +256,11 @@ fn exits_seen(
     let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
     let side = TILE as f32 * crate::scene::PX as f32;
     let hovered = crate::view::map_under_cursor(&window, &view).map(|p| ((p.x / side).floor() as i32, (p.y / side).floor() as i32));
-    let (hx, hy) = game.world.player.cell();
+    // In a fight the hero stands where the fight has it, not where it walked in.
+    let world = &game.world;
+    let mine = my_hero(world, &player_name(&settings), matches!(*session, Session::Solo));
+    let fighter = world.fight.as_ref().filter(|_| world.fight_here()).and_then(|f| f.combatants.iter().find(|c| c.id == format!("hero_{}", mine.unwrap_or(0))));
+    let (hx, hy) = fighter.map_or_else(|| world.player.cell(), |c| (c.x, c.y));
     let wanted_words = |to: &str| {
         let cells = || here.exits.iter().filter(|e| e.to == to).map(|e| (e.x as i32, e.y as i32));
         alt || cells().any(|c| Some(c) == hovered) || cells().any(|(x, y)| (x - hx).abs() <= 1 && (y - hy).abs() <= 1)
@@ -768,6 +773,10 @@ fn scene_key(world: &World) -> u64 {
     here.marks.hash(&mut hasher);
     for prop in &here.props {
         (&prop.id, prop.x, prop.y, &prop.sprite, &prop.name).hash(&mut hasher);
+    }
+    // A creature the story moves, brings in or sends off is seen where it now is.
+    for creature in &here.creatures {
+        (&creature.id, creature.x, creature.y, &creature.sprite, creature.size).hash(&mut hasher);
     }
     world.palette.colors.hash(&mut hasher);
     for (id, tile) in &world.tiles {
@@ -1285,16 +1294,27 @@ fn place_allies(time: Res<Time>, game: Res<Game>, settings: Res<Settings>, mut a
 /// Eight steps a second.
 const STEPS_PER_SECOND: f32 = 8.0;
 
-fn place_hero(game: Res<Game>, pose: Res<HeroPose>, mut hero: Query<(&mut Transform, &mut Sprite, &Frames), With<Hero>>) {
+fn place_hero(game: Res<Game>, pose: Res<HeroPose>, session: Res<Session>, settings: Res<Settings>, mut hero: Query<(&mut Transform, &mut Sprite, &Frames), With<Hero>>) {
     let player = game.world.player;
     // The sprite's feet sit at the bottom of the patch of ground the party takes up.
     let feet_y = player.y + FEET.1;
     let step = if pose.moving { (pose.clock * STEPS_PER_SECOND) as usize % crate::doll::STEPS } else { 0 };
+    // A hero beaten or dead lies where it fell, grey, until it is brought back to its feet:
+    // a lost fight is not undone by its sheet coming up.
+    let mine = my_hero(&game.world, &player_name(&settings), matches!(*session, Session::Solo));
+    let down = mine.and_then(|i| game.world.party.get(i)).is_some_and(|h| h.dead || h.hp <= 0);
+    let (turn, tint) = if down { (Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), Color::srgb(0.45, 0.4, 0.4)) } else { (Quat::IDENTITY, Color::WHITE) };
     for (mut transform, mut sprite, frames) in &mut hero {
         let at = on_screen(player.x, feet_y).round();
         let wanted = Vec3::new(at.x, at.y, depth(feet_y));
         if transform.translation != wanted {
             transform.translation = wanted;
+        }
+        if transform.rotation != turn {
+            transform.rotation = turn;
+        }
+        if sprite.color != tint {
+            sprite.color = tint;
         }
         if let Some(image) = frames.0.get(crate::doll::frame_index(pose.facing, step))
             && sprite.image != *image
